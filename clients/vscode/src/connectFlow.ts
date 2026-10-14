@@ -13,7 +13,7 @@
 //
 // No `vscode` import, so the suite can run it under plain mocha.
 
-import type { ConnectResponse } from './daemonClient';
+import type { ConnectResponse, StatusTier } from './daemonClient';
 
 export interface Provider {
   id: string;
@@ -329,4 +329,91 @@ export function formatConnectResult(r: ConnectResponse, extraNotes: string[] = [
       'takes precedence — so the stored key is NOT what it is sending. Unset it and restart the daemon to use the stored one.';
   }
   return out;
+}
+
+// THE CONNECT POPUP'S FIRST STEP: every provider, with the start its keys carry
+// when they carry one of their own ("gsk_…"), so the user can check the key in
+// their clipboard against the provider they are about to pick.
+export interface ProviderChoice {
+  id: string;
+  name: string;
+  apiBase: string;
+  hint: string;
+}
+
+// "Any key": the first row, as in the terminal's list (clients/tui/setup.go
+// anyKeyRowID). No address: the daemon tells the provider from the key, and asks
+// (needs_provider) when the key's shape names more than one.
+export const ANY_KEY_CHOICE: ProviderChoice = { id: '', name: 'Any key', apiBase: '', hint: 'the provider is told from the key' };
+
+export function providerChoices(): ProviderChoice[] {
+  return PROVIDERS.map((p) => ({
+    id: p.id,
+    name: p.name,
+    apiBase: p.apiBase,
+    hint: KEY_PREFIXES.filter((s) => s.providerId === p.id)
+      .map((s) => s.prefix + '…')
+      .join('  '),
+  }));
+}
+
+// A KEY THAT IS PLAINLY ANOTHER PROVIDER'S IS NOT SENT. The user picked a
+// provider first, so the key goes to that provider's address -- and a key whose
+// own prefix names someone else would arrive at a company that did not issue
+// it. Returns the sentence to show instead of sending, or undefined when the
+// key's shape agrees with the choice or says nothing (a bare "sk-").
+export function keyMismatch(key: string, apiBase: string): string | undefined {
+  const chosen = providerForBase(apiBase);
+  const shaped = providerForKey(key);
+  if (!chosen || !shaped || shaped.id === chosen.id) {
+    return undefined;
+  }
+  return `This key looks like a ${shaped.name} key, not a ${chosen.name} one. Nothing was sent. Choose ${shaped.name}, or paste a ${chosen.name} key.`;
+}
+
+// THE CONNECT POPUP'S LAST STEP: the connected provider's models, from the
+// daemon's tiers. A port of modelRows in clients/tui/setup.go, so both clients
+// offer the same list: only models a prompt could go to, in the daemon's order;
+// the one in force -- this panel's choice, else the daemon's default -- marked
+// and not moved; models that did not answer when the key was connected last and
+// dimmed. The provider's id is shown only where it says more than the name.
+export interface ModelChoice {
+  name: string;
+  label: string;
+  hint: string;
+  current: boolean;
+  quiet: boolean;
+}
+
+export function modelChoices(tiers: StatusTier[], preferred: string): { rows: ModelChoice[]; inForce: string } {
+  let inForce = '';
+  let chosen = false;
+  for (const t of tiers) {
+    if (!t.active) {
+      continue;
+    }
+    if (preferred !== '' && t.name === preferred) {
+      inForce = t.name;
+      chosen = true;
+    } else if (t.default === true && !chosen) {
+      inForce = t.name;
+    }
+  }
+  const answering: ModelChoice[] = [];
+  const quiet: ModelChoice[] = [];
+  for (const t of tiers) {
+    if (!t.active) {
+      continue;
+    }
+    const current = t.name === inForce;
+    const row: ModelChoice = { name: t.name, label: t.name, hint: t.slug && t.slug !== t.name ? t.slug : '', current, quiet: false };
+    if (t.quiet === true && !current) {
+      row.quiet = true;
+      row.hint = row.hint ? `${row.hint} · did not answer when the key was connected` : 'did not answer when the key was connected';
+      quiet.push(row);
+      continue;
+    }
+    answering.push(row);
+  }
+  return { rows: [...answering, ...quiet], inForce };
 }

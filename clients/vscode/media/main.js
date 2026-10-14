@@ -39,8 +39,6 @@
   const specChipEl = document.getElementById('specChip');
   const newChatBtn = document.getElementById('newChatBtn');
   const historyBtn = document.getElementById('historyBtn');
-  const settingsBtn = document.getElementById('settingsBtn');
-  const closeBtn = document.getElementById('closeBtn');
   const attachBtn = document.getElementById('attachBtn');
   const attachListEl = document.getElementById('attachList');
   const composerShellEl = document.getElementById('composerShell');
@@ -361,6 +359,10 @@
     }
   });
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && pages && pages.isOpen()) {
+      pages.close();
+      return;
+    }
     if (e.key === 'Escape') {
       setContextPopupOpen(false);
       if (typeof setModesPopupOpen === 'function') setModesPopupOpen(false);
@@ -438,12 +440,36 @@
     }
   }
 
+  // THE ⚙ POPOVER (Stage 9) is the model menu grown: the provider, its models,
+  // the effort, the mode, the context meter. The model chip and the gear both
+  // open it; it keeps the model popup's id, so everything that closed the
+  // model menu closes it.
   function setModelPopupOpen(open) {
     if (!modelPopup || !modelChipEl) {
       return;
     }
     modelPopup.hidden = !open;
     modelChipEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const gear = document.getElementById('gearBtn');
+    if (gear) gear.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      refreshContextUsage();
+    }
+  }
+
+  function toggleSettings() {
+    if (modelPopup && !modelPopup.hidden) {
+      setModelPopupOpen(false);
+      return;
+    }
+    setModesPopupOpen(false);
+    if (controls) {
+      controls.closeMenus();
+      controls.opened();
+    }
+    showModelMenuMessage('Loading models\u2026');
+    setModelPopupOpen(true);
+    vscode.postMessage({ type: 'listModels' });
   }
 
   /** @param {string} text */
@@ -501,7 +527,7 @@
     return item;
   }
 
-  /** @param {{ current?: string, tiers?: Array<{ name: string, slug: string, active: boolean, isDefault: boolean }>, error?: string }} msg */
+  /** @param {{ current?: string, tiers?: Array<{ name: string, slug: string, active: boolean, isDefault: boolean, quiet?: boolean }>, error?: string }} msg */
   function renderModelMenu(msg) {
     if (!modelListEl) {
       return;
@@ -522,12 +548,19 @@
     modelListEl.appendChild(
       modelMenuItem('', 'Default', def ? 'Uses ' + short(def.slug) + ', the configured default' : 'The configured default model', current === '', true, '')
     );
-    for (const t of tiers) {
+    // Models that did not answer when the key was connected go last, dimmed:
+    // still a choice, never the easy one (clients/tui/setup.go modelRows).
+    const ordered = tiers.filter((t) => !t.quiet || current === t.name).concat(tiers.filter((t) => t.quiet && current !== t.name));
+    for (const t of ordered) {
       // When a provider is connected its models ARE the tiers, so the tier name
       // and the model id are the same string; show it once.
       const title = short(t.slug);
-      const desc = t.name === t.slug ? t.slug : t.slug + '  \u00b7  tier ' + t.name;
-      modelListEl.appendChild(modelMenuItem(t.name, title, desc, current === t.name, t.active, t.active ? (t.isDefault ? 'default' : '') : 'inactive'));
+      let desc = t.name === t.slug ? t.slug : t.slug + '  \u00b7  tier ' + t.name;
+      const quiet = t.quiet === true && current !== t.name;
+      if (quiet) desc += '  \u00b7  did not answer when the key was connected';
+      const item = modelMenuItem(t.name, title, desc, current === t.name, t.active, t.active ? (t.isDefault ? 'default' : '') : 'inactive');
+      if (quiet) item.classList.add('quiet');
+      modelListEl.appendChild(item);
     }
     const selected = /** @type {HTMLElement | null} */ (modelListEl.querySelector('[aria-selected="true"]'));
     if (selected) {
@@ -688,7 +721,8 @@
     const effortName = EFFORT_LABELS[effortIndex];
     effortBtn.setAttribute('data-level', String(effortIndex));
     if (effortValueEl) {
-      effortValueEl.textContent = effortName;
+      // "Auto" twice in one row (effort and mode) read as one setting.
+      effortValueEl.textContent = effortIndex === 0 ? 'Effort' : effortName;
     }
     // UNSUPPORTED IS A STATE, NOT A DISABLED BUTTON. The click still works and
     // the chosen value is still remembered and still sent -- it has to be,
@@ -714,6 +748,15 @@
   }
   function sendEffort() {
     vscode.postMessage({ type: 'setEffort', effort: EFFORTS[effortIndex] });
+  }
+  // setEffortLevel is the Settings page's way in: the same state the pill
+  // cycles through, saved and sent the same way.
+  /** @param {string} level */
+  function setEffortLevel(level) {
+    effortIndex = Math.max(0, EFFORTS.indexOf(level));
+    renderEffort();
+    saveState({ effort: EFFORTS[effortIndex] });
+    sendEffort();
   }
   if (effortBtn) {
     effortBtn.addEventListener('click', () => {
@@ -783,6 +826,52 @@
     return Math.round(days / 30) + 'mo';
   }
 
+  /** @param {unknown} when @returns {Date | null} */
+  function dateOf(when) {
+    const t = typeof when === 'number' ? when : Date.parse(String(when || ''));
+    return Number.isFinite(t) && t > 0 ? new Date(t) : null;
+  }
+
+  /** Which day group a chat falls in. @param {unknown} when */
+  function dayGroup(when) {
+    const d = dateOf(when);
+    if (!d) return 'Earlier';
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const day = 24 * 60 * 60 * 1000;
+    if (d.getTime() >= start.getTime()) return 'Today';
+    if (d.getTime() >= start.getTime() - day) return 'Yesterday';
+    if (d.getTime() >= start.getTime() - 6 * day) return 'Earlier this week';
+    return 'Earlier';
+  }
+
+  /** A row's time: the clock today, the day this week, else the date. @param {unknown} when */
+  function whenOf(when) {
+    const d = dateOf(when);
+    if (!d) return ageOf(typeof when === 'string' ? when : undefined);
+    const group = dayGroup(when);
+    if (group === 'Today' || group === 'Yesterday') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (group === 'Earlier this week') return d.toLocaleDateString([], { weekday: 'short' });
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  /**
+   * The title with the searched words marked, built from text nodes.
+   * @param {HTMLElement} el @param {string} text @param {string} query
+   */
+  function markMatch(el, text, query) {
+    clearChildren(el);
+    const q = query.trim().toLowerCase();
+    const at = q ? text.toLowerCase().indexOf(q) : -1;
+    if (at < 0) {
+      el.textContent = text;
+      return;
+    }
+    const mark = document.createElement('mark');
+    mark.textContent = text.slice(at, at + q.length);
+    el.append(document.createTextNode(text.slice(0, at)), mark, document.createTextNode(text.slice(at + q.length)));
+  }
+
   /** @param {string} text */
   function historyMessage(text) {
     if (!historyListEl) {
@@ -806,7 +895,7 @@
     main.className = 'h-main';
     const title = document.createElement('span');
     title.className = 'h-title';
-    title.textContent = e.title || 'Untitled chat';
+    markMatch(title, e.title || 'Untitled chat', historyQuery);
     title.title = e.title || '';
     const meta = document.createElement('span');
     meta.className = 'h-meta';
@@ -815,7 +904,7 @@
     main.appendChild(meta);
     const age = document.createElement('span');
     age.className = 'h-age';
-    age.textContent = e.current ? 'now' : ageOf(e.ended || e.started);
+    age.textContent = e.current ? 'now' : whenOf(e.ended || e.started);
     const star = document.createElement('button');
     star.type = 'button';
     star.className = 'h-act h-star' + (e.bookmarked ? ' on' : '');
@@ -879,6 +968,8 @@
       return;
     }
     clearChildren(historyListEl);
+    // Bookmarks first, then the rest by day (Stage 9, the mockup's history):
+    // Today, Yesterday, Earlier this week, Earlier.
     const pinned = entries.filter((e) => e.bookmarked);
     const recent = entries.filter((e) => !e.bookmarked);
     /** @param {string} label @param {any[]} list */
@@ -886,25 +977,32 @@
       if (list.length === 0) {
         return;
       }
-      if (pinned.length > 0) {
-        const h = document.createElement('div');
-        h.className = 'history-section';
-        h.textContent = label;
-        historyListEl.appendChild(h);
-      }
+      const h = document.createElement('div');
+      h.className = 'history-section';
+      h.textContent = label;
+      historyListEl.appendChild(h);
       for (const e of list) {
         historyListEl.appendChild(historyRow(e));
       }
     };
     section('Bookmarked', pinned);
-    section('Recent', recent);
+    /** @type {Record<string, any[]>} */
+    const byDay = { Today: [], Yesterday: [], 'Earlier this week': [], Earlier: [] };
+    for (const e of recent) {
+      byDay[e.current ? 'Today' : dayGroup(e.ended || e.started)].push(e);
+    }
+    for (const label of Object.keys(byDay)) {
+      section(label, byDay[label]);
+    }
   }
 
   /** @param {boolean} on */
   function setCurrentBookmark(on) {
     currentBookmarked = on;
     if (bookmarkBtn) {
-      bookmarkBtn.textContent = on ? '\u2605' : '\u2606';
+      const label = document.getElementById('bookmarkLabel');
+      if (label) label.textContent = on ? 'Remove bookmark' : 'Bookmark this chat';
+      bookmarkBtn.classList.toggle('on', on);
       bookmarkBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
       bookmarkBtn.title = on ? 'Remove bookmark from this chat' : 'Bookmark this chat';
       bookmarkBtn.setAttribute('aria-label', bookmarkBtn.title);
@@ -987,18 +1085,6 @@
       setNoticesOpen(!!noticesEl && noticesEl.classList.contains('collapsed'));
     });
   }
-  if (settingsBtn) {
-    settingsBtn.addEventListener('click', () => {
-      inputEl.value = '/model ';
-      inputEl.focus();
-      updateSlashFromInput();
-    });
-  }
-  if (closeBtn) {
-    closeBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'closePanel' });
-    });
-  }
   function queueCommand(text) {
     if (streaming) {
       return;
@@ -1011,15 +1097,7 @@
     // so clicking the chip printed a reply instead of opening a menu.
     modelChipEl.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (modelPopup && !modelPopup.hidden) {
-        setModelPopupOpen(false);
-        return;
-      }
-      setContextPopupOpen(false);
-      setModesPopupOpen(false);
-      showModelMenuMessage('Loading models\u2026');
-      setModelPopupOpen(true);
-      vscode.postMessage({ type: 'listModels' });
+      toggleSettings();
     });
   }
 
@@ -1063,14 +1141,61 @@
     });
   }
 
+  // @ CONTEXT and THE PLUG (Stage 8). @ asks the host what to add -- a file,
+  // the selection, a file's problems, an open file -- and each arrives as an
+  // attachment chip, removable until sent. Typing @ at the start of a word
+  // does the same; an @ inside a word (an address) is just text.
+  const contextAddBtn = document.getElementById('contextAddBtn');
+  const toolsBtn = document.getElementById('toolsBtn');
+  const toolsCountEl = document.getElementById('toolsCount');
+  function askForContext() {
+    vscode.postMessage({ type: 'addContext', remaining: MAX_ATTACH_FILES - pendingAttachments.length });
+  }
+  // ＋ opens the add-context menu and @ the file search; both are controls.js's.
+  void contextAddBtn;
+  inputEl.addEventListener('input', (e) => {
+    const ie = /** @type {InputEvent} */ (e);
+    if (ie.data !== '@') {
+      return;
+    }
+    const at = inputEl.selectionStart - 1;
+    const before = at > 0 ? inputEl.value.charAt(at - 1) : '';
+    if (at >= 0 && inputEl.value.charAt(at) === '@' && (before === '' || /\s/.test(before))) {
+      inputEl.value = inputEl.value.slice(0, at) + inputEl.value.slice(at + 1);
+      inputEl.selectionStart = inputEl.selectionEnd = at;
+      askForContext();
+    }
+  });
+  if (toolsBtn) {
+    toolsBtn.addEventListener('click', () => {
+      if (pages) pages.open('customize', { tab: 'mcp', sub: 'installed' });
+    });
+  }
+  /** @param {any} msg */
+  function setToolsCount(msg) {
+    if (!toolsBtn || !toolsCountEl) {
+      return;
+    }
+    const on = Number(msg.on) || 0;
+    toolsCountEl.textContent = String(on);
+    toolsCountEl.hidden = on === 0;
+    const what = on === 0 ? 'no MCP servers on' : on + ' MCP server' + (on === 1 ? '' : 's') + ' on';
+    const off = msg.agentMode === false && msg.total > 0 ? ' (agent mode is off, so none starts)' : '';
+    toolsBtn.setAttribute('aria-label', 'MCP servers: ' + what + off);
+    toolsBtn.title = 'MCP servers: ' + what + off + '. Click to manage them or browse for more.';
+  }
+
   // dismissFirstRun drops the static first-run guidance (see chatPanel.ts's
   // #firstRun) once the transcript has real content. Deliberately NOT called
   // for 'error' bubbles: the commonest first error is "daemon not found", and
   // that is precisely when the instructions are still worth reading.
+  //
+  // Stage 9: the guidance is the welcome screen, and it comes BACK when the
+  // chat is cleared (clearTranscriptView), so it is held, not looked up.
+  const firstRunEl = document.getElementById('firstRun');
   function dismissFirstRun() {
-    const el = document.getElementById('firstRun');
-    if (el) {
-      el.remove();
+    if (firstRunEl && firstRunEl.parentElement) {
+      firstRunEl.remove();
     }
   }
 
@@ -1101,7 +1226,34 @@
     return '';
   }
 
-  function addBubble(role, text) {
+  const brandLogo = /** @type {HTMLImageElement | null} */ (document.querySelector('.brand-logo'));
+  /** @param {boolean} timed false for a restored turn: its time is not known */
+  function replyHead(timed) {
+    const head = document.createElement('div');
+    head.className = 'reply-head';
+    head.setAttribute('aria-hidden', 'true');
+    if (brandLogo && brandLogo.src) {
+      const img = document.createElement('img');
+      img.className = 'reply-logo';
+      img.src = brandLogo.src;
+      img.alt = '';
+      head.appendChild(img);
+    }
+    const name = document.createElement('span');
+    name.className = 'reply-name';
+    name.textContent = 'Mochiii';
+    head.appendChild(name);
+    if (timed) {
+      const time = document.createElement('span');
+      time.className = 'reply-time';
+      time.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      head.appendChild(time);
+    }
+    return head;
+  }
+
+  /** @param {string} role @param {string} text @param {boolean} [restored] */
+  function addBubble(role, text, restored) {
     if (role === 'user' || role === 'assistant') {
       dismissFirstRun();
     }
@@ -1121,6 +1273,12 @@
       'aria-label',
       role === 'user' ? 'Your message' : role === 'error' ? 'Error' : 'Mochiii\u2019s reply'
     );
+
+    // MOCHIII'S REPLY CARRIES A HEAD (Stage 9, the mockups): the lotus, the
+    // name and the time. The user's turn is a bubble on the right instead.
+    if (role === 'assistant') {
+      card.appendChild(replyHead(!restored));
+    }
 
     const visibleLabel = roleLabel(role);
     if (visibleLabel) {
@@ -1500,12 +1658,32 @@
       }
       const block = document.createElement('div');
       block.className = 'code-block';
-      if (lang) {
-        const langEl = document.createElement('div');
-        langEl.className = 'code-lang';
-        langEl.textContent = lang;
-        block.appendChild(langEl);
-      }
+      // A header on every block (Stage 9): its language, and a Copy of this
+      // block alone -- the reply's own Copy takes the prose with it.
+      const head = document.createElement('div');
+      head.className = 'code-head';
+      const langEl = document.createElement('span');
+      langEl.className = 'code-lang';
+      langEl.textContent = lang || 'code';
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'code-copy';
+      copy.textContent = 'Copy';
+      copy.setAttribute('aria-label', 'Copy this code' + (lang ? ' (' + lang + ')' : ''));
+      const text = code;
+      copy.addEventListener('click', () => {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => {
+            copy.textContent = 'Copied';
+            setTimeout(() => {
+              copy.textContent = 'Copy';
+            }, 1200);
+          });
+        }
+      });
+      head.appendChild(langEl);
+      head.appendChild(copy);
+      block.appendChild(head);
       const lines = code.split('\n');
       for (let n = 0; n < lines.length; n++) {
         const row = document.createElement('div');
@@ -1606,8 +1784,8 @@
     if (composerShellEl) {
       composerShellEl.classList.toggle('sending', value);
     }
+    // The button holds both icons (chatPanel.ts); .stop shows the square.
     sendBtn.classList.toggle('stop', value);
-    sendBtn.textContent = value ? '\u25A0' : '\u2708';
     sendBtn.title = value ? 'Stop this answer' : 'Send';
     sendBtn.setAttribute('aria-label', value ? 'Stop this answer' : 'Send');
     inputEl.placeholder = value
@@ -1952,6 +2130,17 @@
     div.className = 'turn incomplete-notice';
     const detail = info && info.detail ? info.detail : 'the answer may be incomplete';
     div.textContent = `⚠ answer cut off: ${detail}`;
+    // Continue picks up where it stopped: one click instead of typing "go on".
+    const cont = document.createElement('button');
+    cont.type = 'button';
+    cont.className = 'turn-action';
+    cont.textContent = 'Continue';
+    cont.addEventListener('click', () => {
+      cont.remove();
+      sendText('Continue from where you stopped.');
+    });
+    div.appendChild(document.createTextNode(' '));
+    div.appendChild(cont);
     transcriptEl.appendChild(div);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
@@ -2170,7 +2359,11 @@
   // transcript when the turn ends.
   /** @type {HTMLDivElement | null} */
   let currentTasksEl = null;
-  function showTasks(text) {
+  // THE STEPS (Stage 9, the mockup's "Planning steps"): the spec workflow's
+  // task list as a checklist -- done, the one under way, blocked, still to do.
+  // The plain text stays as the region's accessible name.
+  /** @param {string} text @param {Array<{ title: string, status: string }>} [items] */
+  function showTasks(text, items) {
     if (!currentTasksEl) {
       currentTasksEl = document.createElement('div');
       currentTasksEl.className = 'spec-notice spec-notice-tasks';
@@ -2178,7 +2371,37 @@
       currentTasksEl.setAttribute('aria-live', 'polite');
       transcriptEl.appendChild(currentTasksEl);
     }
-    currentTasksEl.textContent = String(text || '');
+    if (!Array.isArray(items) || items.length === 0) {
+      currentTasksEl.textContent = String(text || '');
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      return;
+    }
+    clearChildren(currentTasksEl);
+    currentTasksEl.classList.add('steps');
+    currentTasksEl.setAttribute('aria-label', String(text || ''));
+    const done = items.filter((t) => t.status === 'done').length;
+    const head = document.createElement('div');
+    head.className = 'steps-head';
+    head.textContent = (done === items.length ? 'Steps done' : 'Working through the steps\u2026') + '  ' + done + ' of ' + items.length;
+    currentTasksEl.appendChild(head);
+    const list = document.createElement('ol');
+    list.className = 'steps-list';
+    list.setAttribute('aria-hidden', 'true');
+    /** @type {Record<string, string>} */
+    const marks = { done: '\u2713', active: '\u25cc', blocked: '\u2715' };
+    for (const t of items) {
+      const li = document.createElement('li');
+      li.setAttribute('data-status', t.status);
+      const mark = document.createElement('span');
+      mark.className = 'step-mark';
+      mark.textContent = marks[t.status] || '';
+      const title = document.createElement('span');
+      title.className = 'step-title';
+      title.textContent = t.title;
+      li.append(mark, title);
+      list.appendChild(li);
+    }
+    currentTasksEl.appendChild(list);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 
@@ -2209,8 +2432,8 @@
   // null except while a turn is suspended waiting for the user.
   let currentApprovalEl = null;
   let currentApprovalCallId = null;
-  // toolActivityEls maps a call id to its narration line, so a call's line is
-  // REWRITTEN from "running" to its outcome rather than a new line per phase.
+  // toolActivityEls maps a call id to its row in the work block, so a call's
+  // row is REWRITTEN from "running" to its outcome rather than a row per phase.
   const toolActivityEls = new Map();
 
   // showToolApproval renders one pending tool call and waits for a decision.
@@ -2422,40 +2645,174 @@
     currentApprovalCallId = null;
   }
 
-  // showToolActivity narrates one step of an agent turn, one line per call.
+  // THE WORK BLOCK (Stage 8): a turn's tool calls as ONE folded line --
+  // "Used 3 tools · 1 failed" -- that opens to a row per call.
+  //
+  // It replaced one italic line per call ("builtin__repo_map — 67 bytes to the
+  // model in 0ms"), which filled a narrow side bar with plumbing and, on a
+  // failure, said only "failed". A row now names what the call did in words,
+  // says why it failed when it did (the daemon sends the reason since Stage 8),
+  // and keeps the byte and time figures in its tooltip.
   //
   // The 'requested' and 'approved' phases are deliberately not rendered: the
   // user has just answered a dialog about that exact call, and reading it back
   // to them is noise -- worse for a screen reader than for an eye.
-  function showToolActivity(activity) {
-    const name = activity.server + '__' + activity.tool;
-    let text = '';
-    if (activity.phase === 'running') {
-      text = 'Running ' + name + '…';
-    } else if (activity.phase === 'succeeded') {
-      text = name + ' — ' + (activity.result_bytes || 0) + ' bytes to the model in ' +
-        (activity.duration_ms || 0) + 'ms';
-    } else if (activity.phase === 'failed') {
-      text = name + ' failed' + (activity.detail ? ': ' + activity.detail : '');
-    } else if (activity.phase === 'denied') {
-      text = name + ' not run' + (activity.detail ? ': ' + activity.detail : '');
-    }
-    if (text === '') {
-      return;
-    }
+  const TOOL_LABELS = {
+    repo_map: 'Mapped the project',
+    list_directory: 'Listed a folder',
+    read_file: 'Read a file',
+    search_code: 'Searched the code',
+    propose_edit: 'Proposed an edit',
+    propose_ast_edit: 'Proposed an edit',
+    query_compiler_definition: 'Looked up a definition',
+    query_compiler_references: 'Looked up references',
+    sandbox_exec: 'Ran a command in the sandbox',
+    web_fetch: 'Fetched a web page',
+    web_search: 'Searched the web',
+  };
+  const WORK_STATE_WORDS = { run: 'running', ok: 'done', fail: 'failed', denied: 'not run', step: '' };
+  // The badge each row carries (Stage 9, the mockup's "Tool Execution" card).
+  const WORK_BADGES = { run: 'Running', ok: 'Done', fail: 'Failed', denied: 'Not run', step: '' };
+  const WORK_GLYPHS = { run: '\u25cc', ok: '\u2713', fail: '\u2715', denied: '\u2298', step: '\u203a' };
+  // compact: a block starts folded; expanded: it starts open (mochiii.toolActivity).
+  let toolActivityMode = 'compact';
+  let defaultModeApplied = false;
+  /** @type {HTMLDetailsElement | null} */
+  let workBlockEl = null;
 
-    const existing = toolActivityEls.get(activity.call_id);
-    if (existing && existing.parentElement) {
-      existing.textContent = text;
+  /** @param {number} ms */
+  function workDuration(ms) {
+    return ms < 1000 ? Math.round(ms) + 'ms' : (ms / 1000).toFixed(ms < 60000 ? 1 : 0) + 's';
+  }
+
+  /** @param {any} activity */
+  function toolLabel(activity) {
+    if (activity.phase === 'step') {
+      return activity.tool + (activity.detail ? ' \u2014 ' + activity.detail : '');
+    }
+    const known = activity.server === 'builtin' ? TOOL_LABELS[String(activity.tool)] : undefined;
+    return known || activity.server + ' \u00b7 ' + activity.tool;
+  }
+
+  // currentWorkBlock is the block the next row goes in: the open one while it
+  // is still the last thing in the transcript, else a new one -- so rows stay
+  // in order with the reply text and approvals around them.
+  function currentWorkBlock() {
+    if (workBlockEl && workBlockEl.parentElement === transcriptEl && transcriptEl.lastElementChild === workBlockEl) {
+      return workBlockEl;
+    }
+    const block = document.createElement('details');
+    block.className = 'work';
+    block.open = toolActivityMode === 'expanded';
+    const summary = document.createElement('summary');
+    summary.className = 'work-summary';
+    const label = document.createElement('span');
+    label.className = 'work-label';
+    label.setAttribute('role', 'status');
+    summary.appendChild(label);
+    const rows = document.createElement('ol');
+    rows.className = 'work-rows';
+    block.append(summary, rows);
+    transcriptEl.appendChild(block);
+    workBlockEl = block;
+    return block;
+  }
+
+  /** @param {Element} block */
+  function refreshWorkSummary(block) {
+    const label = block.querySelector('.work-label');
+    if (!label) {
       return;
     }
-    const el = document.createElement('div');
-    el.className = 'tool-activity';
-    el.setAttribute('role', 'status');
-    el.textContent = text;
-    transcriptEl.appendChild(el);
+    let tools = 0;
+    let steps = 0;
+    let running = 0;
+    let failed = 0;
+    let denied = 0;
+    block.querySelectorAll('.work-row').forEach((row) => {
+      const state = row.getAttribute('data-state');
+      if (state === 'step') {
+        steps++;
+        return;
+      }
+      tools++;
+      if (state === 'run') running++;
+      if (state === 'fail') failed++;
+      if (state === 'denied') denied++;
+    });
+    const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+    let text;
+    if (running > 0) {
+      text = 'Working\u2026 ' + plural(tools + steps, 'step');
+    } else if (tools === 0) {
+      text = 'Ran ' + plural(steps, 'step');
+    } else {
+      text = 'Used ' + plural(tools, 'tool');
+    }
+    if (failed > 0) text += ' \u00b7 ' + failed + ' failed';
+    if (denied > 0) text += ' \u00b7 ' + denied + ' not run';
+    label.textContent = text;
+    block.classList.toggle('has-failure', failed > 0);
+    block.classList.toggle('running', running > 0);
+  }
+
+  /** @param {any} activity */
+  function showToolActivity(activity) {
+    /** @type {Record<string, string>} */
+    const states = { running: 'run', succeeded: 'ok', failed: 'fail', denied: 'denied', step: 'step' };
+    const state = states[String(activity.phase)];
+    if (!state) {
+      return;
+    }
+    const key = activity.phase === 'step' ? '' : String(activity.call_id || '');
+    let row = key ? toolActivityEls.get(key) : undefined;
+    if (!row || !row.parentElement) {
+      const block = currentWorkBlock();
+      row = document.createElement('li');
+      row.className = 'work-row';
+      const glyph = document.createElement('span');
+      glyph.className = 'work-glyph';
+      glyph.setAttribute('aria-hidden', 'true');
+      const name = document.createElement('span');
+      name.className = 'work-name';
+      const why = document.createElement('span');
+      why.className = 'work-why';
+      const badge = document.createElement('span');
+      badge.className = 'work-badge';
+      const time = document.createElement('span');
+      time.className = 'work-time';
+      row.append(glyph, name, why, badge, time);
+      const list = block.querySelector('.work-rows');
+      if (list) {
+        list.appendChild(row);
+      }
+      if (key) {
+        toolActivityEls.set(key, row);
+      }
+    }
+    const label = toolLabel(activity);
+    const reason = state === 'fail' || state === 'denied' ? String(activity.detail || '') : '';
+    row.setAttribute('data-state', state);
+    const glyphEl = row.querySelector('.work-glyph');
+    const nameEl = row.querySelector('.work-name');
+    const whyEl = row.querySelector('.work-why');
+    if (glyphEl) glyphEl.textContent = WORK_GLYPHS[state];
+    if (nameEl) nameEl.textContent = label;
+    if (whyEl) whyEl.textContent = reason;
+    const badgeEl = row.querySelector('.work-badge');
+    const timeEl = row.querySelector('.work-time');
+    if (badgeEl) badgeEl.textContent = WORK_BADGES[state];
+    if (timeEl) timeEl.textContent = (state === 'ok' || state === 'fail') && activity.duration_ms ? workDuration(activity.duration_ms) : '';
+    const word = WORK_STATE_WORDS[state];
+    row.setAttribute('aria-label', label + (word ? ': ' + word : '') + (reason ? ', ' + reason : ''));
+    row.title = state === 'ok'
+      ? (activity.result_bytes || 0) + ' bytes to the model in ' + (activity.duration_ms || 0) + 'ms'
+      : (activity.server && activity.tool ? activity.server + '__' + activity.tool : label);
+    const block = row.closest('.work');
+    if (block) {
+      refreshWorkSummary(block);
+    }
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
-    toolActivityEls.set(activity.call_id, el);
   }
 
   // showEditSummary renders the end-of-run outcome once every block in a
@@ -2644,6 +3001,11 @@
     if ((!typed && pendingAttachments.length === 0) || streaming) {
       return;
     }
+    if (pendingAttachments.length === 0 && openScreenFor(typed)) {
+      inputEl.value = '';
+      hideSlashMenu();
+      return;
+    }
     setNoticesOpen(false);
     if (pendingAttachments.some((f) => f.pending)) {
       addBubble('error', 'Still reading ' + pendingAttachments.filter((f) => f.pending).map((f) => f.name).join(', ') + ' \u2014 send again in a moment.');
@@ -2653,6 +3015,7 @@
     clearEditProposal();
     clearToolApproval();
     toolActivityEls.clear();
+    workBlockEl = null;
 
     let text = typed;
     if (pendingAttachments.length > 0) {
@@ -2686,6 +3049,49 @@
     refreshContextUsage();
 
     inputEl.value = '';
+    beginTurnView();
+    lastPrompt = { text, autoApply: autoApplyEnabled, mode: currentMode };
+    vscode.postMessage({ type: 'prompt', text, autoApply: autoApplyEnabled, mode: currentMode });
+    // Keep focus on the input across a send. Clicking Send moved focus to the
+    // button, so a keyboard or screen-reader user had to navigate back to ask a
+    // follow-up; the natural next action is always another prompt.
+    inputEl.focus();
+  }
+
+  // SCREEN COMMANDS open a page or a menu instead of answering in the chat:
+  // /mcp and /mcp-server the MCP servers (words after them search the
+  // marketplace), /account and /config their pages, /model with nothing after
+  // it the model menu. Printing a list into the transcript for these is what
+  // the first Stage 7 walkthrough objected to -- the answer to "show me my
+  // servers" is the servers, not a table about them.
+  /** @param {string} typed */
+  function openScreenFor(typed) {
+    const m = /^\/(mcp|mcp-server|account|config|model)(?:\s+([\s\S]*))?$/.exec(typed);
+    if (!m) {
+      return false;
+    }
+    const arg = (m[2] || '').trim();
+    if (m[1] === 'model') {
+      if (arg !== '' || !modelChipEl) {
+        return false; // "/model <name>" selects, and says so
+      }
+      modelChipEl.click();
+      return true;
+    }
+    if (!pages) {
+      return false;
+    }
+    if (m[1] === 'mcp' || m[1] === 'mcp-server') {
+      pages.open('customize', { tab: 'mcp', sub: arg ? 'market' : 'installed', search: arg || undefined });
+    } else {
+      pages.open(m[1] === 'account' ? 'account' : 'settings');
+    }
+    return true;
+  }
+
+  // beginTurnView resets the per-turn strips and opens the reply bubble: what
+  // a send does once the user's message is on screen, and all a retry does.
+  function beginTurnView() {
     setGrounding(null);
     setHistoryInfo(null);
     setRedactions(null);
@@ -2698,11 +3104,74 @@
     currentAssistantBubble = addBubble('assistant', '');
     // Captured once, for this run only -- see currentRunAuto's doc comment.
     currentRunAuto = autoApplyEnabled;
-    vscode.postMessage({ type: 'prompt', text, autoApply: autoApplyEnabled, mode: currentMode });
-    // Keep focus on the input across a send. Clicking Send moved focus to the
-    // button, so a keyboard or screen-reader user had to navigate back to ask a
-    // follow-up; the natural next action is always another prompt.
+  }
+
+  // TRY AGAIN, after a failure the provider says will pass (a rate limit, an
+  // outage). The same prompt, sent as a retry: the user's message is already
+  // on screen, and the host replaces the unanswered copy rather than keeping
+  // two (ChatPanel.onPrompt).
+  /** @type {{ text: string, autoApply: boolean, mode: string } | null} */
+  let lastPrompt = null;
+  function retryLastPrompt() {
+    if (streaming || !lastPrompt) {
+      return;
+    }
+    clearEditProposal();
+    clearToolApproval();
+    toolActivityEls.clear();
+    workBlockEl = null;
+    beginTurnView();
+    vscode.postMessage({ type: 'prompt', text: lastPrompt.text, autoApply: lastPrompt.autoApply, mode: lastPrompt.mode, retry: true });
     inputEl.focus();
+  }
+
+  // sendText puts words in the composer and sends them, as if typed: what the
+  // Continue and Compact buttons do, so they go through the same checks.
+  /** @param {string} text */
+  function sendText(text) {
+    if (streaming) {
+      return;
+    }
+    inputEl.value = text;
+    send();
+  }
+
+  // errorActions puts the one useful next step under a failed turn, chosen by
+  // the daemon's error_class (protocol.TokenResponse.ErrorClass) -- never by
+  // reading the message, which is prose.
+  /**
+   * @param {HTMLElement} body
+   * @param {string} errorClass
+   * @param {boolean} keyReplaceable
+   */
+  function addErrorActions(body, errorClass, keyReplaceable) {
+    /** @type {[string, () => void][]} */
+    const actions = [];
+    if (errorClass === 'rate_limited' || errorClass === 'upstream_unavailable') {
+      actions.push(['Try again', retryLastPrompt]);
+    } else if ((errorClass === 'auth' || errorClass === 'quota_exceeded') && keyReplaceable) {
+      actions.push(['Change key', () => vscode.postMessage({ type: 'connect' })]);
+    } else if (errorClass === 'context_too_large') {
+      actions.push(['Compact the chat', () => sendText('/compact')]);
+    }
+    const card = body.parentElement;
+    if (actions.length === 0 || !card || !lastPrompt) {
+      return;
+    }
+    const row = document.createElement('div');
+    row.className = 'turn-actions';
+    for (const [label, run] of actions) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'turn-action';
+      b.textContent = label;
+      b.addEventListener('click', () => {
+        row.remove();
+        run();
+      });
+      row.appendChild(b);
+    }
+    card.appendChild(row);
   }
 
   // ONE BUTTON, TWO JOBS -- send, or stop what is running.
@@ -2780,6 +3249,9 @@
 
   function clearTranscriptView() {
     clearChildren(transcriptEl);
+    if (firstRunEl) {
+      transcriptEl.appendChild(firstRunEl);
+    }
     currentAssistantBubble = null;
     currentAssistantCard = null;
     currentAssistantRaw = '';
@@ -2787,6 +3259,7 @@
     clearEditProposal();
     clearToolApproval();
     toolActivityEls.clear();
+    workBlockEl = null;
     lastGroundingInfo = null;
     lastHistoryMeta = null;
     refreshContextUsage();
@@ -2797,12 +3270,90 @@
   // on. The extension asks the daemon and appends whatever it gained.
   window.addEventListener('focus', () => vscode.postMessage({ type: 'focused' }));
 
+  // THE PAGES (media/pages.js, Stage 8): Customize, Account and Settings,
+  // opened from the header. They are given what they may do here as hooks,
+  // and see only their own messages (handle returns false for the rest).
+  const pages = window.MochiiiPages
+    ? window.MochiiiPages.init(vscode, {
+        openModelMenu: () => {
+          if (modelChipEl) modelChipEl.click();
+        },
+        sendText: (/** @type {string} */ t) => sendText(t),
+        prefill: (/** @type {string} */ t) => {
+          inputEl.value = t;
+          inputEl.focus();
+          updateSlashFromInput();
+        },
+        focusComposer: () => inputEl.focus(),
+        setEffort: (/** @type {string} */ e) => setEffortLevel(e),
+        getEffort: () => EFFORTS[effortIndex],
+        closePopups: () => {
+          setHistoryOpen(false);
+          setModelPopupOpen(false);
+          setModesPopupOpen(false);
+          setContextPopupOpen(false);
+          if (controls) controls.closeMenus();
+        },
+      })
+    : null;
+
+  const controls = window.MochiiiControls
+    ? window.MochiiiControls.init(vscode, {
+        toggleSettings: () => toggleSettings(),
+        closeSettings: () => setModelPopupOpen(false),
+        getEffort: () => EFFORTS[effortIndex],
+        setEffort: (/** @type {string} */ e) => setEffortLevel(e),
+        getMode: () => currentMode,
+        setMode: (/** @type {string} */ m) => {
+          currentMode = m || 'auto';
+          renderMode();
+        },
+        openPage: (/** @type {string} */ name) => {
+          if (pages) pages.open(name);
+        },
+        closePopups: () => {
+          setHistoryOpen(false);
+          setModelPopupOpen(false);
+          setModesPopupOpen(false);
+        },
+        attachRemaining: () => MAX_ATTACH_FILES - pendingAttachments.length,
+        focusComposer: () => inputEl.focus(),
+        // The command, then its default argument selected: typing replaces it.
+        prefill: (/** @type {string} */ cmd, /** @type {string} */ arg) => {
+          inputEl.value = cmd + arg;
+          inputEl.focus();
+          inputEl.setSelectionRange(cmd.length, cmd.length + arg.length);
+        },
+      })
+    : null;
+
+  const connectPopup = window.MochiiiConnect
+    ? window.MochiiiConnect.init(vscode, {
+        closePopups: () => {
+          setHistoryOpen(false);
+          setModelPopupOpen(false);
+          setModesPopupOpen(false);
+          setContextPopupOpen(false);
+        },
+        closePage: () => {
+          if (pages && pages.isOpen()) pages.close();
+        },
+        focusComposer: () => inputEl.focus(),
+      })
+    : null;
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
+    if (connectPopup && connectPopup.handle(msg)) {
+      return;
+    }
+    if (pages && pages.handle(msg)) {
+      return;
+    }
     switch (msg.type) {
       case 'history':
         for (const turn of msg.turns) {
-          const body = addBubble(turn.role, '');
+          const body = addBubble(turn.role, '', true);
           if (turn.role === 'assistant') {
             currentAssistantRaw = turn.content || '';
             renderFencedContent(body, currentAssistantRaw);
@@ -2863,6 +3414,7 @@
       // context the user controls directly.
       case 'editorContext':
         editorContextChars = typeof msg.chars === 'number' && msg.chars > 0 ? msg.chars : 0;
+        if (controls) controls.currentFile(typeof msg.file === 'string' ? msg.file : '');
         refreshContextUsage();
         break;
       case 'historyInfo':
@@ -2920,14 +3472,28 @@
         currentAssistantCard = null;
         currentAssistantRaw = '';
         clearToolApproval();
-        addBubble('error', msg.message);
         setStreaming(false);
+        addErrorActions(addBubble('error', msg.message), String(msg.errorClass || ''), msg.keyReplaceable === true);
         break;
       case 'incomplete':
         showIncomplete(msg.info);
         break;
       case 'toolActivity':
         showToolActivity(msg.activity);
+        break;
+      case 'mcpCount':
+        setToolsCount(msg);
+        break;
+      case 'uiSettings':
+        toolActivityMode = msg.toolActivity === 'expanded' ? 'expanded' : 'compact';
+        // The mode a new chat starts in (mochiii.defaultMode), applied once,
+        // when the panel opens: changing the setting later does not switch a
+        // chat that is already going.
+        if (!defaultModeApplied && (msg.defaultMode === 'auto' || msg.defaultMode === 'manual' || msg.defaultMode === 'plan')) {
+          defaultModeApplied = true;
+          currentMode = msg.defaultMode;
+          renderMode();
+        }
         break;
       case 'toolApproval':
         showToolApproval(msg.request);
@@ -2953,7 +3519,7 @@
         showSpecNotice(msg.kind, msg.text);
         break;
       case 'tasks':
-        showTasks(msg.text);
+        showTasks(msg.text, msg.items);
         break;
       case 'activeSpec':
         setActiveSpec(msg.spec);
@@ -3003,6 +3569,7 @@
         break;
       case 'modelMenu':
         renderModelMenu(msg);
+        if (controls) controls.renderProviders(msg);
         break;
       case 'info':
         addInfoLine(String(msg.text || ''));

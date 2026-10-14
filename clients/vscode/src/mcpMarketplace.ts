@@ -119,7 +119,7 @@ export function provenanceOf(s: CatalogServer): string {
 }
 
 /** acceptNotice shows the one-time notice; true when the user chose to go on. */
-async function acceptNotice(context: vscode.ExtensionContext): Promise<boolean> {
+export async function acceptNotice(context: vscode.ExtensionContext): Promise<boolean> {
   if (context.globalState.get<boolean>(NOTICE_ACCEPTED_KEY)) {
     return true;
   }
@@ -162,13 +162,10 @@ interface Query {
   limit: number;
 }
 
+// THE MARKETPLACE IN AN EDITOR TAB: a webview panel around a MarketplaceCore.
 export class McpMarketplace {
   private static current: McpMarketplace | undefined;
-
-  private catalog: Catalog | undefined;
-  private community: Catalog | undefined;
-  private communityLoad: Promise<void> | undefined;
-  private lastQuery: Query = { q: '', tier: 'verified', category: '', offset: 0, limit: PAGE };
+  private readonly core: MarketplaceCore;
   private readonly disposables: vscode.Disposable[] = [];
 
   /**
@@ -189,10 +186,10 @@ export class McpMarketplace {
     if (McpMarketplace.current) {
       McpMarketplace.current.panel.reveal();
       if (focusId) {
-        await McpMarketplace.current.focus(focusId);
+        await McpMarketplace.current.core.focus(focusId);
       }
       if (search) {
-        McpMarketplace.current.search(search);
+        McpMarketplace.current.core.search(search);
       }
       return true;
     }
@@ -207,19 +204,18 @@ export class McpMarketplace {
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
-    private readonly context: vscode.ExtensionContext,
-    private readonly provider: McpServersProvider,
-    private readonly clientName: string,
-    private pendingFocus: string | undefined,
-    private pendingSearch: string | undefined,
+    context: vscode.ExtensionContext,
+    provider: McpServersProvider,
+    clientName: string,
+    focusId: string | undefined,
+    search: string | undefined,
   ) {
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'activity-icon.svg');
     panel.webview.html = marketplaceHtml(panel.webview, context.extensionUri);
+    this.core = new MarketplaceCore((msg) => void panel.webview.postMessage(msg), context, provider, clientName, focusId, search);
     this.disposables.push(
-      panel.webview.onDidReceiveMessage((msg) => void this.onMessage(msg)),
-      // What is installed changed: the webview re-asks for what it shows, so
-      // each card's Add button says the truth.
-      provider.onDidChangeState(() => this.post({ type: 'stateChanged' })),
+      this.core,
+      panel.webview.onDidReceiveMessage((msg) => void this.core.onMessage(msg)),
       panel.onDidDispose(() => this.dispose()),
     );
   }
@@ -230,12 +226,45 @@ export class McpMarketplace {
       d.dispose();
     }
   }
+}
 
-  private post(msg: unknown): void {
-    void this.panel.webview.postMessage(msg);
+/**
+ * MarketplaceCore is the marketplace without its window: the catalog, the
+ * searches, and Add. The editor tab and the chat's Customize page each drive
+ * one, through `post` and onMessage -- so there is one install path, the
+ * one that ends in storeServer's warning and typed name.
+ */
+export class MarketplaceCore implements vscode.Disposable {
+  private catalog: Catalog | undefined;
+  private community: Catalog | undefined;
+  private communityLoad: Promise<void> | undefined;
+  private lastQuery: Query = { q: '', tier: 'verified', category: '', offset: 0, limit: PAGE };
+  private readonly disposables: vscode.Disposable[] = [];
+
+  constructor(
+    private readonly sink: (msg: unknown) => void,
+    private readonly context: vscode.ExtensionContext,
+    private readonly provider: McpServersProvider,
+    private readonly clientName: string,
+    private pendingFocus: string | undefined = undefined,
+    private pendingSearch: string | undefined = undefined,
+  ) {
+    // What is installed changed: the webview re-asks for what it shows, so
+    // each card's Add button says the truth.
+    this.disposables.push(provider.onDidChangeState(() => this.post({ type: 'stateChanged' })));
   }
 
-  private async onMessage(msg: any): Promise<void> {
+  dispose(): void {
+    for (const d of this.disposables) {
+      d.dispose();
+    }
+  }
+
+  private post(msg: unknown): void {
+    this.sink(msg);
+  }
+
+  async onMessage(msg: any): Promise<void> {
     switch (msg?.type) {
       case 'ready':
         // A search asked for before the page could hear it. Posted first: the
@@ -381,12 +410,12 @@ export class McpMarketplace {
   }
 
   /** search puts words in the page's search box, across both tiers. It only searches. */
-  private search(q: string): void {
+  search(q: string): void {
     this.post({ type: 'search', q: q.slice(0, 200) });
   }
 
   /** focus puts one server at the top of the page -- what a mochiii.in link asks for. It never installs. */
-  private async focus(id: string): Promise<void> {
+  async focus(id: string): Promise<void> {
     if (!this.catalog) {
       this.pendingFocus = id;
       return;
@@ -487,9 +516,16 @@ function marketplaceHtml(webview: vscode.Webview, extensionUri: vscode.Uri): str
 }
 
 /** The marketplace's stylesheet: every colour from the user's theme (scripts/theme-check.js scans this). */
-export function mcpMarketplaceStyles(): string {
+// THE MARKETPLACE'S STYLES, for its own editor tab or -- with a scope -- inside
+// the chat's Customize page (Stage 8). Scoped, every rule is prefixed and the
+// tokens live on the scope rather than :root, so its .card or .notice cannot
+// restyle the chat, and the page title it draws is hidden (the chat's page
+// already has one).
+export function mcpMarketplaceStyles(scope = ''): string {
+  const s = (selectors: string): string =>
+    scope ? selectors.split(',').map((x) => `${scope} ${x.trim()}`).join(', ') : selectors;
   return `
-  :root {
+  ${scope || ':root'} {
     --mk-bg: var(--vscode-editor-background);
     --mk-ink: var(--vscode-editor-foreground);
     --mk-muted: var(--vscode-descriptionForeground);
@@ -513,54 +549,55 @@ export function mcpMarketplaceStyles(): string {
     --mk-badge-fg: var(--vscode-badge-foreground);
     --mk-link: var(--vscode-textLink-foreground);
   }
-  body { margin: 0; padding: 0 20px 40px; background: var(--mk-bg); color: var(--mk-ink);
-    font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
-  h1 { font-size: 1.6em; margin: 20px 0 4px; font-weight: 600; }
-  .sub { color: var(--mk-muted); margin: 0 0 14px; max-width: 760px; line-height: 1.5; }
-  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
-  .bar input[type=search] { flex: 1 1 260px; min-width: 0; padding: 6px 8px; background: var(--mk-input-bg);
+  ${scope ? `${scope} { color: var(--mk-ink); min-width: 0; }
+  ${s('h1, .sub')} { display: none; }` : `body { margin: 0; padding: 0 20px 40px; background: var(--mk-bg); color: var(--mk-ink);
+    font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }`}
+  ${s('h1')} { font-size: 1.6em; margin: 20px 0 4px; font-weight: 600; }
+  ${s('.sub')} { color: var(--mk-muted); margin: 0 0 14px; max-width: 760px; line-height: 1.5; }
+  ${s('.bar')} { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+  ${s('.bar input[type=search]')} { flex: 1 1 260px; min-width: 0; padding: 6px 8px; background: var(--mk-input-bg);
     color: var(--mk-input-fg); border: 1px solid var(--mk-input-border); border-radius: 2px; font: inherit; }
-  .bar input:focus, .bar select:focus, button:focus-visible { outline: 1px solid var(--mk-focus); outline-offset: 1px; }
-  .bar select { padding: 5px 6px; background: var(--mk-input-bg); color: var(--mk-input-fg);
+  ${s('.bar input:focus, .bar select:focus, button:focus-visible')} { outline: 1px solid var(--mk-focus); outline-offset: 1px; }
+  ${s('.bar select')} { padding: 5px 6px; background: var(--mk-input-bg); color: var(--mk-input-fg);
     border: 1px solid var(--mk-input-border); font: inherit; }
-  .tabs { display: inline-flex; max-width: 100%; border: 1px solid var(--mk-border); border-radius: 3px; overflow: hidden; }
-  .tabs button { border: none; background: transparent; color: var(--mk-muted); padding: 5px 12px; cursor: pointer; font: inherit; }
-  .tabs button[aria-selected=true] { background: var(--mk-btn2-bg); color: var(--mk-btn2-fg); }
-  button.btn { border: 1px solid transparent; padding: 4px 12px; border-radius: 2px; cursor: pointer; font: inherit;
+  ${s('.tabs')} { display: inline-flex; max-width: 100%; border: 1px solid var(--mk-border); border-radius: 3px; overflow: hidden; }
+  ${s('.tabs button')} { border: none; background: transparent; color: var(--mk-muted); padding: 5px 12px; cursor: pointer; font: inherit; }
+  ${s('.tabs button[aria-selected=true]')} { background: var(--mk-btn2-bg); color: var(--mk-btn2-fg); }
+  ${s('button.btn')} { border: 1px solid transparent; padding: 4px 12px; border-radius: 2px; cursor: pointer; font: inherit;
     background: var(--mk-btn-bg); color: var(--mk-btn-fg); }
-  button.btn:hover { background: var(--mk-btn-hover); }
-  button.btn.secondary { background: var(--mk-btn2-bg); color: var(--mk-btn2-fg); }
-  button.btn.secondary:hover { background: var(--mk-btn2-hover); }
-  button.btn:disabled { opacity: 0.6; cursor: default; }
-  button.link { border: none; background: none; color: var(--mk-link); cursor: pointer; padding: 0; font: inherit; }
-  .notice { padding: 8px 12px; border-left: 3px solid var(--mk-warn); background: var(--mk-code-bg); margin: 8px 0; }
-  .notice.error { border-left-color: var(--mk-err); }
-  .safety { color: var(--mk-muted); font-size: 0.92em; margin: 6px 0 12px; line-height: 1.5; }
-  .count { color: var(--mk-muted); font-size: 0.9em; margin: 4px 0 10px; }
+  ${s('button.btn:hover')} { background: var(--mk-btn-hover); }
+  ${s('button.btn.secondary')} { background: var(--mk-btn2-bg); color: var(--mk-btn2-fg); }
+  ${s('button.btn.secondary:hover')} { background: var(--mk-btn2-hover); }
+  ${s('button.btn:disabled')} { opacity: 0.6; cursor: default; }
+  ${s('button.link')} { border: none; background: none; color: var(--mk-link); cursor: pointer; padding: 0; font: inherit; }
+  ${s('.notice')} { padding: 8px 12px; border-left: 3px solid var(--mk-warn); background: var(--mk-code-bg); margin: 8px 0; }
+  ${s('.notice.error')} { border-left-color: var(--mk-err); }
+  ${s('.safety')} { color: var(--mk-muted); font-size: 0.92em; margin: 6px 0 12px; line-height: 1.5; }
+  ${s('.count')} { color: var(--mk-muted); font-size: 0.9em; margin: 4px 0 10px; }
   /* min(300px, 100%): beside a side bar the editor can be narrower than one
      card, and a fixed 300px column then scrolled the whole page sideways. */
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 12px; }
-  .card { border: 1px solid var(--mk-border); background: var(--mk-card); border-radius: 4px; padding: 14px;
+  ${s('.grid')} { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 12px; }
+  ${s('.card')} { border: 1px solid var(--mk-border); background: var(--mk-card); border-radius: 4px; padding: 14px;
     display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-  .card.focused { border-color: var(--mk-focus); }
-  .head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
-  .head h2 { font-size: 1.1em; margin: 0; overflow-wrap: anywhere; }
-  .pub { color: var(--mk-muted); font-size: 0.88em; }
-  .tier { flex: none; font-size: 0.78em; padding: 1px 7px; border-radius: 10px; background: var(--mk-badge-bg); color: var(--mk-badge-fg); }
-  .tier.verified { background: transparent; color: var(--mk-ok); border: 1px solid var(--mk-ok); }
-  .desc { margin: 0; line-height: 1.45; }
-  .meta { color: var(--mk-muted); font-size: 0.85em; overflow-wrap: anywhere; }
-  .env { display: flex; flex-wrap: wrap; gap: 4px; }
-  .env span { font-family: var(--vscode-editor-font-family); font-size: 0.85em; border: 1px solid var(--mk-border);
+  ${s('.card.focused')} { border-color: var(--mk-focus); }
+  ${s('.head')} { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+  ${s('.head h2')} { font-size: 1.1em; margin: 0; overflow-wrap: anywhere; }
+  ${s('.pub')} { color: var(--mk-muted); font-size: 0.88em; }
+  ${s('.tier')} { flex: none; font-size: 0.78em; padding: 1px 7px; border-radius: 10px; background: var(--mk-badge-bg); color: var(--mk-badge-fg); }
+  ${s('.tier.verified')} { background: transparent; color: var(--mk-ok); border: 1px solid var(--mk-ok); }
+  ${s('.desc')} { margin: 0; line-height: 1.45; }
+  ${s('.meta')} { color: var(--mk-muted); font-size: 0.85em; overflow-wrap: anywhere; }
+  ${s('.env')} { display: flex; flex-wrap: wrap; gap: 4px; }
+  ${s('.env span')} { font-family: var(--vscode-editor-font-family); font-size: 0.85em; border: 1px solid var(--mk-border);
     border-radius: 3px; padding: 0 5px; overflow-wrap: anywhere; }
-  .env span.req { border-color: var(--mk-warn); }
-  code.cmd { display: block; font-family: var(--vscode-editor-font-family); font-size: 0.85em; background: var(--mk-code-bg);
+  ${s('.env span.req')} { border-color: var(--mk-warn); }
+  ${s('code.cmd')} { display: block; font-family: var(--vscode-editor-font-family); font-size: 0.85em; background: var(--mk-code-bg);
     padding: 6px 8px; border-radius: 3px; overflow-x: auto; white-space: nowrap; }
-  .prov { color: var(--mk-muted); font-size: 0.85em; margin: 0; overflow-wrap: anywhere; }
-  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: auto; }
-  .more { display: flex; justify-content: center; margin: 16px 0; }
-  .foot { color: var(--mk-muted); font-size: 0.85em; margin-top: 18px; }
-  .focusbox { margin: 10px 0 16px; }
-  .focusbox h3 { font-size: 0.95em; margin: 0 0 6px; color: var(--mk-muted); font-weight: 500; }
+  ${s('.prov')} { color: var(--mk-muted); font-size: 0.85em; margin: 0; overflow-wrap: anywhere; }
+  ${s('.actions')} { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: auto; }
+  ${s('.more')} { display: flex; justify-content: center; margin: 16px 0; }
+  ${s('.foot')} { color: var(--mk-muted); font-size: 0.85em; margin-top: 18px; }
+  ${s('.focusbox')} { margin: 10px 0 16px; }
+  ${s('.focusbox h3')} { font-size: 0.95em; margin: 0 0 6px; color: var(--mk-muted); font-weight: 500; }
   `;
 }

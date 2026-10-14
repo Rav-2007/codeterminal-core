@@ -51,7 +51,7 @@ export const SLASH_CATALOG: SlashDef[] = [
   {
     name: 'mcp-server',
     kind: 'local',
-    summary: 'open the MCP marketplace to find, add and manage tools for the agent (/mcp-server [search])',
+    summary: 'your MCP servers, and the marketplace to add more (/mcp-server [search])',
   },
   { name: 'clear', kind: 'local', summary: 'clear the on-screen transcript' },
   { name: 'compact', kind: 'local', summary: 'summarise the earlier part of this chat to save context (the full chat stays in History)' },
@@ -70,7 +70,7 @@ export const SLASH_CATALOG: SlashDef[] = [
   {
     name: 'connect',
     kind: 'local',
-    summary: 'connect a model provider by its API key: Groq, NVIDIA, OpenAI, Anthropic, Gemini, OpenRouter... (/connect <provider>, show, forget)',
+    summary: 'choose a provider, paste its key, choose a model (/connect <provider> skips the list; /connect show, /connect forget)',
   },
   { name: 'exit', kind: 'local', summary: 'close the chat panel' },
 
@@ -115,6 +115,7 @@ export const SLASH_CATALOG: SlashDef[] = [
   { name: 'status', kind: 'local', summary: 'workspace, model, tools, key and daemon in one answer' },
   { name: 'doctor', kind: 'local', summary: 'check the things that commonly stop this working' },
   { name: 'config', kind: 'local', summary: 'open the Mochiii settings page' },
+  { name: 'account', kind: 'local', summary: 'provider, key and model in use, and the spend' },
 
   // /team is in the catalog to be FOUND, and parsed elsewhere -- see
   // parseTeamCommand below and the mirror in clients/tui/slash.go. Steered

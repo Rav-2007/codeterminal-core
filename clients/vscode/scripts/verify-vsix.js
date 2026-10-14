@@ -107,6 +107,14 @@ const MUST_CONTAIN = [
   'extension/package.json',
   'extension/out/extension.js',
   'extension/media/main.js',
+  // The chat's pages and the marketplace it mounts (Stage 8). Without either
+  // the chat still opens; its header buttons simply do nothing.
+  'extension/media/pages.js',
+  'extension/media/marketplace.js',
+  // The connect popup. Without it the chat's key prompt never opens.
+  'extension/media/connect.js',
+  // The header menu, the settings popover and the ＋ menu. Without it they never open.
+  'extension/media/controls.js',
   'extension/media/logo.png',
   // The side-bar container's icon, named by package.json's viewsContainers. Another
   // silent absence: the extension installs, the container still appears, and

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"mochiii/daemon/mcp"
 	"mochiii/protocol"
@@ -1246,6 +1247,14 @@ func (s *Server) dispatchToolCall(
 		emitted = len(rendered)
 		kinds = append(kinds, "mochiii_credential")
 	}
+	// WHY IT FAILED, FOR THE USER -- taken here, after both scrubs and before
+	// the Lane B frame, so it is the same scrubbed text the model reads, minus
+	// the wrapper. It used to be "" on this path, and the panel printed a bare
+	// "<tool> failed" with the reason visible only to the model.
+	failReason := ""
+	if result.IsError {
+		failReason = toolFailureReason(rendered)
+	}
 	if decision.tool.Lane == protocol.LaneThirdParty {
 		rendered = frameLaneBOutput(decision.tool.Server, rendered)
 		emitted = len(rendered)
@@ -1315,7 +1324,7 @@ func (s *Server) dispatchToolCall(
 		audit.Outcome = auditOutcomeError
 		s.count(func(c *counters) { c.toolCallsFailed.Add(1) })
 	}
-	report(phase, "", emitted, elapsed)
+	report(phase, failReason, emitted, elapsed)
 	audit.ResultBytes = emitted
 	s.toolAudit.record(audit)
 	return toolResultMessage(call, rendered), false
@@ -1741,6 +1750,35 @@ func truncateForClient(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// maxFailureReasonRunes bounds the reason a failed tool row shows: one line
+// of a narrow side bar, not the tool's whole answer.
+const maxFailureReasonRunes = 160
+
+// toolFailureReason is the first non-empty line of a failed tool's scrubbed
+// result, with control characters dropped and at most maxFailureReasonRunes
+// runes kept. The full text still goes to the model; this is the row's
+// "because". Cut on runes, not bytes, so a multi-byte character is never
+// split into invalid UTF-8.
+func toolFailureReason(rendered string) string {
+	for _, line := range strings.Split(rendered, "\n") {
+		line = strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return -1
+			}
+			return r
+		}, line)
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if r := []rune(line); len(r) > maxFailureReasonRunes {
+			return string(r[:maxFailureReasonRunes]) + "…"
+		}
+		return line
+	}
+	return ""
 }
 
 // emptyReplyNote is what the loop adds before asking the same host again after

@@ -53,8 +53,19 @@ const root = path.resolve(__dirname, '..');
 // Every webview this extension draws, and the script each one runs. The MCP
 // marketplace (Stage 7) is a second webview; a gate that still named one file
 // would have been exactly the invisible scope described above.
-const stylesFiles = [path.join(root, 'src', 'chatPanel.ts'), path.join(root, 'src', 'mcpMarketplace.ts')];
-const webviewFiles = [path.join(root, 'media', 'main.js'), path.join(root, 'media', 'marketplace.js')];
+const stylesFiles = [
+  path.join(root, 'src', 'chatPanel.ts'),
+  path.join(root, 'src', 'mcpMarketplace.ts'),
+  path.join(root, 'src', 'chatPages', 'markup.ts'),
+  path.join(root, 'src', 'chatLook.ts'),
+];
+const webviewFiles = [
+  path.join(root, 'media', 'main.js'),
+  path.join(root, 'media', 'marketplace.js'),
+  path.join(root, 'media', 'pages.js'),
+  path.join(root, 'media', 'connect.js'),
+  path.join(root, 'media', 'controls.js'),
+];
 
 /** Colour literals: #rgb/#rrggbb/#rrggbbaa, plus the legacy functional forms. */
 const literalRe = /#[0-9a-fA-F]{3,8}\b|\brgba?\s*\(|\bhsla?\s*\(/;

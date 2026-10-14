@@ -1,4 +1,5 @@
 import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { AttachmentError, extractAttachmentFile } from './attachmentExtract';
 import { resolveConfigPathSetting } from './daemonBinary';
@@ -32,13 +33,23 @@ import {
   applyEdit,
   fetchAvailableTiers,
   preflightSession,
+  sendConnect,
   probeDaemon,
   chatHistory,
   resetChat,
   streamPrompt,
+  TurnError,
   undoEdits,
 } from './daemonClient';
 import { ChatHost, panelHost, viewHost } from './chatHost';
+import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
+import { activeWorkingFolder } from './workingFolder';
+import { ConnectOutcome, connectKey, hasConnectKey } from './connectBridge';
+import { ANY_KEY_CHOICE, modelChoices, providerChoices } from './connectFlow';
+import { ICONS, chatPagesMarkup, chatPagesStyles, headerPageButtons } from './chatPages/markup';
+import { ChatPagesHost } from './chatPages/pagesHost';
+import { chatLookStyles } from './chatLook';
+import { mcpMarketplaceStyles } from './mcpMarketplace';
 import { editorContextForPrompt } from './editorContext';
 import { SLASH_CATALOG, parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
 import {
@@ -78,6 +89,13 @@ export class DiffContentProvider implements vscode.TextDocumentContentProvider {
 }
 
 export const CLIENT_NAME = 'mochiii-vscode';
+
+// The name of the file open in the editor, '' when there is none: the ＋
+// menu's "Current file" row says which file it would add.
+function activeFileName(): string {
+  const doc = vscode.window.activeTextEditor?.document;
+  return doc && doc.uri.scheme === 'file' ? path.basename(doc.uri.fsPath) : '';
+}
 // The panel's view type: what VS Code records for a panel left open at exit,
 // and what package.json's onWebviewPanel activation event and extension.ts's
 // serializer are keyed on. All three must agree.
@@ -119,6 +137,19 @@ function turnsFromWire(turns: Turn[] | undefined): Turn[] {
 // one conversation: the transcript (source of truth for building the next
 // PromptRequest.History, mirroring buildHistory in clients/tui/chat.go) and
 // the in-flight connection, if any.
+// The connect popup while it is open (ChatPanel.openConnect). outcome is set
+// once a key has been connected from it, so leaving the model step after that
+// reports the connect rather than a cancel.
+interface ConnectPending {
+  promise: Promise<ConnectOutcome>;
+  resolve: (o: ConnectOutcome) => void;
+  base: string;
+  currentBase: string;
+  keyInForce: boolean;
+  inForce: string;
+  outcome?: ConnectOutcome;
+}
+
 export class ChatPanel {
   private static current: ChatPanel | undefined;
 
@@ -127,6 +158,13 @@ export class ChatPanel {
   // interface rather than two copies of this class.
   private readonly host: ChatHost;
   private readonly disposables: vscode.Disposable[] = [];
+  // Set while a prompt the webview marked as a retry ("Try again") is being
+  // dispatched; startModelTurn reads it. See the retry note there.
+  private retryingPrompt = false;
+  // Provider-level notices (degradedOnce.ts): shown in the strip the first
+  // time, then kept here for the Account page's Privacy section.
+  private readonly seenProviderNotes = new Set<string>();
+  readonly providerNotes = new Map<string, string>();
   private transcript: Turn[] = [];
   // Ids for attachment chips, so a reply finds the chip it belongs to.
   private attachmentSeq = 0;
@@ -143,6 +181,11 @@ export class ChatPanel {
   private currentModel = '';
   // The daemon's handshake said a prompt sent now would carry no key.
   private needsApiKey = false;
+  // The connect popup over the composer, while it is open: whoever opened it
+  // (a question waiting for a key, /connect, a button, the first run) waits here.
+  private connectPending?: ConnectPending;
+  // The first-run popup opens once per panel, however often the session is read.
+  private firstRunConnectShown = false;
 
   // THE SHARED CHAT (daemon/chatsync.go). The workspace's chat is ONE
   // conversation, and the terminal client writes to it too; this panel used to
@@ -333,8 +376,21 @@ export class ChatPanel {
     ChatPanel.current = new ChatPanel(panelHost(panel), extensionUri);
   }
 
+  // The Customize, Account and Settings pages (src/chatPages): their requests
+  // arrive on this webview and are answered there, from rules.ts's tables.
+  private readonly pages: ChatPagesHost;
+
   private constructor(host: ChatHost, extensionUri: vscode.Uri) {
     this.host = host;
+    this.pages = new ChatPagesHost({
+      post: (m) => this.postSafe(m),
+      currentTier: () => this.preferredTier,
+      currentModel: () => this.currentModel,
+      selectTier: (tier) => this.onSelectModel(tier),
+      providerNotes: () => [...this.providerNotes.values()],
+      connect: () => this.openConnect().then((r) => this.afterConnect(r, false)),
+    });
+    this.disposables.push(this.pages);
     this.host.webview.html = this.getHtml(extensionUri);
 
     this.host.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), null, this.disposables);
@@ -358,6 +414,16 @@ export class ChatPanel {
       null,
       this.disposables,
     );
+    // The panel's own display settings follow the Settings UI live.
+    vscode.workspace.onDidChangeConfiguration(
+      (e) => {
+        if (e.affectsConfiguration('mochiii.toolActivity')) {
+          this.postUiSettings();
+        }
+      },
+      null,
+      this.disposables,
+    );
 
     // TELL THE METER WHAT THE OPEN FILE COSTS, and keep telling it.
     //
@@ -372,7 +438,7 @@ export class ChatPanel {
     // collectEditorContext reads an already-open document and clips, and posts a
     // single number.
     const postEditorContext = (): void => {
-      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length });
+      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length, file: activeFileName() });
     };
     vscode.window.onDidChangeActiveTextEditor(() => postEditorContext(), null, this.disposables);
     vscode.window.onDidChangeTextEditorSelection(() => postEditorContext(), null, this.disposables);
@@ -415,6 +481,13 @@ export class ChatPanel {
       return;
     }
     this.needsApiKey = session.needsApiKey;
+    // FIRST RUN, as the terminal opens on its setup: with no key in force the
+    // chat opens on the provider list. Esc leaves it; the "Connect a model"
+    // card and the first question still ask again.
+    if (session.needsApiKey && !this.firstRunConnectShown) {
+      this.firstRunConnectShown = true;
+      void this.openConnect(undefined, { firstRun: true }).then((r) => this.afterConnect(r, false));
+    }
     this.chatSync = session.chatRevision !== '';
     this.chatRev = session.chatRevision;
     const persisted = turnsFromWire(session.turns);
@@ -476,7 +549,16 @@ export class ChatPanel {
     tier?: string;
     id?: string;
     on?: boolean;
+    retry?: boolean;
+    // addContext: which source the ＋ menu named (onAddContext).
+    kind?: string;
+    // connectSubmit: the provider chosen in the connect popup and its key.
+    apiBase?: string;
+    key?: string;
   }): void {
+    if (this.pages.handle(msg as unknown as Record<string, unknown>)) {
+      return;
+    }
     if (msg.type === 'pickAttachments' && typeof msg.remaining === 'number') {
       void this.onPickAttachments(msg.remaining);
     } else if (msg.type === 'listModels') {
@@ -495,11 +577,17 @@ export class ChatPanel {
       // render before the first turn. See the 'ready' post at the end of
       // media/main.js for why it asks rather than being told.
       this.postSlashCatalog();
-      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length });
+      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length, file: activeFileName() });
+      this.postUiSettings();
+      this.pages.announceTools();
+    } else if (msg.type === 'addContext' && typeof msg.remaining === 'number') {
+      void this.onAddContext(msg.remaining, typeof msg.kind === 'string' ? msg.kind : undefined);
     } else if (msg.type === 'focused') {
       void this.catchUp();
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
+      this.retryingPrompt = msg.retry === true;
       this.onPrompt(msg.text, msg.autoApply === true, msg.mode);
+      this.retryingPrompt = false;
     } else if (msg.type === 'applyEdit') {
       this.onApplyEdit();
     } else if (msg.type === 'skipEdit') {
@@ -520,14 +608,184 @@ export class ChatPanel {
       this.host.close();
     } else if (msg.type === 'newChat') {
       void this.onNewChat();
+    } else if (msg.type === 'connect') {
+      // "Change key" under a key error: the popup over the composer.
+      void this.openConnect().then((r) => this.afterConnect(r, false));
+    } else if (msg.type === 'connectSubmit' && typeof msg.apiBase === 'string' && typeof msg.key === 'string') {
+      void this.onConnectSubmit(msg.apiBase, msg.key);
+    } else if (msg.type === 'connectProvider' && typeof msg.apiBase === 'string') {
+      // A provider card in the settings popover: straight to that provider's
+      // key step, or the full list for "All providers".
+      void this.openConnect(msg.apiBase || undefined).then((r) => this.afterConnect(r, false));
+    } else if (msg.type === 'connectKeep') {
+      void this.onConnectKeep();
+    } else if (msg.type === 'connectModel' && typeof msg.tier === 'string') {
+      void this.onConnectModel(msg.tier);
+    } else if (msg.type === 'connectCancel') {
+      this.onConnectCancel();
     }
+  }
+
+  // @ CONTEXT (Stage 8): what to send with the question, chosen from what the
+  // editor already has open -- a file through the paperclip's own path, or the
+  // selection, a file's problems, or an open file, read here from the editor's
+  // own buffers. Each arrives in the composer as an attachment chip the user
+  // can still remove; nothing is sent until they send.
+  private contextSeq = 0;
+  // ADD CONTEXT. The ＋ menu (Stage 9) names one source; the @ typed in the
+  // composer, with no source named, still gets the short list of what the
+  // editor has right now. A source that has nothing to give says so.
+  private async onAddContext(remaining: number, kind?: string): Promise<void> {
+    if (remaining <= 0) {
+      this.postSafe({ type: 'attachmentNotice', text: 'No more can be attached to this message.' });
+      return;
+    }
+    const editor = vscode.window.activeTextEditor;
+    const doc = editor?.document;
+    const root = workspacePath();
+    const shown = (d: vscode.TextDocument): string => (root ? path.relative(root, d.uri.fsPath) : path.basename(d.uri.fsPath));
+    const none = (text: string): void => this.postSafe({ type: 'attachmentNotice', text });
+
+    const currentFile = (): void => {
+      if (!doc || doc.uri.scheme !== 'file') {
+        none('No file is open in the editor.');
+        return;
+      }
+      this.attachText(path.basename(doc.uri.fsPath), doc.getText(), 'the file open in the editor, unsaved changes included');
+    };
+    const selection = (): void => {
+      if (!editor || !doc || editor.selection.isEmpty) {
+        none('Nothing is selected in the editor.');
+        return;
+      }
+      const sel = editor.selection;
+      this.attachText(`${path.basename(doc.uri.fsPath)}:${sel.start.line + 1}-${sel.end.line + 1}`, doc.getText(sel), 'the lines selected in the editor');
+    };
+    const problems = (): void => {
+      const list = doc ? vscode.languages.getDiagnostics(doc.uri) : [];
+      if (!doc || list.length === 0) {
+        none(doc ? `VS Code reports no problems in ${shown(doc)}.` : 'No file is open in the editor.');
+        return;
+      }
+      const sev = ['error', 'warning', 'info', 'hint'];
+      this.attachText(
+        `problems in ${path.basename(doc.uri.fsPath)}`,
+        list
+          .map((d) => `${d.range.start.line + 1}:${d.range.start.character + 1} ${sev[d.severity] ?? 'note'}: ${d.message}${d.source ? ` (${d.source})` : ''}`)
+          .join('\n'),
+        `VS Code's problems for ${shown(doc)}`,
+      );
+    };
+    const openFile = async (): Promise<void> => {
+      const open = vscode.workspace.textDocuments.filter((d) => d.uri.scheme === 'file' && !d.isClosed);
+      if (open.length === 0) {
+        none('No file is open in a tab.');
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        open.map((d) => ({ label: path.basename(d.uri.fsPath), description: shown(d), doc: d })),
+        { title: 'Add an open file to the question' },
+      );
+      if (pick) {
+        this.attachText(path.basename(pick.doc.uri.fsPath), pick.doc.getText(), 'as it is open in the editor, unsaved changes included');
+      }
+    };
+    // @ A FILE: any file in the working folder, found by name. Read through VS
+    // Code, so an open file's unsaved text is what is sent.
+    const mention = async (): Promise<void> => {
+      if (!root) {
+        none('Open a folder to mention its files.');
+        return;
+      }
+      const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root, '**/*'), '**/{node_modules,.git,out,dist,build}/**', 5000);
+      const pick = await vscode.window.showQuickPick(
+        uris.map((u) => ({ label: path.basename(u.fsPath), description: path.relative(root, path.dirname(u.fsPath)), uri: u })),
+        { title: 'Mention a file', placeHolder: 'Type a file name', matchOnDescription: true },
+      );
+      if (!pick) {
+        return;
+      }
+      try {
+        const d = await vscode.workspace.openTextDocument(pick.uri);
+        this.attachText(path.basename(pick.uri.fsPath), d.getText(), `${path.relative(root, pick.uri.fsPath)}, mentioned with @`);
+      } catch (err) {
+        none(`Could not read ${path.basename(pick.uri.fsPath)}: ${(err as Error).message}`);
+      }
+    };
+
+    switch (kind) {
+      case 'currentFile':
+        return currentFile();
+      case 'selection':
+        return selection();
+      case 'problems':
+        return problems();
+      case 'files':
+        return this.onPickAttachments(remaining);
+      case 'image':
+        return this.onPickAttachments(remaining, true);
+      case 'openFile':
+        return openFile();
+      case 'mention':
+        return mention();
+    }
+
+    type Pick = vscode.QuickPickItem & { run: () => Promise<void> | void };
+    const items: Pick[] = [{ label: '$(file) Files…', description: 'documents, images, code', run: () => this.onPickAttachments(remaining) }];
+    if (editor && doc && !editor.selection.isEmpty) {
+      const sel = editor.selection;
+      items.push({ label: '$(selection) The selection', description: `${shown(doc)}:${sel.start.line + 1}-${sel.end.line + 1}`, run: selection });
+    }
+    if (doc && vscode.languages.getDiagnostics(doc.uri).length > 0) {
+      items.push({ label: '$(warning) Problems in this file', description: `${vscode.languages.getDiagnostics(doc.uri).length} in ${shown(doc)}`, run: problems });
+    }
+    const openCount = vscode.workspace.textDocuments.filter((d) => d.uri.scheme === 'file' && !d.isClosed).length;
+    if (openCount > 0) {
+      items.push({ label: '$(files) An open file…', description: `${openCount} open`, run: openFile });
+    }
+    if (root) {
+      items.push({ label: '$(search) Any file in the folder…', description: 'find it by name', run: mention });
+    }
+    const choice = await vscode.window.showQuickPick(items, { title: 'Add context to the question', placeHolder: 'What should Mochiii see with this question?' });
+    if (choice) {
+      await choice.run();
+    }
+  }
+
+  // attachText hands the composer one piece of context the way a file arrives:
+  // started, then extracted, so it shows as a chip and is counted on the meter.
+  private attachText(name: string, text: string, desc: string): void {
+    const MAX = 200_000;
+    const id = `ctx-${++this.contextSeq}`;
+    const cut = text.length > MAX;
+    this.postSafe({ type: 'attachmentStarted', id, name });
+    this.postSafe({
+      type: 'attachmentExtracted',
+      id,
+      name,
+      kind: 'text',
+      text: cut ? text.slice(0, MAX) : text,
+      note: cut ? `only the first ${MAX.toLocaleString()} characters` : '',
+      desc,
+    });
+  }
+
+  // postUiSettings tells the webview how to draw what is not content: today,
+  // whether a turn's tool work starts folded (compact) or open (expanded).
+  private postUiSettings(): void {
+    const cfg = vscode.workspace.getConfiguration('mochiii');
+    this.postSafe({
+      type: 'uiSettings',
+      toolActivity: cfg.get<string>('toolActivity') === 'expanded' ? 'expanded' : 'compact',
+      defaultMode: cfg.get<string>('defaultMode') ?? 'auto',
+    });
   }
 
   // The paperclip. The file dialog is the editor's, and the files are read here
   // from disk -- not by the webview, which has no Node and could only pass bytes
   // across the message channel as base64. Each file's text goes back to the
   // webview, which holds it until the prompt is sent.
-  private async onPickAttachments(remaining: number): Promise<void> {
+  private async onPickAttachments(remaining: number, imagesOnly = false): Promise<void> {
     const post = (m: Record<string, unknown>): void => {
       try {
         this.host.webview.postMessage(m).then(undefined, () => undefined);
@@ -542,15 +800,17 @@ export class ChatPanel {
     const uris = await vscode.window.showOpenDialog({
       canSelectMany: true,
       openLabel: 'Attach',
-      defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
-      filters: {
-        'Documents, images, text and code': [
-          'pdf', 'docx', 'xlsx', 'xlsm', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp',
-          'txt', 'md', 'json', 'csv', 'log', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'java',
-          'c', 'h', 'cpp', 'hpp', 'css', 'html', 'xml', 'yaml', 'yml', 'toml', 'sh', 'sql',
-        ],
-        'All files': ['*'],
-      },
+      defaultUri: workspacePath() ? vscode.Uri.file(workspacePath()) : undefined,
+      filters: imagesOnly
+        ? { Images: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }
+        : {
+            'Documents, images, text and code': [
+              'pdf', 'docx', 'xlsx', 'xlsm', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp',
+              'txt', 'md', 'json', 'csv', 'log', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'java',
+              'c', 'h', 'cpp', 'hpp', 'css', 'html', 'xml', 'yaml', 'yml', 'toml', 'sh', 'sql',
+            ],
+            'All files': ['*'],
+          },
     });
     if (!uris || uris.length === 0) {
       return;
@@ -681,15 +941,27 @@ export class ChatPanel {
         // panel closed meanwhile
       }
     };
+    // The settings popover (Stage 9) opens on the provider in use as well as
+    // its models: asked of the daemon beside the tiers, and left out if it
+    // cannot say. Only the masked key ever comes back.
+    const providers = sendConnect(CLIENT_NAME, { show: true }).then(
+      (shown) => {
+        const keyInForce = shown.key_source ? shown.key_source !== 'none' : shown.in_use && !!shown.masked_key;
+        const base = keyInForce ? shown.active_api_base || shown.api_base || '' : '';
+        return { currentBase: base, providers: providerChoices() };
+      },
+      () => ({ currentBase: '', providers: providerChoices() }),
+    );
     try {
       const tiers = await fetchAvailableTiers(CLIENT_NAME);
       post({
         type: 'modelMenu',
         current: this.preferredTier,
-        tiers: tiers.map((t) => ({ name: t.name, slug: t.slug, active: t.active, isDefault: t.default === true })),
+        tiers: tiers.map((t) => ({ name: t.name, slug: t.slug, active: t.active, isDefault: t.default === true, quiet: t.quiet === true })),
+        ...(await providers),
       });
     } catch (err) {
-      post({ type: 'modelMenu', current: this.preferredTier, tiers: [], error: (err as Error).message });
+      post({ type: 'modelMenu', current: this.preferredTier, tiers: [], error: (err as Error).message, ...(await providers) });
     }
   }
 
@@ -823,11 +1095,11 @@ export class ChatPanel {
       // The provider-aware flow in extension.ts (mochiii.connect): a masked
       // box, the daemon proves and stores the key and uses it at once.
       connectApiKey: async (base?: string) => {
-        const r = await vscode.commands.executeCommand<{ message: string; inUse: boolean }>('mochiii.connect', { base });
-        if (r?.inUse) {
+        const r = await this.openConnect(base);
+        if (r.inUse) {
           this.needsApiKey = false;
         }
-        return r?.message ?? 'connect did not run.';
+        return r.message;
       },
       // Both return the sentence to print. The panel never reads or deletes a
       // credential itself -- it asks the extension, which owns SecretStorage.
@@ -880,19 +1152,22 @@ export class ChatPanel {
         await vscode.workspace.fs.writeFile(uri, Buffer.from(text, 'utf8'));
         return uri.fsPath;
       },
-      openSettings: async () => {
-        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:MochiiiAIAgent.mochiii-vscode');
-      },
       // THE DAEMON OWNS THE KEY VERDICT, not this panel: needsApiKey is what the
       // daemon said at the last handshake, and it accounts for proxy mode and a
       // loopback api_base where no key is wanted at all (see
       // protocol.HandshakeResponse.NeedsAPIKey).
       hasApiKey: async () => !this.needsApiKey,
       daemonReachable: () => probeDaemon(),
-      // Through the command, so the chat, the MCP Servers view and the palette
-      // open one marketplace by one route (extension.ts), notice included.
-      openMcpMarketplace: async (search: string) =>
-        (await vscode.commands.executeCommand<boolean>('mochiii.mcp.browse', search)) === true,
+      openPage: async (page, search) => {
+        this.postSafe({
+          type: 'page:open',
+          page,
+          tab: page === 'customize' ? 'mcp' : undefined,
+          sub: page === 'customize' ? (search ? 'market' : 'installed') : undefined,
+          search: search || undefined,
+        });
+        return true;
+      },
     };
   }
 
@@ -1010,8 +1285,8 @@ export class ChatPanel {
   // sent the moment a key is in use -- or handed back, unsent, if not.
   private async connectThenStart(run: () => void): Promise<void> {
     this.needsApiKey = false; // no second box while this one is open
-    const r = await vscode.commands.executeCommand<{ message: string; inUse: boolean }>('mochiii.connect', {});
-    if (r?.inUse) {
+    const r = await this.openConnect();
+    if (r.inUse) {
       void this.host.webview.postMessage({ type: 'info', text: 'Key connected · sending your question' });
       void this.refreshModelAfterConnect();
       run();
@@ -1020,9 +1295,200 @@ export class ChatPanel {
     this.needsApiKey = true;
     this.replyLocal(
       'Your question was not sent: Mochiii needs a model provider key first, and none is in use.\n\n' +
-        (r?.message ?? '') +
+        r.message +
         '\n\nRun /connect, then send the question again.',
     );
+  }
+
+  // THE CONNECT POPUP: the provider, its key, then a model -- the terminal's
+  // setup (clients/tui/setup.go) in the chat above the composer, rather than in
+  // VS Code's input box at the top of the window. docs/PROVIDER_MODEL_FLOW.md.
+  // One popup at a time; a second opener waits on the same answer. base, when
+  // given (/connect groq), skips the provider list.
+  openConnect(base?: string, opts: { firstRun?: boolean } = {}): Promise<ConnectOutcome> {
+    if (!hasConnectKey()) {
+      // No daemon behind this window: the command keeps its own path.
+      return Promise.resolve(
+        vscode.commands.executeCommand<ConnectOutcome>('mochiii.connect', { base }),
+      ).then((r) => r ?? { message: 'connect did not run.', inUse: false });
+    }
+    if (!this.connectPending) {
+      let resolve!: (o: ConnectOutcome) => void;
+      const promise = new Promise<ConnectOutcome>((r) => (resolve = r));
+      this.connectPending = { promise, resolve, base: base ?? '', currentBase: '', keyInForce: false, inForce: '' };
+    }
+    void this.postConnectOpen(this.connectPending, opts.firstRun === true);
+    return this.connectPending.promise;
+  }
+
+  // What is in force now, so the list can mark the provider in use and the key
+  // step can offer to keep its key. Only the daemon's MASKED key comes back.
+  private async postConnectOpen(pending: ConnectPending, firstRun: boolean): Promise<void> {
+    let maskedKey = '';
+    try {
+      const shown = await sendConnect(CLIENT_NAME, { show: true });
+      const inForce = shown.key_source ? shown.key_source !== 'none' : shown.in_use && !!shown.masked_key;
+      pending.keyInForce = inForce;
+      pending.currentBase = inForce ? shown.active_api_base || shown.api_base || '' : '';
+      maskedKey = inForce ? shown.active_masked_key || shown.masked_key || '' : '';
+    } catch {
+      // Nothing marked: the list still works without it.
+    }
+    if (this.connectPending !== pending) {
+      return;
+    }
+    this.postSafe({
+      type: 'connectOpen',
+      providers: [ANY_KEY_CHOICE, ...providerChoices()],
+      base: pending.base,
+      currentBase: pending.currentBase,
+      maskedKey,
+      keyInForce: pending.keyInForce,
+      firstRun,
+    });
+  }
+
+  // The key arrives from the popup's password field and goes straight to the
+  // daemon (connectBridge.ts). It is not kept, logged or echoed back.
+  private async onConnectSubmit(apiBase: string, key: string): Promise<void> {
+    const pending = this.connectPending;
+    if (!pending) {
+      return;
+    }
+    // Only an address the popup offered: "Any key" (''), a known provider's,
+    // or the one /connect <address> opened it with.
+    const known = apiBase === '' || providerChoices().some((p) => p.apiBase === apiBase) || (pending.base !== '' && apiBase === pending.base);
+    if (!known || key.trim() === '') {
+      this.postSafe({ type: 'connectError', text: key.trim() === '' ? 'Paste a key first.' : 'Choose a provider from the list.' });
+      return;
+    }
+    const r = await connectKey(key.trim(), apiBase);
+    if (this.connectPending !== pending) {
+      return; // cancelled while the daemon was checking
+    }
+    if (r.candidates && r.candidates.length > 0) {
+      this.postSafe({ type: 'connectNeedsProvider', candidates: r.candidates, text: r.message });
+    } else if (r.inUse) {
+      // In use from the next question; the popup moves on to its models.
+      pending.outcome = r;
+      void this.refreshModelAfterConnect();
+      await this.showModelStep(pending);
+    } else {
+      this.postSafe({ type: 'connectError', text: r.message });
+    }
+  }
+
+  // "Keep the current key": the provider in use was picked again, by someone
+  // who wants another model. Nothing is sent; the model list follows.
+  private async onConnectKeep(): Promise<void> {
+    const pending = this.connectPending;
+    if (!pending || !pending.keyInForce) {
+      return;
+    }
+    await this.showModelStep(pending);
+  }
+
+  // THE MODEL STEP. After a connect, a list with nothing to choose between
+  // (fewer than two models) is skipped, as the terminal does: the connect's own
+  // answer already names the model. Opened to change the model, it is shown
+  // whatever it holds, and a failure is said.
+  private async showModelStep(pending: ConnectPending): Promise<void> {
+    const after = pending.outcome;
+    this.postSafe({ type: 'connectModelsLoading' });
+    let tiers: Awaited<ReturnType<typeof fetchAvailableTiers>>;
+    try {
+      tiers = await fetchAvailableTiers(CLIENT_NAME);
+    } catch (err) {
+      if (this.connectPending !== pending) {
+        return;
+      }
+      if (after) {
+        this.finishConnect(after);
+      } else {
+        this.postSafe({ type: 'connectError', text: `The model list could not be read: ${(err as Error).message}` });
+      }
+      return;
+    }
+    if (this.connectPending !== pending) {
+      return;
+    }
+    const { rows, inForce } = modelChoices(tiers, this.preferredTier);
+    if (after && rows.length < 2) {
+      this.finishConnect(after);
+      return;
+    }
+    if (rows.length === 0) {
+      this.postSafe({ type: 'connectError', text: 'The provider in use offers no model here. Choose another provider.' });
+      return;
+    }
+    pending.inForce = inForce;
+    this.postSafe({ type: 'connectModels', rows, inForce });
+  }
+
+  // A model chosen in the popup: the daemon remembers it beside the key in
+  // force (choose_model, as the Settings page and the terminal's /model do),
+  // and this panel sends it from the next question.
+  private async onConnectModel(tier: string): Promise<void> {
+    const pending = this.connectPending;
+    if (!pending) {
+      return;
+    }
+    const done = (line: string): void => {
+      const before = pending.outcome?.message ?? '';
+      this.finishConnect({ message: [before, line].filter((x) => x !== '').join('\n'), inUse: true });
+    };
+    if (tier === pending.inForce) {
+      done('');
+      return;
+    }
+    let saved = '';
+    try {
+      const resp = await sendConnect(CLIENT_NAME, { choose_model: tier });
+      if (resp.error) {
+        this.postSafe({ type: 'connectError', text: resp.error });
+        return;
+      }
+      if (resp.model_saved === false && resp.detail) {
+        saved = ` ${resp.detail}`;
+      }
+    } catch (err) {
+      this.postSafe({ type: 'connectError', text: `Could not reach the Mochiii daemon: ${(err as Error).message}` });
+      return;
+    }
+    if (this.connectPending !== pending) {
+      return;
+    }
+    const err = await this.applyTier(tier);
+    if (err) {
+      this.postSafe({ type: 'connectError', text: err });
+      return;
+    }
+    done(`Model set to ${tier}.${saved}`);
+  }
+
+  // Esc, Cancel or "Keep <model>". After a key was connected, leaving the
+  // model step is not a cancel: the key is in use, and the answer says so.
+  private onConnectCancel(): void {
+    const after = this.connectPending?.outcome;
+    this.finishConnect(after ?? { message: 'Cancelled: no key was sent.', inUse: false });
+  }
+
+  private finishConnect(r: ConnectOutcome): void {
+    const pending = this.connectPending;
+    this.connectPending = undefined;
+    this.postSafe({ type: 'connectClose' });
+    pending?.resolve(r);
+  }
+
+  private afterConnect(r: ConnectOutcome, quiet: boolean): void {
+    if (!r.inUse) {
+      return;
+    }
+    this.needsApiKey = false;
+    if (!quiet && r.message !== '') {
+      this.postSafe({ type: 'info', text: r.message.split('\n')[0] });
+    }
+    void this.refreshModelAfterConnect();
   }
 
   private startModelTurn(
@@ -1050,6 +1516,13 @@ export class ChatPanel {
     // Snapshot BEFORE appending this turn, so the not-yet-answered prompt
     // never ends up in its own History -- same ordering as chat.go's
     // startTurn.
+    // A RETRY REPLACES THE UNANSWERED PROMPT instead of sending it twice: the
+    // failed turn left the user's message in the transcript with no reply,
+    // and the model would otherwise read the same question asked twice.
+    const last = this.transcript[this.transcript.length - 1];
+    if (this.retryingPrompt && last && last.role === 'user' && last.content === displayText) {
+      this.transcript.pop();
+    }
     const history = [...this.transcript];
     this.transcript.push({ role: 'user', content: displayText });
 
@@ -1108,7 +1581,15 @@ export class ChatPanel {
           this.host.webview.postMessage({ type: 'reasoning', text });
         },
         onDegraded: (items: Degradation[]) => {
-          this.host.webview.postMessage({ type: 'degraded', items });
+          for (const d of items) {
+            if (ONCE_PER_SESSION.has(d.component)) {
+              this.providerNotes.set(d.component, d.detail);
+            }
+          }
+          const fresh = freshDegradations(items, this.seenProviderNotes);
+          if (fresh.length > 0) {
+            this.host.webview.postMessage({ type: 'degraded', items: fresh });
+          }
         },
         onProvider: (provider: string) => {
           this.host.webview.postMessage({ type: 'provider', provider });
@@ -1147,7 +1628,9 @@ export class ChatPanel {
           this.host.webview.postMessage({ type: 'specNotice', kind: 'spec-report', text: specReportText(report) });
         },
         onTasks: (tasks) => {
-          this.host.webview.postMessage({ type: 'tasks', text: taskListText(tasks) });
+          // The text for a screen reader and the old renderer; the items for
+          // the checklist (Stage 9).
+          this.host.webview.postMessage({ type: 'tasks', text: taskListText(tasks), items: tasks.map((t) => ({ title: t.title, status: t.status })) });
         },
         // Providing this handler is what makes streamPrompt declare
         // CAP_TOOL_APPROVAL, and therefore what turns agent mode on for this
@@ -1216,7 +1699,13 @@ export class ChatPanel {
           }
           this.inFlight = undefined;
           this.clearPendingApproval();
-          this.host.webview.postMessage({ type: 'error', message: err.message });
+          const te = err as TurnError;
+          this.host.webview.postMessage({
+            type: 'error',
+            message: err.message,
+            errorClass: te.errorClass ?? '',
+            keyReplaceable: te.keyReplaceable === true,
+          });
         },
       },
       {
@@ -1712,6 +2201,8 @@ export class ChatPanel {
     // sockets left reading a dead webview.
     this.disposed = true;
     this.inFlight?.abort();
+    this.connectPending?.resolve({ message: 'Cancelled: the chat was closed.', inUse: false });
+    this.connectPending = undefined;
     if (ChatPanel.current === this) {
       ChatPanel.current = undefined;
     }
@@ -1724,6 +2215,10 @@ export class ChatPanel {
   private getHtml(extensionUri: vscode.Uri): string {
     const webview = this.host.webview;
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.js'));
+    const pagesUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'pages.js'));
+    const marketUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'marketplace.js'));
+    const connectUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'connect.js'));
+    const controlsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'controls.js'));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'logo.png'));
     const nonce = getNonce();
 
@@ -1735,20 +2230,28 @@ export class ChatPanel {
 <title>Mochiii Chat</title>
 <style>
 ${chatPanelStyles()}
+${chatPagesStyles()}
+${chatLookStyles()}
+${mcpMarketplaceStyles('.market-root')}
 </style>
 </head>
 <body>
-${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${scriptUri}"></script>
+${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${marketUri}"></script>
+  <script nonce="${nonce}" src="${pagesUri}"></script>
+  <script nonce="${nonce}" src="${connectUri}"></script>
+  <script nonce="${nonce}" src="${controlsUri}"></script>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
 }
 
-// workspacePath sends the first open VS Code workspace folder as
-// PromptRequest.Workspace -- purely advisory (see protocol.go), lets the
-// daemon report a mismatch if this doesn't match its own --workspace.
+// workspacePath is the folder this window's daemon works in (workingFolder.ts),
+// sent as PromptRequest.Workspace -- purely advisory (see protocol.go), lets
+// the daemon report a mismatch if this doesn't match its own --workspace.
+// Falls back to the first folder only before activation has chosen one.
 function workspacePath(): string {
-  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+  return activeWorkingFolder() || (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '');
 }
 
 function getNonce(): string {
@@ -2518,6 +3021,74 @@ export function chatPanelStyles(): string {
     color: var(--ct-ink);
   }
   .modes-popup[hidden] { display: none !important; }
+  /* CONNECT POPUP (media/connect.js): above the composer, full width. */
+  .connect-popup {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    bottom: calc(100% + 8px);
+    max-height: min(440px, 70vh);
+    display: flex;
+    flex-direction: column;
+    background: var(--ct-popover-bg);
+    border: 1px solid var(--ct-border);
+    border-radius: 16px;
+    box-shadow: var(--ct-shadow);
+    z-index: 25;
+    color: var(--ct-ink);
+    overflow: hidden;
+  }
+  .connect-popup[hidden], .connect-body[hidden], .connect-icon[hidden], .connect-notice[hidden], .connect-btn[hidden],
+  .connect-loading[hidden], .connect-input[hidden], .connect-list[hidden] { display: none !important; }
+  .connect-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px; }
+  .connect-titles { flex: 1; min-width: 0; }
+  .connect-step { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ct-muted); }
+  .connect-title { font-weight: 600; font-size: 13.5px; margin-top: 2px; }
+  .connect-icon {
+    width: 26px; height: 26px; border: none; border-radius: 7px; background: transparent;
+    color: var(--ct-muted); cursor: pointer; font-size: 15px; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .connect-icon:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
+  .connect-body { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; min-height: 0; }
+  .connect-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--ct-control-bg);
+    color: var(--ct-ink);
+    border: 1px solid var(--ct-control-border);
+    border-radius: 9px;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+  }
+  .connect-input:focus { outline: 2px solid var(--ct-accent); outline-offset: -1px; border-color: transparent; }
+  .connect-list { overflow-y: auto; max-height: min(300px, 50vh); display: flex; flex-direction: column; gap: 2px; }
+  .connect-item {
+    display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: none; border-radius: 9px;
+    background: transparent; color: var(--ct-ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .connect-item:hover, .connect-item:focus-visible { background: var(--ct-accent-soft); outline: none; }
+  .connect-name { flex: 1; min-width: 0; }
+  .connect-hint { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--ct-muted); flex-shrink: 0; }
+  .connect-empty { padding: 10px; color: var(--ct-muted); font-size: 12px; }
+  .connect-label { font-size: 12.5px; }
+  .connect-note { font-size: 11.5px; color: var(--ct-muted); }
+  .connect-notice {
+    font-size: 12px; white-space: pre-wrap; color: var(--ct-danger); padding: 8px 10px; border-radius: 9px; margin: 0 12px 8px;
+    background: color-mix(in srgb, var(--ct-danger) 10%, transparent);
+  }
+  .connect-item.current .connect-name { font-weight: 600; }
+  .connect-item.quiet { opacity: 0.55; }
+  .connect-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ct-ok); flex-shrink: 0; }
+  .connect-cur { font-size: 11px; color: var(--ct-ok); flex-shrink: 0; }
+  .connect-help { font-size: 11px; color: var(--ct-muted); font-style: italic; }
+  .connect-loading { font-size: 12.5px; color: var(--ct-muted); padding: 10px 2px; }
+  .connect-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+  .connect-btn { border-radius: 9px; padding: 6px 14px; font: inherit; font-size: 12.5px; cursor: pointer; border: 1px solid var(--ct-control-border); }
+  .connect-btn.ghost { background: transparent; color: var(--ct-ink); }
+  .connect-btn.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); border-color: transparent; }
+  .connect-btn.primary:hover { background: var(--ct-accent-solid-hover); }
+  .connect-btn:disabled { opacity: 0.6; cursor: default; }
   /* HISTORY PANEL (Claude Code style): under the header, a search box and the
      chats -- bookmarks first, then newest. */
   #appHeader { position: relative; }
@@ -2792,12 +3363,78 @@ export function chatPanelStyles(): string {
     outline: 2px solid var(--ct-accent);
     outline-offset: 1px;
   }
-  .tool-activity {
-    margin: 2px 0 2px 38px;
-    font-size: 11px;
+  /* THE WORK BLOCK: a turn's tool calls, folded to one line (main.js
+     showToolActivity). Muted like the narration it replaced, so the answer
+     stays the loudest thing on screen; a failure is the one thing in it that
+     takes a colour. */
+  .work {
+    margin: 4px 0 6px 38px;
+    font-size: 11.5px;
     color: var(--ct-muted);
-    font-style: italic;
+    min-width: 0;
   }
+  .work-summary {
+    cursor: pointer;
+    list-style: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px 2px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--ct-border);
+    max-width: 100%;
+  }
+  .work-summary::-webkit-details-marker { display: none; }
+  .work-summary::before {
+    content: '\\25B8';
+    display: inline-block;
+    transition: transform 0.12s ease;
+  }
+  .work[open] > .work-summary::before { transform: rotate(90deg); }
+  .work-summary:hover { color: var(--ct-ink); }
+  .work-summary:focus-visible { outline: 2px solid var(--ct-accent); outline-offset: 1px; }
+  .work.running .work-label { font-style: italic; }
+  .work.has-failure .work-summary { border-color: color-mix(in srgb, var(--ct-danger) 45%, transparent); }
+  .work-rows {
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0 0 0 10px;
+    border-left: 1px solid var(--ct-border);
+  }
+  .work-row {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    padding: 1px 0;
+    min-width: 0;
+  }
+  .work-glyph { flex: none; width: 1em; text-align: center; }
+  .work-name { flex: none; color: var(--ct-ink); }
+  .work-why { min-width: 0; overflow-wrap: anywhere; }
+  .work-row[data-state="ok"] .work-glyph { color: var(--ct-ok); }
+  .work-row[data-state="fail"] .work-glyph,
+  .work-row[data-state="fail"] .work-why { color: var(--ct-danger); }
+  .work-row[data-state="denied"] .work-glyph { color: var(--ct-warn); }
+  .work-row[data-state="run"] .work-name { font-style: italic; color: var(--ct-muted); }
+  @media (prefers-reduced-motion: reduce) {
+    .work-summary::before { transition: none; }
+  }
+  /* The one next step under a failed or cut-off turn (main.js addErrorActions,
+     showIncomplete). A quiet outlined button: it is an offer, not an alarm. */
+  .turn-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .turn-action {
+    font: inherit;
+    font-size: 12px;
+    font-style: normal;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--ct-border);
+    background: transparent;
+    color: var(--ct-accent);
+    cursor: pointer;
+  }
+  .turn-action:hover { background: var(--ct-accent-soft); }
+  .turn-action:focus-visible { outline: 2px solid var(--ct-accent); outline-offset: 1px; }
   .approval-record {
     margin: 2px 0 8px 38px;
     font-size: 11px;
@@ -2849,14 +3486,23 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
        + no-dangerous-sinks posture the Phase 3 review verified is untouched. -->
   <header id="appHeader">
     <div class="brand">
-      ${logoUri ? `<img src="${logoUri}" alt="Mochiii Logo" class="brand-logo" />` : `<span class="brand-mark" aria-hidden="true">✦</span>`}
-      Mochiii
+      ${logoUri ? `<img src="${logoUri}" alt="" class="brand-logo" />` : `<span class="brand-mark" aria-hidden="true">✦</span>`}
+      <div class="brand-text"><span class="brand-name">Mochiii</span><span class="brand-sub">AI Coding Assistant</span></div>
     </div>
     <div class="header-actions">
-      <button type="button" id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
-      <button type="button" id="bookmarkBtn" class="icon-btn" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">☆</button>
+      <button type="button" id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">${ICONS.plus}</button>
       <button type="button" id="historyBtn" class="icon-btn" title="History" aria-label="Chat history"
-        aria-haspopup="dialog" aria-expanded="false" aria-controls="historyPopup">◷</button>
+        aria-haspopup="dialog" aria-expanded="false" aria-controls="historyPopup">${ICONS.history}</button>
+      <button type="button" id="gearBtn" class="icon-btn" title="Model and settings" aria-label="Model and settings"
+        aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPopup">${ICONS.gear}</button>
+      <button type="button" id="moreBtn" class="icon-btn" title="More" aria-label="More"
+        aria-haspopup="true" aria-expanded="false" aria-controls="moreMenu">${ICONS.more}</button>
+    </div>
+    <!-- ⋯: this chat's bookmark, and the pages. -->
+    <div id="moreMenu" class="pop-menu more-menu" hidden>
+      <button type="button" id="bookmarkBtn" class="menu-item" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">${ICONS.star}<span class="mi-text"><span class="mi-name" id="bookmarkLabel">Bookmark this chat</span></span></button>
+      <div class="menu-sep" role="separator"></div>
+      ${headerPageButtons()}
     </div>
     <!-- History, Claude Code style: every chat, newest first, bookmarks pinned
          on top; the search matches what was said, not only titles. -->
@@ -2886,10 +3532,29 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
        on every mutation (which aria-atomic="true" would do, and which is
        unusable at streaming rates). -->
   <div id="transcript" role="log" aria-live="polite" aria-atomic="false" aria-label="Conversation transcript">
-    <div id="firstRun" class="first-run">
-      <p>Mochiii answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
-      <p>The Mochiii daemon starts automatically and is shared with any other window open on this same folder. Just send a prompt.</p>
-      <p class="first-run-quiet">First answer slow? It is loading the local embedding model. If it never arrives, ${RESTART_HINT}.</p>
+    <!-- THE WELCOME (Stage 9, mockup "empty state"). Each card and idea fills
+         the composer with a command and a default argument, selected so that
+         typing replaces it; nothing is sent until the user sends. The open file
+         already goes with every question (editorContext), so no card attaches it
+         again. -->
+    <div id="firstRun" class="first-run welcome">
+      ${logoUri ? `<img src="${logoUri}" alt="" class="welcome-logo" />` : ''}
+      <h1 class="welcome-title">What are we building today?</h1>
+      <p class="welcome-sub">Ask questions, understand your code, make changes, or run tasks.</p>
+      <div class="welcome-cards">
+        <button type="button" class="welcome-card" data-cmd="/explain " data-arg="the code in the current file"><span class="wc-icon">${ICONS.code}</span><span class="wc-text"><span class="wc-title">Explain this code</span><span class="wc-desc">Get a clear explanation</span></span></button>
+        <button type="button" class="welcome-card" data-cmd="/fix " data-arg="the problems in the current file"><span class="wc-icon">${ICONS.bug}</span><span class="wc-text"><span class="wc-title">Find &amp; fix bugs</span><span class="wc-desc">Detect and solve issues</span></span></button>
+        <button type="button" class="welcome-card" data-cmd="/test " data-arg="the current file"><span class="wc-icon">${ICONS.flask}</span><span class="wc-text"><span class="wc-title">Write unit tests</span><span class="wc-desc">Generate tests for this file</span></span></button>
+        <button type="button" class="welcome-card" data-cmd="/refactor " data-arg="the current file for readability"><span class="wc-icon">${ICONS.spark}</span><span class="wc-text"><span class="wc-title">Refactor code</span><span class="wc-desc">Improve and simplify</span></span></button>
+      </div>
+      <div class="welcome-ideas-label">Other ideas</div>
+      <div class="welcome-chips">
+        <button type="button" class="welcome-chip" data-cmd="/review " data-arg="my recent changes">Review changes</button>
+        <button type="button" class="welcome-chip" data-cmd="/doc " data-arg="the current file">Create documentation</button>
+        <button type="button" class="welcome-chip" data-cmd="/run " data-arg="the tests for this project">How to run it</button>
+        <button type="button" class="welcome-chip" data-cmd="/plan " data-arg="the architecture for ">Design architecture</button>
+      </div>
+      <p class="first-run-quiet">The first answer can take a moment while the local index loads. If it never arrives, ${RESTART_HINT}.</p>
     </div>
   </div>
   <!-- THE NOTICES, COLLAPSED. Every strip is still a live region, so a screen
@@ -2908,72 +3573,141 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
   </div>
   <div id="composer">
     <div id="slashMenu" role="listbox" aria-label="Slash commands"></div>
+    <!-- Connect a model provider (media/connect.js): the provider, its key, then a
+         model -- the terminal's setup, in the chat. docs/PROVIDER_MODEL_FLOW.md -->
+    <div id="connectPopup" class="connect-popup" hidden role="dialog" aria-labelledby="connectTitle">
+      <div class="connect-head">
+        <button type="button" class="connect-icon" id="connectBack" hidden aria-label="Back to providers" title="Back">‹</button>
+        <div class="connect-titles">
+          <div class="connect-step" id="connectStep">Step 1 of 3</div>
+          <div class="connect-title" id="connectTitle">Select Provider</div>
+        </div>
+        <button type="button" class="connect-icon" id="connectClose" aria-label="Cancel" title="Cancel">✕</button>
+      </div>
+      <div class="connect-notice" id="connectNotice" role="alert" hidden></div>
+      <div class="connect-body" id="connectPick">
+        <input id="connectFilter" class="connect-input" type="text" placeholder="Search providers…" aria-label="Search providers" autocomplete="off" spellcheck="false">
+        <div class="connect-list" id="connectList" role="listbox" aria-label="Model providers"></div>
+        <div class="connect-help">Type to search, ↑/↓ to move, Enter to select, Esc to cancel</div>
+      </div>
+      <div class="connect-body" id="connectKeyStep" hidden>
+        <label for="connectKey" class="connect-label" id="connectKeyLabel">Paste your API key</label>
+        <input id="connectKey" class="connect-input" type="password" autocomplete="off" spellcheck="false">
+        <div class="connect-note">Checked with the provider, then stored on this machine. It never appears in the chat.</div>
+        <div class="connect-actions">
+          <button type="button" class="connect-btn ghost" id="connectKeepKey" hidden>Keep current key</button>
+          <button type="button" class="connect-btn ghost" id="connectCancelBtn">Cancel</button>
+          <button type="button" class="connect-btn primary" id="connectSubmit">Connect</button>
+        </div>
+      </div>
+      <div class="connect-body" id="connectModelStep" hidden>
+        <div class="connect-loading" id="connectModelsLoading" role="status">Loading models…</div>
+        <input id="connectModelFilter" class="connect-input" type="text" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false">
+        <div class="connect-list" id="connectModelList" role="listbox" aria-label="Models"></div>
+        <div class="connect-actions">
+          <button type="button" class="connect-btn ghost" id="connectKeepModel">Keep current model</button>
+        </div>
+      </div>
+    </div>
+    <!-- THE COMPOSER (Stage 9, mockup sheet 1): one box -- what goes with the
+         question, the question, then one row: add context, @ a file, MCP, the
+         model, the effort, the mode, send. -->
     <div id="composerShell">
-      <div class="composer-top">
-        <label for="promptInput" class="sr-only">Ask a question about your code</label>
-        <textarea id="promptInput" rows="2" placeholder="Ask Mochiii anything… or type /"></textarea>
-        <button type="button" id="sendBtn" title="Send" aria-label="Send">✈</button>
-      </div>
-      <div class="composer-bottom">
-        <div class="composer-left">
-          <button type="button" class="pill" id="modelChip" title="Choose model" aria-label="Choose model"
-            aria-haspopup="listbox" aria-expanded="false" aria-controls="modelPopup">
-            <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">▾</span>
-          </button>
-          <span class="pill spec-chip" id="specChip" hidden title="Active spec: every prompt works to it (/spec show, /spec off)"></span>
-          <button type="button" class="pill effort-pill" id="effortBtn" data-level="0"
-            aria-label="Thinking effort: Auto. Click to change."
-            title="Thinking effort: how long the model reasons before it answers. Auto uses the model's default. Higher is slower and often more careful. Click to cycle Auto, Low, Medium, High.">
-            <svg class="effort-bars" width="14" height="12" viewBox="0 0 14 12" aria-hidden="true">
-              <rect class="b1" x="0" y="7" width="3.2" height="5" rx="1"/>
-              <rect class="b2" x="5.4" y="4" width="3.2" height="8" rx="1"/>
-              <rect class="b3" x="10.8" y="0" width="3.2" height="12" rx="1"/>
-            </svg>
-            <span class="effort-name">Effort</span><span class="effort-value" id="effortValue">Auto</span>
-          </button>
-        </div>
-        <div class="composer-right">
-          <button type="button" class="pill notices-chip" id="noticesChip" hidden aria-expanded="false" aria-controls="notices"
-            title="Notices about the last answer">
-            <span aria-hidden="true">ⓘ</span><span id="noticesCount">0</span>
-          </button>
-          <button type="button" class="composer-icon context-btn" id="contextBtn" title="Context usage" aria-label="Open context usage" aria-expanded="false" aria-controls="contextPopup">
-            <svg class="context-ring" viewBox="0 0 24 24" aria-hidden="true">
-              <circle class="context-ring-track" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"/>
-              <circle class="context-ring-fill" id="contextRingFill" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"
-                stroke-linecap="round" transform="rotate(-90 12 12)"
-                stroke-dasharray="50.27" stroke-dashoffset="50.27"/>
-            </svg>
-            <span class="context-pct" id="contextPctShort" aria-hidden="true">0%</span>
-          </button>
-          <button type="button" class="composer-icon" id="attachBtn" title="Attach files" aria-label="Attach files">📎</button>
-          <button id="autoApplyToggle" class="pill mode-btn on" aria-haspopup="listbox" aria-expanded="false"
-            aria-label="Select mode"
-            title="Select agent mode (Manual, Plan, Auto)">
-            <span class="bolt" aria-hidden="true" id="modeBtnIcon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></span><span id="modeBtnLabel">Auto</span>
-          </button>
-        </div>
-      </div>
       <div id="attachList" class="attach-list" hidden></div>
+      <label for="promptInput" class="sr-only">Ask a question about your code</label>
+      <textarea id="promptInput" rows="2" placeholder="Ask Mochiii anything… or type /"></textarea>
+      <div class="composer-bar">
+        <button type="button" class="composer-icon" id="contextAddBtn" title="Add context: the current file, the selection, files, images, problems" aria-label="Add context" aria-haspopup="menu" aria-expanded="false" aria-controls="contextMenu">${ICONS.plus}</button>
+        <button type="button" class="composer-icon" id="atBtn" title="Mention a file (or type @)" aria-label="Mention a file">${ICONS.at}</button>
+        <button type="button" class="composer-icon tools-btn" id="toolsBtn" title="MCP servers" aria-label="MCP servers" aria-controls="pageCustomize">${ICONS.plug}<span id="toolsCount" class="tools-count" hidden>0</span></button>
+        <button type="button" class="pill model-chip" id="modelChip" title="Model and settings" aria-label="Choose model"
+          aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPopup">
+          <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">${ICONS.chevron}</span>
+        </button>
+        <span class="pill spec-chip" id="specChip" hidden title="Active spec: every prompt works to it (/spec show, /spec off)"></span>
+        <button type="button" class="pill effort-pill" id="effortBtn" data-level="0"
+          aria-label="Thinking effort: Auto. Click to change."
+          title="Thinking effort: how long the model reasons before it answers. Auto uses the model's default. Higher is slower and often more careful. Click to cycle Auto, Low, Medium, High.">
+          <svg class="effort-bars" width="14" height="12" viewBox="0 0 14 12" aria-hidden="true">
+            <rect class="b1" x="0" y="7" width="3.2" height="5" rx="1"/>
+            <rect class="b2" x="5.4" y="4" width="3.2" height="8" rx="1"/>
+            <rect class="b3" x="10.8" y="0" width="3.2" height="12" rx="1"/>
+          </svg>
+          <span class="effort-value" id="effortValue">Auto</span>
+        </button>
+        <!-- The mode stays in sight: in Auto, edits reach the files without a
+             question, and that is not a state to hide behind a menu. -->
+        <button id="autoApplyToggle" class="pill mode-btn on" aria-haspopup="listbox" aria-expanded="false"
+          aria-label="Select mode"
+          title="Select agent mode (Manual, Plan, Auto)">
+          <span class="bolt" aria-hidden="true" id="modeBtnIcon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></span><span id="modeBtnLabel">Auto</span>
+        </button>
+        <span class="bar-gap"></span>
+        <button type="button" class="pill notices-chip" id="noticesChip" hidden aria-expanded="false" aria-controls="notices"
+          title="Notices about the last answer">
+          ${ICONS.info}<span id="noticesCount">0</span>
+        </button>
+        <button type="button" id="sendBtn" class="send-btn" title="Send" aria-label="Send"><span class="i-send">${ICONS.send}</span><span class="i-stop">${ICONS.stop}</span></button>
+      </div>
     </div>
-    <div id="contextPopup" class="context-popup" hidden role="dialog" aria-label="Context usage">
-      <div class="context-popup-head">
-        <div class="context-popup-title">Context Usage</div>
-        <button type="button" class="context-popup-close" id="contextPopupClose" aria-label="Close context usage">✕</button>
-      </div>
-      <div class="context-popup-summary">
-        <span id="contextPct">0% Full</span>
-        <span id="contextTotals">~0 / 128K Tokens</span>
-      </div>
-      <div class="context-bar" id="contextBar" aria-hidden="true"></div>
-      <div class="context-rows" id="contextRows"></div>
-      <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
+    <!-- ADD CONTEXT (＋): what can go in with the question, each a source that
+         works today. The host does the reading (chatPanel.ts onAddContext). -->
+    <div id="contextMenu" class="pop-menu context-menu" hidden role="menu" aria-label="Add context">
+      <div class="pop-title">Add context</div>
+      <button type="button" class="menu-item" role="menuitem" data-context="currentFile">${ICONS.file}<span class="mi-text"><span class="mi-name">Current file</span><span class="mi-desc" id="ctxCurrentFile">The file open in the editor</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="selection">${ICONS.selection}<span class="mi-text"><span class="mi-name">Selection</span><span class="mi-desc">Use the selected code</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="files">${ICONS.paperclip}<span class="mi-text"><span class="mi-name">Files</span><span class="mi-desc">Documents, code, PDFs</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="image">${ICONS.image}<span class="mi-text"><span class="mi-name">Image</span><span class="mi-desc">A screenshot, a diagram, an error</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="openFile">${ICONS.code}<span class="mi-text"><span class="mi-name">An open file</span><span class="mi-desc">Any file open in a tab</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="problems">${ICONS.warning}<span class="mi-text"><span class="mi-name">Diagnostics</span><span class="mi-desc">Errors and warnings in the current file</span></span></button>
     </div>
-    <div id="modelPopup" class="modes-popup model-popup" hidden role="dialog" aria-label="Choose model">
-      <div class="modes-popup-head">
-        <div class="modes-popup-title">Model</div>
+    <!-- MODEL & SETTINGS (⚙ and the model chip): the provider, its models, the
+         effort, the mode, how full the context is, and the ways on to the pages.
+         id="modelPopup" because the model menu's code opens and closes it. -->
+    <div id="modelPopup" class="settings-popover" hidden role="dialog" aria-label="Model and settings">
+      <div class="sp-head">
+        <div class="sp-title">Model &amp; settings</div>
+        <button type="button" class="connect-icon" id="settingsClose" aria-label="Close" title="Close">✕</button>
       </div>
-      <div class="modes-list" id="modelList" role="listbox" aria-label="Models"></div>
+      <div class="sp-scroll">
+        <div class="sp-section">
+          <div class="sp-label">Provider</div>
+          <div class="provider-grid" id="providerGrid" role="list" aria-label="Providers"></div>
+        </div>
+        <div class="sp-section">
+          <div class="sp-label">Model</div>
+          <div class="modes-list model-list" id="modelList" role="listbox" aria-label="Models"></div>
+        </div>
+        <div class="sp-section">
+          <div class="sp-label">Effort</div>
+          <div class="seg-row" id="effortSeg" role="radiogroup" aria-label="Thinking effort">
+            <button type="button" role="radio" aria-checked="false" data-effort=""><span class="seg-name">Auto</span><span class="seg-desc">Model default</span></button>
+            <button type="button" role="radio" aria-checked="false" data-effort="low"><span class="seg-name">Low</span><span class="seg-desc">Faster</span></button>
+            <button type="button" role="radio" aria-checked="false" data-effort="medium"><span class="seg-name">Medium</span><span class="seg-desc">Balanced</span></button>
+            <button type="button" role="radio" aria-checked="false" data-effort="high"><span class="seg-name">High</span><span class="seg-desc">More careful</span></button>
+          </div>
+        </div>
+        <div class="sp-section">
+          <div class="sp-label">Mode</div>
+          <div class="seg-row" id="modeSeg" role="radiogroup" aria-label="Agent mode">
+            <button type="button" role="radio" aria-checked="false" data-mode="manual"><span class="seg-name">Manual</span><span class="seg-desc">You apply edits</span></button>
+            <button type="button" role="radio" aria-checked="false" data-mode="plan"><span class="seg-name">Plan</span><span class="seg-desc">Plan first</span></button>
+            <button type="button" role="radio" aria-checked="false" data-mode="auto"><span class="seg-name">Auto</span><span class="seg-desc">Edits apply</span></button>
+          </div>
+        </div>
+        <div class="sp-section" id="contextPopup" role="group" aria-label="Context usage">
+          <div class="sp-label sp-label-row"><span>Context</span><span id="contextPct">0% Full</span></div>
+          <div class="context-bar" id="contextBar" aria-hidden="true"></div>
+          <div class="context-popup-summary"><span id="contextTotals">~0 / 128K Tokens</span></div>
+          <div class="context-rows" id="contextRows"></div>
+          <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
+        </div>
+        <div class="sp-links">
+          <button type="button" class="menu-item" data-open-page="customize">${ICONS.plug}<span class="mi-text"><span class="mi-name">MCP servers</span></span>${ICONS.chevron}</button>
+          <button type="button" class="menu-item" data-open-page="account">${ICONS.key}<span class="mi-text"><span class="mi-name">Account &amp; API key</span></span>${ICONS.chevron}</button>
+          <button type="button" class="menu-item" data-open-page="settings">${ICONS.sliders}<span class="mi-text"><span class="mi-name">More settings</span></span>${ICONS.chevron}</button>
+        </div>
+      </div>
     </div>
     <div id="modesPopup" class="modes-popup" hidden role="dialog" aria-label="Select mode">
       <div class="modes-popup-head">
@@ -3006,7 +3740,8 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
         </button>
       </div>
     </div>
-  </div>`;
+  </div>
+  ${chatPagesMarkup()}`;
 }
 
 // clip shortens s to at most n characters for a label, marking the cut.

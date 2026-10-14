@@ -142,9 +142,6 @@ export interface LocalCommandHost {
    */
   saveTextToFile(text: string, suggestedName: string): Promise<string>;
 
-  /** Open the Mochiii section of VS Code's settings UI (/config). */
-  openSettings(): Promise<void>;
-
   /** Whether a provider key is in use, for /status and /doctor. */
   hasApiKey(): Promise<boolean>;
 
@@ -152,17 +149,18 @@ export interface LocalCommandHost {
   daemonReachable(): Promise<boolean>;
 
   /**
-   * Open the MCP marketplace in an editor tab, with `search` in its search box
-   * when it is not empty (/mcp-server). Resolves false when the user declined
-   * the marketplace's one-time notice, so nothing opened.
+   * Open one of the chat's pages (Stage 8): Customize (/mcp-server, which
+   * goes to its MCP tab, and to the marketplace with `search` when given),
+   * Account (/account) or Settings (/config).
    *
-   * A host method because it LEAVES the panel. What it replaced is why it is
-   * safe to reach from here: /mcp-server used to run `mochiii-daemon mcp list`
-   * itself, the one local command that started a program -- and that started
-   * every configured server and printed their stderr. The marketplace asks the
-   * RUNNING daemon over its socket, and adds nothing until a name is typed.
+   * A host method because it LEAVES the conversation for a page. What it
+   * replaced is why it is safe to reach from here: /mcp-server used to run
+   * `mochiii-daemon mcp list` itself, the one local command that started a
+   * program -- and that started every configured server and printed their
+   * stderr. A page asks the RUNNING daemon over its socket, and adds nothing
+   * until a server's name is typed.
    */
-  openMcpMarketplace(search: string): Promise<boolean>;
+  openPage(page: 'customize' | 'account' | 'settings', search?: string): Promise<boolean>;
 }
 
 
@@ -251,22 +249,20 @@ export async function runLocalCommand(
     case 'init':
       return formatInitChecklist(host.workspace);
 
-    // THE MARKETPLACE, not a table in the transcript (2026-10-13). This printed
-    // what `mochiii-daemon mcp list` said, which started every configured
-    // server to ask it and put their stderr on screen (RESIDUAL_RISKS.md R1.5).
-    // Servers are found, added and managed in the marketplace and the MCP
-    // Servers view now; words after the command become its search.
-    case 'mcp-server': {
-      const search = args.trim();
-      if (!(await host.openMcpMarketplace(search))) {
-        return 'the MCP Marketplace was not opened; run /mcp-server again when you want it';
-      }
-      return (
-        `opened the MCP Marketplace in an editor tab${search ? `, searching for "${search}"` : ''}. ` +
-        "Servers you add are listed under MCP Servers in Mochiii's side bar, and the agent can use their tools from " +
-        'your next message. To see every tool it has now, run "Mochiii: Show MCP Tools".'
-      );
-    }
+    // A PAGE, not a table in the transcript. /mcp-server printed what
+    // `mochiii-daemon mcp list` said, which started every configured server to
+    // ask it and put their stderr on screen (RESIDUAL_RISKS.md R1.5); since
+    // 2026-10-13 it opens the MCP servers instead, and words after it search
+    // the marketplace. Like /config and /account it answers nothing in the
+    // chat: the page is the answer. (The webview opens these itself before
+    // sending; this is the same thing for any route that does reach here.)
+    case 'mcp-server':
+      await host.openPage('customize', args.trim());
+      return '';
+
+    case 'account':
+      await host.openPage('account');
+      return '';
 
     case 'search': {
       const q = args.toLowerCase();
@@ -435,8 +431,8 @@ ${MODE_HELP}`;
     }
 
     case 'config':
-      await host.openSettings();
-      return "opened Mochiii's settings";
+      await host.openPage('settings');
+      return '';
 
     default:
       return UNKNOWN_LOCAL_COMMAND;

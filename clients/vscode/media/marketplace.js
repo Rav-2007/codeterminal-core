@@ -8,12 +8,23 @@
 //
 // One function scope: this file and main.js are type-checked as one project
 // (media/jsconfig.json), and two scripts' top-level names would collide.
+//
+// A FACTORY SINCE STAGE 8: window.MochiiiMarketplace.mount(root, post) draws
+// the marketplace into `root` and sends its requests through `post`, so the
+// chat's Customize page shows the same marketplace its editor tab does. On
+// its own page (#app, no chat) it mounts itself, as before.
 
 (function () {
   'use strict';
 
-  const vscode = acquireVsCodeApi();
   const PAGE = 40;
+
+  /**
+   * @param {HTMLElement} app where to draw
+   * @param {(msg: any) => void} post how a request reaches the host
+   * @returns {{ receive: (msg: any) => void }}
+   */
+  function mount(app, post) {
 
   /**
    * @typedef {{ name: string, required: boolean, secret: boolean, description?: string }} EnvView
@@ -73,7 +84,6 @@
 
   // ---- the page shell, built once -------------------------------------------
 
-  const app = /** @type {HTMLElement} */ (document.getElementById('app'));
   app.append(
     el('h1', '', 'MCP Marketplace'),
     el(
@@ -114,8 +124,8 @@
     search,
     tabs,
     category,
-    button('Refresh', 'btn secondary', () => vscode.postMessage({ type: 'refresh' })),
-    button('Installed servers', 'btn secondary', () => vscode.postMessage({ type: 'manage' }))
+    button('Refresh', 'btn secondary', () => post({ type: 'refresh' })),
+    button('Installed servers', 'btn secondary', () => post({ type: 'manage' }))
   );
 
   const notices = el('div', '');
@@ -152,7 +162,7 @@
     if (state.tier !== 'verified' && state.communityCount > 0 && offset === 0) {
       state.loadingCommunity = true;
     }
-    vscode.postMessage({ type: 'query', q: state.q, tier: state.tier, category: state.category, offset, limit });
+    post({ type: 'query', q: state.q, tier: state.tier, category: state.category, offset, limit });
   }
 
   // window's timer, not Node's: this runs in a webview, and @types/node (visible
@@ -217,17 +227,17 @@
     const busy = state.busy.has(c.id);
     const label =
       busy ? 'Adding…' : c.installed === 'added' ? 'Added' : c.installed === 'disabled' ? 'Added (disabled)' : c.installed === 'taken' ? 'Name in use' : 'Add';
-    const add = button(label, 'btn', () => vscode.postMessage({ type: 'install', id: c.id }));
+    const add = button(label, 'btn', () => post({ type: 'install', id: c.id }));
     add.disabled = busy || c.installed !== '';
     if (c.installed === 'taken') {
       add.title = `A server named ${c.id} is already defined in the daemon's models.json`;
     }
     actions.append(add);
     if (c.hasHomepage) {
-      actions.append(button('Homepage', 'link', () => vscode.postMessage({ type: 'open', id: c.id, which: 'homepage' })));
+      actions.append(button('Homepage', 'link', () => post({ type: 'open', id: c.id, which: 'homepage' })));
     }
     if (c.hasPackageUrl) {
-      actions.append(button('Package', 'link', () => vscode.postMessage({ type: 'open', id: c.id, which: 'package' })));
+      actions.append(button('Package', 'link', () => post({ type: 'open', id: c.id, which: 'package' })));
     }
     node.append(actions);
     return node;
@@ -266,8 +276,8 @@
 
   // ---- messages from the host --------------------------------------------------
 
-  window.addEventListener('message', (event) => {
-    const msg = event.data;
+  /** @param {any} msg */
+  function receive(msg) {
     switch (msg && msg.type) {
       case 'loading':
         if (msg.what === 'catalog') {
@@ -345,8 +355,20 @@
         drawFocus();
         return;
     }
-  });
+  }
 
   drawTabs();
-  vscode.postMessage({ type: 'ready' });
+  post({ type: 'ready' });
+  return { receive };
+  }
+
+  window.MochiiiMarketplace = { mount };
+
+  // Its own editor tab: the page has #app and no chat.
+  const standalone = document.getElementById('app');
+  if (standalone && !document.getElementById('pageCustomize')) {
+    const vscode = acquireVsCodeApi();
+    const market = mount(standalone, (msg) => vscode.postMessage(msg));
+    window.addEventListener('message', (event) => market.receive(event.data));
+  }
 })();

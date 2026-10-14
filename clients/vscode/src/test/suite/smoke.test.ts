@@ -39,6 +39,13 @@ suite('E2E smoke', () => {
   // would be asserting the behaviour this release set out to remove. The
   // editor-tab route kept its own command, and both are checked.
   test('openChat focuses the sidebar view rather than opening an editor tab', async () => {
+    // Test files run in whatever order glob returns them, and other suites
+    // drive a chat panel in an editor tab (chatSync, chatPanelTeam). Close any
+    // they left, so what this asserts is what openChat does, not their order.
+    const leftover = vscode.window.tabGroups.all.flatMap((g) => g.tabs.filter((t) => t.label === PANEL_TITLE));
+    if (leftover.length > 0) {
+      await vscode.window.tabGroups.close(leftover);
+    }
     assert.ok(!chatTabOpen(), 'no chat tab should be open before the command runs');
     await vscode.commands.executeCommand('mochiii.openChat');
     await new Promise((r) => setTimeout(r, 300));

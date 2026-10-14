@@ -6,7 +6,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { PROVIDERS, formatConnectResult, parseConnectArgs, providerByName, providerForBase, providerLabel } from '../../connectFlow';
+import { ANY_KEY_CHOICE, PROVIDERS, formatConnectResult, keyMismatch, modelChoices, parseConnectArgs, providerByName, providerChoices, providerForBase, providerLabel } from '../../connectFlow';
 import { ConnectResponse, preflightSession, sendConnect } from '../../daemonClient';
 import { StubDaemon, writeLine } from '../stubDaemon';
 
@@ -188,5 +188,72 @@ suite('/connect on the wire', function () {
       const s = await preflightSession('test');
       assert.strictEqual(s.needsApiKey, true);
     });
+  });
+});
+
+suite('the connect popup: a provider, then its key', () => {
+  test('every provider is offered, with the start its keys carry', () => {
+    const choices = providerChoices();
+    assert.deepStrictEqual(choices.map((c) => c.id), PROVIDERS.map((p) => p.id));
+    assert.strictEqual(choices.find((c) => c.id === 'groq')!.hint, 'gsk_…');
+    assert.strictEqual(choices.find((c) => c.id === 'openai')!.hint, 'sk-proj-…  sk-svcacct-…');
+    assert.strictEqual(choices.find((c) => c.id === 'mistral')!.hint, '', 'no prefix of its own, so no hint');
+  });
+
+  test("a key plainly another provider's is not sent to the one chosen", () => {
+    const groq = providerByName('groq')!.apiBase;
+    const msg = keyMismatch('sk-ant-api03-abc', groq);
+    assert.ok(msg && msg.includes('Anthropic') && msg.includes('Groq') && msg.includes('Nothing was sent'));
+    assert.ok(!msg!.includes('sk-ant-api03-abc'), 'the key itself is never in the sentence');
+  });
+
+  test('a matching key, or one whose shape names nobody, goes ahead', () => {
+    assert.strictEqual(keyMismatch('gsk_abc', providerByName('groq')!.apiBase), undefined);
+    assert.strictEqual(keyMismatch('sk-abc', providerByName('deepseek')!.apiBase), undefined);
+    assert.strictEqual(keyMismatch('anything', providerByName('mistral')!.apiBase), undefined);
+    assert.strictEqual(keyMismatch('gsk_abc', 'http://localhost:11434/v1'), undefined);
+  });
+});
+
+suite('the connect popup: "Any key", and the model list (clients/tui/setup.go modelRows)', () => {
+  test('"Any key" has no address: the daemon tells the provider from the key', () => {
+    assert.strictEqual(ANY_KEY_CHOICE.apiBase, '');
+    assert.ok(!providerChoices().some((c) => c.apiBase === ''), 'every listed provider has an address');
+  });
+
+  const tiers = [
+    { name: 'llama-3.3-70b', slug: 'llama-3.3-70b', active: true, default: true },
+    { name: 'gpt-oss', slug: 'openai/gpt-oss-120b', active: true, quiet: true },
+    { name: 'off', slug: 'off', active: false },
+    { name: 'qwen', slug: 'qwen/qwen3-32b', active: true },
+  ];
+
+  test('only active models; the default is in force when this panel chose none', () => {
+    const { rows, inForce } = modelChoices(tiers, '');
+    assert.deepStrictEqual(rows.map((r) => r.name), ['llama-3.3-70b', 'qwen', 'gpt-oss']);
+    assert.strictEqual(inForce, 'llama-3.3-70b');
+    assert.deepStrictEqual(rows.filter((r) => r.current).map((r) => r.name), ['llama-3.3-70b']);
+  });
+
+  test('models that did not answer come last and dimmed; the id is shown only when it says more', () => {
+    const { rows } = modelChoices(tiers, '');
+    const quiet = rows[rows.length - 1];
+    assert.strictEqual(quiet.quiet, true);
+    assert.ok(quiet.hint.startsWith('openai/gpt-oss-120b') && quiet.hint.includes('did not answer'));
+    assert.strictEqual(rows[0].hint, '', 'name and id are the same string: shown once');
+    assert.strictEqual(rows[1].hint, 'qwen/qwen3-32b');
+  });
+
+  test("this panel's choice outranks the default, and is not moved or dimmed", () => {
+    const { rows, inForce } = modelChoices(tiers, 'gpt-oss');
+    assert.strictEqual(inForce, 'gpt-oss');
+    const chosen = rows.find((r) => r.name === 'gpt-oss')!;
+    assert.strictEqual(chosen.current, true);
+    assert.strictEqual(chosen.quiet, false, 'the model in use is never drawn as not recommended');
+  });
+
+  test('a choice no longer offered names nothing; the default stands', () => {
+    assert.strictEqual(modelChoices(tiers, 'off').inForce, 'llama-3.3-70b');
+    assert.strictEqual(modelChoices(tiers, 'gone').inForce, 'llama-3.3-70b');
   });
 });

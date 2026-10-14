@@ -122,6 +122,23 @@ func laneBLaunchConfig(name string, srv MCPServerConfig, cfg *Config, dir string
 	}
 }
 
+// builtinRegistry is a registry holding this daemon's own (Lane A) tools and
+// nothing else: the first half of buildRegistry, and all of what
+// MCPActionTools reports. It starts no program.
+func (s *Server) builtinRegistry(cfg *Config, logger *log.Logger, proposals *proposalSink, mode string) *mcp.Registry {
+	registry := mcp.NewRegistry(configPolicy{cfg: cfg}, cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode))
+	if !cfg.MCP.Builtin.Disabled {
+		for _, b := range s.builtinTools(proposals, mode) {
+			if err := registry.RegisterBuiltin(b); err != nil {
+				// A duplicate or malformed built-in is our own bug, not the
+				// user's config, so it is loud rather than silent.
+				logger.Printf("mcp: refusing to register built-in tool: %v", err)
+			}
+		}
+	}
+	return registry
+}
+
 // buildRegistry assembles the tool surface for this daemon: the built-in Lane A
 // tools, plus a connected client for each enabled Lane B server.
 //
@@ -141,17 +158,7 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 	for _, problem := range problems {
 		logger.Printf("mcp: %s", problem)
 	}
-	registry := mcp.NewRegistry(configPolicy{cfg: cfg}, cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode))
-
-	if !cfg.MCP.Builtin.Disabled {
-		for _, b := range s.builtinTools(proposals, mode) {
-			if err := registry.RegisterBuiltin(b); err != nil {
-				// A duplicate or malformed built-in is our own bug, not the
-				// user's config, so it is loud rather than silent.
-				logger.Printf("mcp: refusing to register built-in tool: %v", err)
-			}
-		}
-	}
+	registry := s.builtinRegistry(cfg, logger, proposals, mode)
 
 	// LANE B IS WITHHELD ENTIRELY IN PLAN MODE, and this is the half of the
 	// plan-mode filter that was missing.

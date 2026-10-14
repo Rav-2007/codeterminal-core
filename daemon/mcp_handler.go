@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"mochiii/daemon/mcp"
 	"mochiii/protocol"
 )
 
@@ -68,6 +69,8 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 	case protocol.MCPActionServers:
 		cfg, problems := s.agentConfig()
 		return protocol.MCPResponse{Ok: true, AgentMode: cfg.MCP.Enabled, Servers: s.serverInfos(cfg), Notes: problems}
+	case protocol.MCPActionTools:
+		return s.mcpTools(ctx)
 	case protocol.MCPActionAdd:
 		return s.mcpStore(ctx, req, false)
 	case protocol.MCPActionUpdate:
@@ -80,7 +83,7 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 		return s.mcpSetDisabled(ctx, req, true)
 	}
 	return protocol.MCPResponse{Error: fmt.Sprintf("unknown mcp action %q; the actions are %s", truncateForClient(req.Action, 32),
-		strings.Join([]string{protocol.MCPActionList, protocol.MCPActionServers, protocol.MCPActionAdd,
+		strings.Join([]string{protocol.MCPActionList, protocol.MCPActionServers, protocol.MCPActionTools, protocol.MCPActionAdd,
 			protocol.MCPActionUpdate, protocol.MCPActionRemove, protocol.MCPActionEnable, protocol.MCPActionDisable}, ", "))}
 }
 
@@ -121,6 +124,36 @@ func (s *Server) mcpList(ctx context.Context) protocol.MCPResponse {
 		return protocol.MCPResponse{Error: "listing the tools: " + err.Error()}
 	}
 	resp.Report = report.String()
+	return resp
+}
+
+// mcpTools reports this daemon's own tools and the policy on each, for a
+// client that shows them (the VS Code Customize page). Unlike mcpList it
+// STARTS NOTHING: the registry holds only the built-ins, and a third-party
+// server's tools are left to mcpList, which has to start the server to ask.
+func (s *Server) mcpTools(ctx context.Context) protocol.MCPResponse {
+	cfg, problems := s.agentConfig()
+	resp := protocol.MCPResponse{Ok: true, AgentMode: cfg.MCP.Enabled, Servers: s.serverInfos(cfg), Notes: problems}
+	if !cfg.MCP.Enabled {
+		resp.Notes = append(resp.Notes, "agent mode is off in "+s.configPathOrDefault()+", so none of these is offered to the model")
+	}
+	registry := s.builtinRegistry(cfg, s.logger, &proposalSink{}, "")
+	defer func() { _ = registry.Close() }()
+	tools, _ := registry.Advertised(ctx)
+	for _, tool := range tools {
+		_, policy, err := registry.Lookup(ctx, tool.QualifiedName())
+		if err != nil {
+			policy = mcp.PolicyDeny
+		}
+		resp.Tools = append(resp.Tools, protocol.MCPToolInfo{
+			Name: tool.QualifiedName(), Lane: tool.Lane, Confined: confinedLabel(tool),
+			Policy: string(policy), Description: firstLine(tool.Description),
+		})
+	}
+	if dropped := registry.Dropped(); len(dropped) > 0 {
+		resp.Notes = append(resp.Notes, fmt.Sprintf("%d tool(s) are not offered because mcp.budget.max_advertised_tools is %d: %s",
+			len(dropped), cfg.MCP.Budget.resolvedMaxAdvertisedTools(), strings.Join(dropped, ", ")))
+	}
 	return resp
 }
 
