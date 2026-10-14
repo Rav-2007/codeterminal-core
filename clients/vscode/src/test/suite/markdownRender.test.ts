@@ -177,9 +177,12 @@ suite('composer controls say what they are', () => {
 
   test('the model chip opens a dropdown instead of posting /model into the chat', () => {
     const markup = fs.readFileSync(CHAT_PANEL_TS, 'utf8');
-    const chip = /<button type="button" class="pill" id="modelChip"[\s\S]*?>/.exec(markup);
+    // Stage 9: the chip opens the model & settings popover -- a dialog holding
+    // the model listbox -- rather than a bare listbox.
+    const chip = /<button type="button" class="pill model-chip" id="modelChip"[\s\S]*?>/.exec(markup);
     assert.ok(chip, 'no #modelChip button');
-    assert.match(chip[0], /aria-haspopup="listbox"/);
+    assert.match(chip[0], /aria-haspopup="dialog"/);
+    assert.match(chip[0], /aria-controls="modelPopup"/);
     assert.match(chip[0], /aria-expanded="false"/);
     assert.match(markup, /<div id="modelPopup"[^>]*role="dialog"/);
     assert.match(markup, /id="modelList" role="listbox"/);

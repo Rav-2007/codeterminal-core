@@ -57,12 +57,14 @@ const stylesFiles = [
   path.join(root, 'src', 'chatPanel.ts'),
   path.join(root, 'src', 'mcpMarketplace.ts'),
   path.join(root, 'src', 'chatPages', 'markup.ts'),
+  path.join(root, 'src', 'chatLook.ts'),
 ];
 const webviewFiles = [
   path.join(root, 'media', 'main.js'),
   path.join(root, 'media', 'marketplace.js'),
   path.join(root, 'media', 'pages.js'),
   path.join(root, 'media', 'connect.js'),
+  path.join(root, 'media', 'controls.js'),
 ];
 
 /** Colour literals: #rgb/#rrggbb/#rrggbbaa, plus the legacy functional forms. */
