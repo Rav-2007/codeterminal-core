@@ -100,11 +100,9 @@ func (s *Server) withAgentSetup(ctx context.Context, registry *mcp.Registry, mod
 	offered, _ := registry.Advertised(ctx)
 	// The listing is also each server's health: how many tools it offered.
 	s.mcpStates.listed(registry.Listed())
-	if offered != nil {
-		for _, t := range offered {
-			if t.Server != mcp.BuiltinServerName {
-				tools[t.Server] = append(tools[t.Server], t.Name)
-			}
+	for _, t := range offered {
+		if t.Server != mcp.BuiltinServerName {
+			tools[t.Server] = append(tools[t.Server], t.Name)
 		}
 	}
 	_, base := s.credentials()
