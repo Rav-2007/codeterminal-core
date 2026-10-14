@@ -1031,6 +1031,10 @@ func (c *Config) warnMCPPolicySurface() {
 				"only when one is installed and otherwise with your full privileges — set these to %q to see each command first",
 				len(executes), strings.Join(executes, ", "), PolicyAsk)
 		}
+		if changes := byClass[classChangesFiles]; len(changes) > 0 {
+			c.warnf("mcp.builtin: %s set to %q, but each changes your real files when it runs, so it asks you "+
+				"every time whatever this setting says", strings.Join(changes, ", "), PolicyAllow)
+		}
 		if unknown := byClass[classUnknown]; len(unknown) > 0 {
 			c.warnf("mcp.builtin: %s set to %q, but no built-in tool has that name, so the setting does nothing",
 				strings.Join(unknown, ", "), PolicyAllow)
@@ -1061,11 +1065,12 @@ func (c *Config) warnMCPPolicySurface() {
 type builtinClass int
 
 const (
-	classUnknown  builtinClass = iota // not the name of any built-in
-	classConfined                     // our code, behind the same gates as everything else
-	classNetwork                      // sends data to a third party over the internet
-	classLaunches                     // can start a language server (register item 32)
-	classExecutes                     // runs commands the project's build files define
+	classUnknown      builtinClass = iota // not the name of any built-in
+	classConfined                         // our code, behind the same gates as everything else
+	classNetwork                          // sends data to a third party over the internet
+	classLaunches                         // can start a language server (register item 32)
+	classExecutes                         // runs commands the project's build files define
+	classChangesFiles                     // deletes, moves or restores the user's real files (fileops.go)
 )
 
 // builtinToolClasses names every built-in the daemon can register.
@@ -1107,6 +1112,10 @@ var builtinToolClasses = map[string]builtinClass{
 	// It runs a read-only sub-search; each tool call inside it is asked about
 	// on its own (investigate.go).
 	"investigate": classConfined,
+	// They change real files when allowed, so they always ask (fileops.go).
+	"delete_path":     classChangesFiles,
+	"move_path":       classChangesFiles,
+	"restore_deleted": classChangesFiles,
 }
 
 // builtinToolClass classifies a configured built-in name. An unknown name is

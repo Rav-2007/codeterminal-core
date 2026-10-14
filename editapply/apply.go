@@ -475,6 +475,12 @@ func ResolveSafeTargetPath(realWorkspaceRoot, relPath string) (string, error) {
 	return path, nil
 }
 
+// ResolveSafePath is ResolveSafeTargetPath for a path that may not exist yet --
+// a move's destination -- reporting whether it does. Every gate is the same.
+func ResolveSafePath(realWorkspaceRoot, relPath string) (path string, exists bool, err error) {
+	return resolveSafeTarget(realWorkspaceRoot, relPath)
+}
+
 // resolveSafeTarget is ResolveSafeTargetPath's implementation, reporting
 // separately whether the target exists rather than treating absence as a
 // failure (Fix 7). Every gate below applies identically to a path that is about

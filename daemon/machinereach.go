@@ -106,8 +106,15 @@ func machineReach(offered func(tool string) bool, mode string, programs []string
 			"folders, ~/bin, .desktop files, and any path outside the home folder.")
 	}
 
-	b.WriteString("\n- You CANNOT delete, move or rename a file or folder: no tool does it. Say so, " +
-		"and give the user the command to run themselves.")
+	if offered(deleteToolName) || offered(moveToolName) {
+		b.WriteString("\n- DELETE, MOVE and RENAME files and folders with delete_path and move_path, in the project " +
+			"and where an edit may write in the home folder. Each asks the user first. A deleted one goes to " +
+			"Mochiii's trash and restore_deleted puts it back; a move never overwrites. Always refused: .git, " +
+			".mochiii, hidden files outside the project, credentials files, and the project itself.")
+	} else {
+		b.WriteString("\n- You CANNOT delete, move or rename a file or folder: no tool does it. Say so, " +
+			"and give the user the command to run themselves.")
+	}
 
 	if offered(builtinSandboxExecName) {
 		b.WriteString("\n- RUN only build and test commands (" + strings.Join(programs, ", ") +

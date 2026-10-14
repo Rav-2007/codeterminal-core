@@ -19,6 +19,8 @@ func classFromFlags(t mcp.Tool) builtinClass {
 		return classExecutes
 	case t.LaunchesSubprocess:
 		return classLaunches
+	case t.Destructive:
+		return classChangesFiles
 	default:
 		return classConfined
 	}

@@ -2836,6 +2836,27 @@ func approvalQuestion(req protocol.ToolApprovalRequest) string {
 		v, _ := args[k].(string)
 		return sanitizeText(v)
 	}
+	// Deleting and moving files (daemon/fileops.go): said as what happens.
+	if req.Server == "builtin" {
+		two := func(a, b string) (string, string) {
+			if len(args) != 2 {
+				return "", ""
+			}
+			x, _ := args[a].(string)
+			y, _ := args[b].(string)
+			return sanitizeText(x), sanitizeText(y)
+		}
+		switch req.Tool {
+		case "delete_path":
+			if p := str("path"); p != "" {
+				return "Delete " + p + " (moved to Mochiii's trash, where it can be restored) ?"
+			}
+		case "move_path":
+			if from, to := two("from", "to"); from != "" && to != "" {
+				return "Move " + from + " to " + to + " ?"
+			}
+		}
+	}
 	switch {
 	case req.OutsidePath != "":
 		return "Read outside this project: " + sanitizeText(req.OutsidePath) + " ?"

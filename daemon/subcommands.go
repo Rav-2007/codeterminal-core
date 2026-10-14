@@ -39,6 +39,7 @@ var subcommands = []subcommand{
 	{"retrieve", "run one retrieval query against the index", runRetrieveCommand},
 	{"edits", "apply or inspect edit payloads", runEditsCommand},
 	{"mcp", "list the tools agent mode offers; add or remove an MCP server", runMCPCommand},
+	{"trash", "list or restore what the agent deleted (delete_path)", runTrashCommand},
 	{"download-model", "fetch the embedding model this machine needs", runDownloadModelCommand},
 	{"helper-smoketest", "check that the embedder helper runs here", runHelperSmoketestCommand},
 }

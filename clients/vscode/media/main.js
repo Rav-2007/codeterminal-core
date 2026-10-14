@@ -2586,6 +2586,15 @@
     }
     const only = (k) =>
       Object.keys(args).length === 1 && typeof args[k] === 'string' ? args[k] : '';
+    // Deleting and moving files (daemon/fileops.go): said as what happens.
+    // Kept word for word with the TUI's approvalQuestion.
+    if (req.server === 'builtin' && req.tool === 'delete_path' && only('path')) {
+      return 'Delete ' + only('path') + " (moved to Mochiii's trash, where it can be restored) ?";
+    }
+    if (req.server === 'builtin' && req.tool === 'move_path' && Object.keys(args).length === 2 &&
+        typeof args.from === 'string' && typeof args.to === 'string') {
+      return 'Move ' + args.from + ' to ' + args.to + ' ?';
+    }
     if (req.outside_path) {
       return 'Read outside this project: ' + req.outside_path + ' ?';
     }
@@ -2683,6 +2692,9 @@
     sandbox_exec: 'Ran a command in the sandbox',
     web_fetch: 'Fetched a web page',
     web_search: 'Searched the web',
+    delete_path: 'Deleted a file',
+    move_path: 'Moved a file',
+    restore_deleted: 'Restored a deleted file',
   };
   const WORK_STATE_WORDS = { run: 'running', ok: 'done', fail: 'failed', denied: 'not run', step: '' };
   // The badge each row carries (Stage 9, the mockup's "Tool Execution" card).

@@ -332,6 +332,18 @@ func TestBuiltinsAreConfinedAndReadOnly(t *testing.T) {
 		}
 		// v1's built-ins are all reads, with the exception of sandbox_exec which
 		// is allowed to run tests and compilations that may write build artifacts.
+		//
+		// AND, SINCE 2026-10-14, THE FILE OPERATIONS THE USER ASKED FOR. A deletion
+		// has no diff to review, so delete_path, move_path and restore_deleted
+		// are actions instead -- and an action that changes real files is only
+		// allowed here if it asks on every call whatever the config says and is
+		// marked destructive, which this checks rather than assumes.
+		if alwaysAskTools[tool.Name] {
+			if !tool.Destructive {
+				t.Errorf("built-in %q changes files but is not marked destructive", tool.Name)
+			}
+			continue
+		}
 		if !tool.ReadOnlyHint && tool.Name != "sandbox_exec" {
 			t.Errorf("built-in %q is not read-only. Lane A tools must not mutate the filesystem: "+
 				"a write tool belongs in the existing edit-proposal flow, where the user sees a diff", tool.Name)

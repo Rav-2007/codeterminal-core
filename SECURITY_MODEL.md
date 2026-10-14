@@ -1142,6 +1142,31 @@ the servers a repository is meant to be worked with — is now read
   a name the user already uses keeps the user's server. VS Code offers Approve
   only in a trusted folder.
 
+## Deleting and moving files (2026-10-14)
+
+`delete_path` and `move_path` (`daemon/fileops.go`) change the user's real files
+the moment a call is allowed, so they are not proposals — a deletion has no diff
+to review — but asked-about actions, like a command:
+
+- **Every call asks**, whatever `mcp.builtin.tools` says (`alwaysAskTools`), and
+  the question names the path. A "yes for this turn" covers that exact path only
+  (`grantKey` binds a destructive tool's grant to its arguments).
+- **Only where an edit may write**, by the same code (`editapply.ResolveSafePath`,
+  `OutsideWriteRefusal`): the project, or the home folder outside hidden files,
+  `~/bin`, `~/Library`, `~/AppData` and `.desktop` files. Never a protected
+  folder (`.git`, `.mochiii`, …) or a secret-named file — named directly or held
+  inside a folder (a `.git` *file* included) — never the project or home itself,
+  and a link is judged by where it leads.
+- **Nothing is destroyed.** A delete is a rename into `.mochiii/trash` (or
+  `~/.mochiii/trash`), which the agent cannot read or write; `restore_deleted`
+  or `mochiii-daemon trash restore <id>` puts it back, never over a path that
+  exists again. Entries older than 30 days are cleared. A delete that cannot be a
+  rename (another file system) is refused rather than copied.
+- **A move never overwrites.**
+- Withheld in plan, spec and check modes. The turn's working copy follows the
+  change, so later reads see it and an edit to a moved file is offered at its
+  new path.
+
 ## Tool output is egress, and is treated as egress
 
 Whatever a tool returns goes to the model, which means it leaves the machine. It
