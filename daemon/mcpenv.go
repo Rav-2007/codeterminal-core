@@ -257,6 +257,12 @@ func (b *mcpStateBook) started(name string, err error) {
 		b.states[name] = mcpServerState{state: protocol.MCPStateRunning, tools: prev.tools, counted: prev.counted}
 		return
 	}
+	// A remote server that wants a sign-in is its own state: the remedy is a
+	// button, not a fix to its command.
+	if strings.Contains(err.Error(), errNeedsSignIn.Error()) {
+		b.states[name] = mcpServerState{state: protocol.MCPStateNeedsAuth, detail: "it needs you to sign in"}
+		return
+	}
 	detail := b.lastLine[name]
 	if detail == "" {
 		detail = err.Error()

@@ -230,6 +230,7 @@
       const rest = line.replace(/^\S+\s+/, '');
       if (s.disabled) return { badge: 'Paused', tone: 'off', title: 'Paused: its tools are not offered.' };
       if (line.startsWith('✘')) return { badge: 'Failed', tone: 'warn', problem: rest, title: rest };
+      if (line.startsWith('! Needs authentication')) return { badge: 'Sign in', tone: 'warn', problem: 'It needs you to sign in: use Sign in.', title: rest };
       if (line.startsWith('!') && status.needsKey) return { badge: 'Needs key', tone: 'warn', problem: status.detail || rest, title: rest };
       if (line.startsWith('!')) return { badge: 'Tools failed', tone: 'warn', problem: rest, title: rest };
       if (line.startsWith('✔')) {
@@ -278,13 +279,20 @@
         row.append(mono, text, badge);
         /** @param {HTMLElement} acts */
         const addCheck = (acts) => {
+          if (s.canSignIn) {
+            const auth = s.signedIn
+              ? act('Sign out', () => vscode.postMessage({ type: 'mcp:row', action: 'signOut', name: s.name }))
+              : act('Sign in…', () => vscode.postMessage({ type: 'mcp:row', action: 'signIn', name: s.name }), 'primary');
+            auth.setAttribute('aria-label', (s.signedIn ? 'Sign out of ' : 'Sign in to ') + s.name);
+            acts.append(auth);
+          }
           if (!s.canCheck) return;
           const check = act('Check', () => vscode.postMessage({ type: 'mcp:row', action: 'check', name: s.name }));
           check.setAttribute('aria-label', 'Start ' + s.name + ' now and see whether it works');
           check.title = 'Start it now and see whether it works';
           acts.append(check);
         };
-        if (!own && (s.canSetKey || s.canCheck)) {
+        if (!own && (s.canSetKey || s.canCheck || s.canSignIn)) {
           const acts = el('div', 'mcp-acts');
           addCheck(acts);
           if (s.canSetKey) {

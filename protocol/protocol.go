@@ -275,6 +275,11 @@ const FeatureMCPCheck = "mcp_check"
 // Headers and HeadersMissing; ToolApprovalRequest carries Remote.
 const FeatureMCPRemote = "mcp_remote"
 
+// FeatureMCPOAuth: a remote server can be signed in to in the browser
+// (MCPActionAuthStart, AuthWait, AuthComplete, AuthCancel, SignOut).
+// MCPServerInfo carries SignedIn; State may be MCPStateNeedsAuth.
+const FeatureMCPOAuth = "mcp_oauth"
+
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
 // it's the client's own absolute path for the workspace it expects
@@ -1830,6 +1835,11 @@ type MCPRequest struct {
 	// HeaderName, with set_env and a server Name, sets that header's value
 	// (EnvValue) instead of a variable's.
 	HeaderName string `json:"header_name,omitempty"`
+
+	// AuthID names a sign-in auth_start began; CallbackURL is auth_complete's
+	// pasted address (a secret: it holds the one-time code).
+	AuthID      string `json:"auth_id,omitempty"`
+	CallbackURL string `json:"callback_url,omitempty"`
 }
 
 // MCPCwdWorkspace is the one value MCPRequest.Cwd takes besides empty.
@@ -1860,6 +1870,16 @@ const (
 	MCPActionCheck   = "check"
 	MCPActionGet     = "get"
 	MCPActionAddJSON = "add_json"
+
+	// Signing in to a remote server (FeatureMCPOAuth), one short request at a
+	// time: start (answers with the address to open), wait (repeated until
+	// done), complete (the address the browser ended on, pasted, when the
+	// browser cannot reach this daemon), cancel, and sign out.
+	MCPActionAuthStart    = "auth_start"
+	MCPActionAuthWait     = "auth_wait"
+	MCPActionAuthComplete = "auth_complete"
+	MCPActionAuthCancel   = "auth_cancel"
+	MCPActionSignOut      = "sign_out"
 )
 
 // MCPServerInfo is one configured third-party server, in terms safe to print.
@@ -1916,6 +1936,8 @@ type MCPServerInfo struct {
 	URL            string   `json:"url,omitempty"`
 	Headers        []string `json:"headers,omitempty"`
 	HeadersMissing []string `json:"headers_missing,omitempty"`
+	// SignedIn: a sign-in token is stored for this remote server (FeatureMCPOAuth).
+	SignedIn bool `json:"signed_in,omitempty"`
 }
 
 // The states MCPServerInfo.State takes.
@@ -1923,6 +1945,15 @@ const (
 	MCPStateRunning     = "running"
 	MCPStateFailed      = "failed"
 	MCPStateToolsFailed = "tools_failed"
+	// MCPStateNeedsAuth: a remote server answered that it needs a sign-in.
+	MCPStateNeedsAuth = "needs_auth"
+)
+
+// The states of a sign-in (MCPResponse.AuthState).
+const (
+	MCPAuthPending = "pending"
+	MCPAuthDone    = "done"
+	MCPAuthFailed  = "failed"
 )
 
 // Where a configured server came from.
@@ -1962,6 +1993,14 @@ type MCPResponse struct {
 	// Tools answers MCPActionTools: this daemon's own tools, each with the
 	// policy that applies. Additive (FeatureMCPTools).
 	Tools []MCPToolInfo `json:"tools,omitempty"`
+
+	// A sign-in (FeatureMCPOAuth): AuthID names it, AuthURL is the address to
+	// open in a browser, AuthState is MCPAuthPending, Done or Failed, and
+	// ExpiresInSeconds is how long it stays open.
+	AuthID           string `json:"auth_id,omitempty"`
+	AuthURL          string `json:"auth_url,omitempty"`
+	AuthState        string `json:"auth_state,omitempty"`
+	ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
 }
 
 // MCPToolInfo is one tool and what it takes to run it, for a client that

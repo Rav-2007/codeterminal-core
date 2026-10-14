@@ -14,6 +14,8 @@ func mcpStatusLine(info protocol.MCPServerInfo) string {
 	switch {
 	case info.Disabled:
 		return "⊘ Disabled"
+	case info.State == protocol.MCPStateNeedsAuth:
+		return "! Needs authentication"
 	case info.State == protocol.MCPStateFailed:
 		line := "✘ Failed to connect"
 		if info.StateDetail != "" {

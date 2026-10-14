@@ -47,6 +47,7 @@ func (s *Server) connectRemote(ctx context.Context, name string, srv MCPServerCo
 	headers, _ := s.remoteHeaders(name, srv)
 	return mcp.ConnectRemote(ctx, mcp.RemoteConfig{
 		Name: name, URL: srv.URL, Transport: srv.Type, Headers: headers,
+		OAuth:           s.oauthHandlerFor(name, srv),
 		Logf:            logger.Printf,
 		MaxMessageBytes: cfg.MCP.Budget.resolvedMaxMessageBytes(),
 		ConnectTimeout:  srv.connectTimeout(cfg.MCP.Budget),

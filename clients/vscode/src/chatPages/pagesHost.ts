@@ -320,6 +320,9 @@ export class ChatPagesHost implements vscode.Disposable {
         warnings: s.warnings ?? [],
         canSetKey: !!st.setEnv && (s.env ?? []).length + (s.headers ?? []).length > 0,
         canCheck: !!st.check && !s.disabled,
+        // A remote server can be signed in to, or out of (FEATURE_MCP_OAUTH).
+        canSignIn: !!st.oauth && !!s.url && !s.disabled,
+        signedIn: !!s.signed_in,
       })),
       agentMode: st.agentMode,
       notice: st.noFolder || st.unreachable || (st.servers.length > 0 && !st.agentMode ? 'Agent mode is off in the config the daemon loaded, so no server is started.' : ''),

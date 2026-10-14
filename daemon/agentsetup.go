@@ -71,6 +71,9 @@ func agentSetup(version, model, base, workspace string, servers []protocol.MCPSe
 			b.WriteString("paused by the user, so its tools are not offered.")
 		case withheld:
 			b.WriteString("not started in this mode, so its tools are not offered this turn.")
+		case s.State == protocol.MCPStateNeedsAuth:
+			b.WriteString("NEEDS THE USER TO SIGN IN, so none of its tools are available. Only the user can: with " +
+				"Sign in on the server in Customize > MCP, which opens their browser. Tell them so.")
 		case s.State == protocol.MCPStateFailed:
 			fmt.Fprintf(&b, "FAILED TO START this turn, so none of its tools are available. It said: %q.", s.StateDetail)
 			if len(s.EnvMissing) > 0 {

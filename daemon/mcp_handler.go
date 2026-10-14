@@ -59,6 +59,18 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 	if s.cfg == nil {
 		return protocol.MCPResponse{Error: "this daemon has no configuration loaded"}
 	}
+	// A sign-in's waits never hold the admin lock: they wait on a browser, and
+	// every other MCP request -- the sidebar's refresh included -- would wait
+	// behind them (mcpoauth.go).
+	switch req.Action {
+	case protocol.MCPActionAuthWait:
+		return s.mcpAuthWait(req)
+	case protocol.MCPActionAuthComplete:
+		return s.mcpAuthComplete(req)
+	case protocol.MCPActionAuthCancel:
+		return s.mcpAuthCancel(req)
+	}
+
 	s.mcpAdminMu.Lock()
 	defer s.mcpAdminMu.Unlock()
 	s.refreshMCPSecrets()
@@ -95,6 +107,10 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 		return s.mcpGet(req)
 	case protocol.MCPActionAddJSON:
 		return s.mcpAddJSON(ctx, req)
+	case protocol.MCPActionAuthStart:
+		return s.mcpAuthStart(req)
+	case protocol.MCPActionSignOut:
+		return s.mcpSignOut(req)
 	}
 	return protocol.MCPResponse{Error: fmt.Sprintf("unknown mcp action %q; the actions are %s", truncateForClient(req.Action, 32),
 		strings.Join([]string{protocol.MCPActionList, protocol.MCPActionServers, protocol.MCPActionTools, protocol.MCPActionAdd,
@@ -200,6 +216,7 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 			Warnings: missingTemplateWarnings(s.templateMissing(name, srv)),
 			State:    state.state, StateDetail: state.detail, ToolCount: state.tools, ToolsError: state.toolsErr,
 			ToolsListed: state.counted,
+			SignedIn:    srv.remote() && s.mcpSecrets.oauthOf(name, srv.URL) != nil,
 		}
 		if srv.remote() {
 			info.URL = shownURL(srv.URL)
