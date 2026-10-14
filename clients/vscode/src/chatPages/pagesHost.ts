@@ -31,6 +31,11 @@ export function setPagesContext(ctx: PagesContext): void {
   pagesContext = ctx;
 }
 
+/** currentPagesContext is what setPagesContext was given, for the MCP pop-up. */
+export function currentPagesContext(): PagesContext | undefined {
+  return pagesContext;
+}
+
 /** What the pages need from the one chat panel they live in. */
 export interface PagesPanel {
   post(msg: Record<string, unknown>): void;
@@ -310,7 +315,11 @@ export class ChatPagesHost implements vscode.Disposable {
         env: s.env ?? [],
         // Whether it really starts, not only whether it is switched on.
         status: serverStatus(s),
+        // The daemon's own line ("✔ Connected (5 tools)"), when it says one.
+        statusLine: s.status_line ?? '',
+        warnings: s.warnings ?? [],
         canSetKey: !!st.setEnv && (s.env ?? []).length > 0,
+        canCheck: !!st.check && !s.disabled,
       })),
       agentMode: st.agentMode,
       notice: st.noFolder || st.unreachable || (st.servers.length > 0 && !st.agentMode ? 'Agent mode is off in the config the daemon loaded, so no server is started.' : ''),

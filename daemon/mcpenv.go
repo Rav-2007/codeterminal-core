@@ -166,7 +166,7 @@ func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
 		if !ok {
 			return protocol.MCPResponse{Error: fmt.Sprintf("no server named %s is configured", server)}
 		}
-		if !slices.Contains(srv.Env, name) {
+		if !slices.Contains(srv.Env, name) && !slices.Contains(serverTemplateVars(srv), name) {
 			return protocol.MCPResponse{Error: fmt.Sprintf("%s does not read %s; add the variable's name to it first "+
 				"(Change, step 3)", server, name)}
 		}
@@ -210,8 +210,12 @@ func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
 // required" instead of "Active" for a server that has never once run.
 
 type mcpServerState struct {
-	state  string // protocol.MCPStateRunning or MCPStateFailed
+	state  string // protocol.MCPStateRunning, MCPStateFailed or MCPStateToolsFailed
 	detail string
+	// tools is how many tools it offered when last listed; toolsErr why the
+	// listing failed.
+	tools    int
+	toolsErr string
 }
 
 type mcpStateBook struct {
@@ -265,6 +269,24 @@ func (b *mcpStateBook) forget(name string) {
 	defer b.mu.Unlock()
 	delete(b.states, name)
 	delete(b.lastLine, name)
+}
+
+// listed records what each started server answered when its tools were listed.
+func (b *mcpStateBook) listed(outcomes map[string]mcp.ListOutcome) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for name, o := range outcomes {
+		st, ok := b.states[name]
+		if !ok || st.state == protocol.MCPStateFailed {
+			continue
+		}
+		if o.Err != nil {
+			st.state, st.toolsErr, st.tools = protocol.MCPStateToolsFailed, truncateForClient(o.Err.Error(), 240), 0
+		} else {
+			st.state, st.toolsErr, st.tools = protocol.MCPStateRunning, "", o.Tools
+		}
+		b.states[name] = st
+	}
 }
 
 func (b *mcpStateBook) get(name string) mcpServerState {

@@ -23,6 +23,7 @@ import * as vscode from 'vscode';
 import {
   FEATURE_MCP_ENV,
   FEATURE_MCP_MANAGE,
+  FEATURE_MCP_CHECK,
   FEATURE_MCP_SECRETS,
   MCP_CWD_WORKSPACE,
   MCP_SOURCE_CONFIG,
@@ -35,6 +36,20 @@ import {
 import { validEnvName, validServerName } from './mcpCatalog';
 import { ServerSpec, splitArgs, storeServer } from './mcpInstall';
 import { cachedMcpEnv, storeMcpEnv, storedMcpEnvNames } from './mcpSecrets';
+import { McpPopupHost, mcpPopupHost } from './mcpPopup';
+
+/**
+ * popup is the chat's MCP pop-up, shown: the way the MCP commands ask now,
+ * in place of input boxes at the top of the window. Undefined when there is no
+ * chat panel to show it in -- then the commands fall back to the input boxes.
+ */
+async function popup(): Promise<McpPopupHost | undefined> {
+  const host = mcpPopupHost();
+  if (host) {
+    await vscode.commands.executeCommand('mochiii.chatView.focus').then(undefined, () => undefined);
+  }
+  return host;
+}
 
 export const MCP_SERVERS_VIEW_ID = 'mochiii.mcpServers';
 
@@ -53,6 +68,8 @@ export interface McpServersState {
   setEnv?: boolean;
   /** Whether the daemon keeps keys in its own file (FEATURE_MCP_SECRETS). */
   secrets?: boolean;
+  /** Whether the daemon takes check, get and add_json (FEATURE_MCP_CHECK). */
+  check?: boolean;
   notes: string[];
   /** Set when the daemon could not be asked. */
   unreachable?: string;
@@ -100,10 +117,11 @@ export class McpServersProvider implements vscode.TreeDataProvider<McpNode> {
       const manage = features.includes(FEATURE_MCP_MANAGE);
       const setEnv = features.includes(FEATURE_MCP_ENV);
       const secrets = features.includes(FEATURE_MCP_SECRETS);
+      const check = features.includes(FEATURE_MCP_CHECK);
       if (resp.error) {
-        this.state = { servers: [], agentMode: true, manage, setEnv, secrets, notes: [], unreachable: resp.error };
+        this.state = { servers: [], agentMode: true, manage, setEnv, secrets, check, notes: [], unreachable: resp.error };
       } else {
-        this.state = { servers: resp.servers ?? [], agentMode: resp.agent_mode, manage, setEnv, secrets, notes: resp.notes ?? [] };
+        this.state = { servers: resp.servers ?? [], agentMode: resp.agent_mode, manage, setEnv, secrets, check, notes: resp.notes ?? [] };
       }
       this.retries = 0;
     } catch (err) {
@@ -155,7 +173,9 @@ export class McpServersProvider implements vscode.TreeDataProvider<McpNode> {
     const s = node.server;
     const item = new vscode.TreeItem(s.name, vscode.TreeItemCollapsibleState.None);
     const fromConfig = s.source === MCP_SOURCE_CONFIG;
-    item.description = s.disabled ? 'paused' : serverStatus(s).short || (fromConfig ? 'from models.json' : s.program ?? '');
+    item.description = s.disabled
+      ? 'paused'
+      : s.status_line || serverStatus(s).short || (fromConfig ? 'from models.json' : s.program ?? '');
     item.iconPath = new vscode.ThemeIcon(
       s.disabled ? 'debug-pause' : s.state === MCP_STATE_FAILED ? 'error' : fromConfig ? 'settings-gear' : 'server-environment',
     );
@@ -603,6 +623,11 @@ export function registerMcpServers(
         void vscode.window.showInformationMessage(provider.current.noFolder);
         return;
       }
+      const host = await popup();
+      if (host) {
+        host.openAdd();
+        return;
+      }
       const spec = await askForServer();
       if (spec) {
         const done = await storeServer(clientName, spec, { action: 'add' });
@@ -615,6 +640,11 @@ export function registerMcpServers(
     vscode.commands.registerCommand('mochiii.mcp.edit', async (node?: McpNode | string) => {
       const server = serverOf(node);
       if (!server) {
+        return;
+      }
+      const host = await popup();
+      if (host) {
+        host.openEdit(server);
         return;
       }
       const spec = await askForServer(server);
@@ -632,9 +662,38 @@ export function registerMcpServers(
     ),
     vscode.commands.registerCommand('mochiii.mcp.setKey', async (node?: McpNode | string, envName?: string) => {
       const server = serverOf(node);
+      const host = server && (server.env ?? []).length > 0 && provider.current.setEnv ? await popup() : undefined;
+      if (server && host) {
+        host.openKey(server, typeof envName === 'string' ? envName : undefined);
+        return;
+      }
       if (server) {
         await setServerKey(context, clientName, provider, server, typeof envName === 'string' ? envName : undefined);
       }
+    }),
+    // Start one server now and say how it fared, as `claude mcp list` does.
+    vscode.commands.registerCommand('mochiii.mcp.check', async (node?: McpNode | string) => {
+      const server = serverOf(node);
+      if (!server) {
+        return;
+      }
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Starting ${server.name} to see whether it works…` },
+        async () => {
+          try {
+            const { resp } = await sendMCP(clientName, { action: 'check', name: server.name });
+            const text = resp.error ?? [resp.detail ?? '', ...(resp.notes ?? [])].filter(Boolean).join(' ');
+            if (resp.error || (resp.servers ?? []).some((s) => s.name === server.name && s.state === MCP_STATE_FAILED)) {
+              void vscode.window.showWarningMessage(text);
+            } else {
+              void vscode.window.showInformationMessage(text);
+            }
+          } catch (err) {
+            void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon: ${(err as Error).message}`);
+          }
+        },
+      );
+      await provider.refresh();
     }),
     vscode.commands.registerCommand('mochiii.mcp.enable', (node?: McpNode | string) => toggle(node, 'enable')),
     vscode.commands.registerCommand('mochiii.mcp.disable', (node?: McpNode | string) => toggle(node, 'disable')),

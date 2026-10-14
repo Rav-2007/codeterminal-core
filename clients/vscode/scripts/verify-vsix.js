@@ -113,6 +113,7 @@ const MUST_CONTAIN = [
   'extension/media/marketplace.js',
   // The connect popup. Without it the chat's key prompt never opens.
   'extension/media/connect.js',
+  'extension/media/mcpPopup.js',
   // The header menu, the settings popover and the ＋ menu. Without it they never open.
   'extension/media/controls.js',
   'extension/media/logo.png',

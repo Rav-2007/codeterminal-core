@@ -3392,9 +3392,23 @@
       })
     : null;
 
+  const mcpPopup = window.MochiiiMcpPopup
+    ? window.MochiiiMcpPopup.init(vscode, {
+        closePopups: () => {
+          setHistoryOpen(false);
+          setModelPopupOpen(false);
+          setModesPopupOpen(false);
+          setContextPopupOpen(false);
+        },
+      })
+    : null;
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (connectPopup && connectPopup.handle(msg)) {
+      return;
+    }
+    if (mcpPopup && mcpPopup.handle(msg)) {
       return;
     }
     if (pages && pages.handle(msg)) {
