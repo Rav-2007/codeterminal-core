@@ -49,7 +49,14 @@ func (p configPolicy) PolicyFor(server, tool string) mcp.Policy {
 		if p.cfg.MCP.Builtin.Disabled {
 			return mcp.PolicyDeny
 		}
-		return toRegistryPolicy(p.cfg.MCP.Builtin.policyFor(tool))
+		policy := toRegistryPolicy(p.cfg.MCP.Builtin.policyFor(tool))
+		// THESE ALWAYS ASK, whatever the config says: each changes the user's
+		// real files, or runs a command with their full access, the moment it
+		// is allowed (fileops.go, runcommand.go).
+		if policy == mcp.PolicyAllow && alwaysAskTools[tool] {
+			return mcp.PolicyAsk
+		}
+		return policy
 	}
 
 	srv, ok := p.cfg.MCP.Servers[server]

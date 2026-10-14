@@ -187,6 +187,10 @@ var builtinToolSurface = []string{
 	// list's own completeness test named it. It was a long-task tool before,
 	// registered only in a mode that test does not build.
 	"grep.go",
+	// Added 2026-10-14 with delete_path, move_path and restore_deleted. Their
+	// only reads are the trash's entry.json, through readBoundedFile, and a
+	// restored file copied into the working copy by io.Copy, never resident.
+	"fileops.go",
 }
 
 // TestBuiltinToolSurfaceBoundsItsReads is the CLASS guard, and it exists
