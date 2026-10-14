@@ -213,7 +213,7 @@ func TestAValueForAVariableTheServerDoesNotReadIsRefused(t *testing.T) {
 }
 
 func TestAnInvisibleCharacterInAKeyIsNamedNotRepeated(t *testing.T) {
-	err := validMCPEnvValue("sk-abc​def")
+	err := validMCPEnvValue("sk-abc\u200bdef")
 	if err == nil || !strings.Contains(err.Error(), "U+200B") || !strings.Contains(err.Error(), "position 7") {
 		t.Fatalf("got %v", err)
 	}
