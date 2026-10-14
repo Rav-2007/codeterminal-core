@@ -192,6 +192,8 @@ func (m chatModel) handleSideAnswer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case accountMsg:
 		return m.handleAccount(msg)
+	case rulesResultMsg: // not the line's, but chat.go has one case for all of these
+		return m.handleRulesResult(msg)
 	}
 	return m, nil
 }

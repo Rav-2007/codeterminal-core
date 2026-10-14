@@ -62,7 +62,21 @@ type serverExtras struct {
 // connect branch never logs a payload, because one of its requests carries a
 // key. An MCPRequest carries a command line, which must not hold a secret but
 // may be mistaken for somewhere to put one.
+//
+// A RulesRequest (userrules.go) came through the same branch on 2026-10-13, for
+// the same reason and under the same rule: its payload is the user's own words
+// and is not logged either.
 func (s *Server) handleConnectOrMCP(ctx context.Context, enc *json.Encoder, raw json.RawMessage, connectReq protocol.ConnectRequest) {
+	if isRulesRequest(raw) {
+		var rulesReq protocol.RulesRequest
+		if err := json.Unmarshal(raw, &rulesReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
+			s.logger.Print("rules request decode error")
+			return
+		}
+		s.handleRules(enc, rulesReq)
+		return
+	}
 	if !isMCPRequest(raw) {
 		s.handleConnect(ctx, enc, connectReq)
 		return
