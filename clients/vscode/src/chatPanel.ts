@@ -48,6 +48,7 @@ import { ConnectOutcome, connectKey, hasConnectKey } from './connectBridge';
 import { ANY_KEY_CHOICE, modelChoices, providerChoices } from './connectFlow';
 import { ICONS, chatPagesMarkup, chatPagesStyles, headerPageButtons } from './chatPages/markup';
 import { ChatPagesHost } from './chatPages/pagesHost';
+import { chatLookStyles } from './chatLook';
 import { mcpMarketplaceStyles } from './mcpMarketplace';
 import { editorContextForPrompt } from './editorContext';
 import { SLASH_CATALOG, parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
@@ -88,6 +89,13 @@ export class DiffContentProvider implements vscode.TextDocumentContentProvider {
 }
 
 export const CLIENT_NAME = 'mochiii-vscode';
+
+// The name of the file open in the editor, '' when there is none: the ＋
+// menu's "Current file" row says which file it would add.
+function activeFileName(): string {
+  const doc = vscode.window.activeTextEditor?.document;
+  return doc && doc.uri.scheme === 'file' ? path.basename(doc.uri.fsPath) : '';
+}
 // The panel's view type: what VS Code records for a panel left open at exit,
 // and what package.json's onWebviewPanel activation event and extension.ts's
 // serializer are keyed on. All three must agree.
@@ -430,7 +438,7 @@ export class ChatPanel {
     // collectEditorContext reads an already-open document and clips, and posts a
     // single number.
     const postEditorContext = (): void => {
-      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length });
+      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length, file: activeFileName() });
     };
     vscode.window.onDidChangeActiveTextEditor(() => postEditorContext(), null, this.disposables);
     vscode.window.onDidChangeTextEditorSelection(() => postEditorContext(), null, this.disposables);
@@ -542,6 +550,8 @@ export class ChatPanel {
     id?: string;
     on?: boolean;
     retry?: boolean;
+    // addContext: which source the ＋ menu named (onAddContext).
+    kind?: string;
     // connectSubmit: the provider chosen in the connect popup and its key.
     apiBase?: string;
     key?: string;
@@ -567,11 +577,11 @@ export class ChatPanel {
       // render before the first turn. See the 'ready' post at the end of
       // media/main.js for why it asks rather than being told.
       this.postSlashCatalog();
-      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length });
+      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length, file: activeFileName() });
       this.postUiSettings();
       this.pages.announceTools();
     } else if (msg.type === 'addContext' && typeof msg.remaining === 'number') {
-      void this.onAddContext(msg.remaining);
+      void this.onAddContext(msg.remaining, typeof msg.kind === 'string' ? msg.kind : undefined);
     } else if (msg.type === 'focused') {
       void this.catchUp();
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
@@ -603,6 +613,10 @@ export class ChatPanel {
       void this.openConnect().then((r) => this.afterConnect(r, false));
     } else if (msg.type === 'connectSubmit' && typeof msg.apiBase === 'string' && typeof msg.key === 'string') {
       void this.onConnectSubmit(msg.apiBase, msg.key);
+    } else if (msg.type === 'connectProvider' && typeof msg.apiBase === 'string') {
+      // A provider card in the settings popover: straight to that provider's
+      // key step, or the full list for "All providers".
+      void this.openConnect(msg.apiBase || undefined).then((r) => this.afterConnect(r, false));
     } else if (msg.type === 'connectKeep') {
       void this.onConnectKeep();
     } else if (msg.type === 'connectModel' && typeof msg.tier === 'string') {
@@ -618,7 +632,10 @@ export class ChatPanel {
   // own buffers. Each arrives in the composer as an attachment chip the user
   // can still remove; nothing is sent until they send.
   private contextSeq = 0;
-  private async onAddContext(remaining: number): Promise<void> {
+  // ADD CONTEXT. The ＋ menu (Stage 9) names one source; the @ typed in the
+  // composer, with no source named, still gets the short list of what the
+  // editor has right now. A source that has nothing to give says so.
+  private async onAddContext(remaining: number, kind?: string): Promise<void> {
     if (remaining <= 0) {
       this.postSafe({ type: 'attachmentNotice', text: 'No more can be attached to this message.' });
       return;
@@ -627,49 +644,107 @@ export class ChatPanel {
     const doc = editor?.document;
     const root = workspacePath();
     const shown = (d: vscode.TextDocument): string => (root ? path.relative(root, d.uri.fsPath) : path.basename(d.uri.fsPath));
+    const none = (text: string): void => this.postSafe({ type: 'attachmentNotice', text });
+
+    const currentFile = (): void => {
+      if (!doc || doc.uri.scheme !== 'file') {
+        none('No file is open in the editor.');
+        return;
+      }
+      this.attachText(path.basename(doc.uri.fsPath), doc.getText(), 'the file open in the editor, unsaved changes included');
+    };
+    const selection = (): void => {
+      if (!editor || !doc || editor.selection.isEmpty) {
+        none('Nothing is selected in the editor.');
+        return;
+      }
+      const sel = editor.selection;
+      this.attachText(`${path.basename(doc.uri.fsPath)}:${sel.start.line + 1}-${sel.end.line + 1}`, doc.getText(sel), 'the lines selected in the editor');
+    };
+    const problems = (): void => {
+      const list = doc ? vscode.languages.getDiagnostics(doc.uri) : [];
+      if (!doc || list.length === 0) {
+        none(doc ? `VS Code reports no problems in ${shown(doc)}.` : 'No file is open in the editor.');
+        return;
+      }
+      const sev = ['error', 'warning', 'info', 'hint'];
+      this.attachText(
+        `problems in ${path.basename(doc.uri.fsPath)}`,
+        list
+          .map((d) => `${d.range.start.line + 1}:${d.range.start.character + 1} ${sev[d.severity] ?? 'note'}: ${d.message}${d.source ? ` (${d.source})` : ''}`)
+          .join('\n'),
+        `VS Code's problems for ${shown(doc)}`,
+      );
+    };
+    const openFile = async (): Promise<void> => {
+      const open = vscode.workspace.textDocuments.filter((d) => d.uri.scheme === 'file' && !d.isClosed);
+      if (open.length === 0) {
+        none('No file is open in a tab.');
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        open.map((d) => ({ label: path.basename(d.uri.fsPath), description: shown(d), doc: d })),
+        { title: 'Add an open file to the question' },
+      );
+      if (pick) {
+        this.attachText(path.basename(pick.doc.uri.fsPath), pick.doc.getText(), 'as it is open in the editor, unsaved changes included');
+      }
+    };
+    // @ A FILE: any file in the working folder, found by name. Read through VS
+    // Code, so an open file's unsaved text is what is sent.
+    const mention = async (): Promise<void> => {
+      if (!root) {
+        none('Open a folder to mention its files.');
+        return;
+      }
+      const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root, '**/*'), '**/{node_modules,.git,out,dist,build}/**', 5000);
+      const pick = await vscode.window.showQuickPick(
+        uris.map((u) => ({ label: path.basename(u.fsPath), description: path.relative(root, path.dirname(u.fsPath)), uri: u })),
+        { title: 'Mention a file', placeHolder: 'Type a file name', matchOnDescription: true },
+      );
+      if (!pick) {
+        return;
+      }
+      try {
+        const d = await vscode.workspace.openTextDocument(pick.uri);
+        this.attachText(path.basename(pick.uri.fsPath), d.getText(), `${path.relative(root, pick.uri.fsPath)}, mentioned with @`);
+      } catch (err) {
+        none(`Could not read ${path.basename(pick.uri.fsPath)}: ${(err as Error).message}`);
+      }
+    };
+
+    switch (kind) {
+      case 'currentFile':
+        return currentFile();
+      case 'selection':
+        return selection();
+      case 'problems':
+        return problems();
+      case 'files':
+        return this.onPickAttachments(remaining);
+      case 'image':
+        return this.onPickAttachments(remaining, true);
+      case 'openFile':
+        return openFile();
+      case 'mention':
+        return mention();
+    }
+
     type Pick = vscode.QuickPickItem & { run: () => Promise<void> | void };
     const items: Pick[] = [{ label: '$(file) Files…', description: 'documents, images, code', run: () => this.onPickAttachments(remaining) }];
     if (editor && doc && !editor.selection.isEmpty) {
       const sel = editor.selection;
-      items.push({
-        label: '$(selection) The selection',
-        description: `${shown(doc)}:${sel.start.line + 1}-${sel.end.line + 1}`,
-        run: () => this.attachText(`${path.basename(doc.uri.fsPath)}:${sel.start.line + 1}-${sel.end.line + 1}`, doc.getText(sel), 'the lines selected in the editor'),
-      });
+      items.push({ label: '$(selection) The selection', description: `${shown(doc)}:${sel.start.line + 1}-${sel.end.line + 1}`, run: selection });
     }
-    if (doc) {
-      const problems = vscode.languages.getDiagnostics(doc.uri);
-      if (problems.length > 0) {
-        const sev = ['error', 'warning', 'info', 'hint'];
-        items.push({
-          label: '$(warning) Problems in this file',
-          description: `${problems.length} in ${shown(doc)}`,
-          run: () =>
-            this.attachText(
-              `problems in ${path.basename(doc.uri.fsPath)}`,
-              problems
-                .map((d) => `${d.range.start.line + 1}:${d.range.start.character + 1} ${sev[d.severity] ?? 'note'}: ${d.message}${d.source ? ` (${d.source})` : ''}`)
-                .join('\n'),
-              `VS Code's problems for ${shown(doc)}`,
-            ),
-        });
-      }
+    if (doc && vscode.languages.getDiagnostics(doc.uri).length > 0) {
+      items.push({ label: '$(warning) Problems in this file', description: `${vscode.languages.getDiagnostics(doc.uri).length} in ${shown(doc)}`, run: problems });
     }
-    const open = vscode.workspace.textDocuments.filter((d) => d.uri.scheme === 'file' && !d.isClosed);
-    if (open.length > 0) {
-      items.push({
-        label: '$(files) An open file…',
-        description: `${open.length} open`,
-        run: async () => {
-          const pick = await vscode.window.showQuickPick(
-            open.map((d) => ({ label: path.basename(d.uri.fsPath), description: shown(d), doc: d })),
-            { title: 'Add an open file to the question' },
-          );
-          if (pick) {
-            this.attachText(path.basename(pick.doc.uri.fsPath), pick.doc.getText(), 'as it is open in the editor, unsaved changes included');
-          }
-        },
-      });
+    const openCount = vscode.workspace.textDocuments.filter((d) => d.uri.scheme === 'file' && !d.isClosed).length;
+    if (openCount > 0) {
+      items.push({ label: '$(files) An open file…', description: `${openCount} open`, run: openFile });
+    }
+    if (root) {
+      items.push({ label: '$(search) Any file in the folder…', description: 'find it by name', run: mention });
     }
     const choice = await vscode.window.showQuickPick(items, { title: 'Add context to the question', placeHolder: 'What should Mochiii see with this question?' });
     if (choice) {
@@ -710,7 +785,7 @@ export class ChatPanel {
   // from disk -- not by the webview, which has no Node and could only pass bytes
   // across the message channel as base64. Each file's text goes back to the
   // webview, which holds it until the prompt is sent.
-  private async onPickAttachments(remaining: number): Promise<void> {
+  private async onPickAttachments(remaining: number, imagesOnly = false): Promise<void> {
     const post = (m: Record<string, unknown>): void => {
       try {
         this.host.webview.postMessage(m).then(undefined, () => undefined);
@@ -726,14 +801,16 @@ export class ChatPanel {
       canSelectMany: true,
       openLabel: 'Attach',
       defaultUri: workspacePath() ? vscode.Uri.file(workspacePath()) : undefined,
-      filters: {
-        'Documents, images, text and code': [
-          'pdf', 'docx', 'xlsx', 'xlsm', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp',
-          'txt', 'md', 'json', 'csv', 'log', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'java',
-          'c', 'h', 'cpp', 'hpp', 'css', 'html', 'xml', 'yaml', 'yml', 'toml', 'sh', 'sql',
-        ],
-        'All files': ['*'],
-      },
+      filters: imagesOnly
+        ? { Images: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }
+        : {
+            'Documents, images, text and code': [
+              'pdf', 'docx', 'xlsx', 'xlsm', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp',
+              'txt', 'md', 'json', 'csv', 'log', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'java',
+              'c', 'h', 'cpp', 'hpp', 'css', 'html', 'xml', 'yaml', 'yml', 'toml', 'sh', 'sql',
+            ],
+            'All files': ['*'],
+          },
     });
     if (!uris || uris.length === 0) {
       return;
@@ -864,15 +941,27 @@ export class ChatPanel {
         // panel closed meanwhile
       }
     };
+    // The settings popover (Stage 9) opens on the provider in use as well as
+    // its models: asked of the daemon beside the tiers, and left out if it
+    // cannot say. Only the masked key ever comes back.
+    const providers = sendConnect(CLIENT_NAME, { show: true }).then(
+      (shown) => {
+        const keyInForce = shown.key_source ? shown.key_source !== 'none' : shown.in_use && !!shown.masked_key;
+        const base = keyInForce ? shown.active_api_base || shown.api_base || '' : '';
+        return { currentBase: base, providers: providerChoices() };
+      },
+      () => ({ currentBase: '', providers: providerChoices() }),
+    );
     try {
       const tiers = await fetchAvailableTiers(CLIENT_NAME);
       post({
         type: 'modelMenu',
         current: this.preferredTier,
-        tiers: tiers.map((t) => ({ name: t.name, slug: t.slug, active: t.active, isDefault: t.default === true })),
+        tiers: tiers.map((t) => ({ name: t.name, slug: t.slug, active: t.active, isDefault: t.default === true, quiet: t.quiet === true })),
+        ...(await providers),
       });
     } catch (err) {
-      post({ type: 'modelMenu', current: this.preferredTier, tiers: [], error: (err as Error).message });
+      post({ type: 'modelMenu', current: this.preferredTier, tiers: [], error: (err as Error).message, ...(await providers) });
     }
   }
 
@@ -1539,7 +1628,9 @@ export class ChatPanel {
           this.host.webview.postMessage({ type: 'specNotice', kind: 'spec-report', text: specReportText(report) });
         },
         onTasks: (tasks) => {
-          this.host.webview.postMessage({ type: 'tasks', text: taskListText(tasks) });
+          // The text for a screen reader and the old renderer; the items for
+          // the checklist (Stage 9).
+          this.host.webview.postMessage({ type: 'tasks', text: taskListText(tasks), items: tasks.map((t) => ({ title: t.title, status: t.status })) });
         },
         // Providing this handler is what makes streamPrompt declare
         // CAP_TOOL_APPROVAL, and therefore what turns agent mode on for this
@@ -2127,6 +2218,7 @@ export class ChatPanel {
     const pagesUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'pages.js'));
     const marketUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'marketplace.js'));
     const connectUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'connect.js'));
+    const controlsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'controls.js'));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'logo.png'));
     const nonce = getNonce();
 
@@ -2139,6 +2231,7 @@ export class ChatPanel {
 <style>
 ${chatPanelStyles()}
 ${chatPagesStyles()}
+${chatLookStyles()}
 ${mcpMarketplaceStyles('.market-root')}
 </style>
 </head>
@@ -2146,6 +2239,7 @@ ${mcpMarketplaceStyles('.market-root')}
 ${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${marketUri}"></script>
   <script nonce="${nonce}" src="${pagesUri}"></script>
   <script nonce="${nonce}" src="${connectUri}"></script>
+  <script nonce="${nonce}" src="${controlsUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -3392,14 +3486,22 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
        + no-dangerous-sinks posture the Phase 3 review verified is untouched. -->
   <header id="appHeader">
     <div class="brand">
-      ${logoUri ? `<img src="${logoUri}" alt="Mochiii Logo" class="brand-logo" />` : `<span class="brand-mark" aria-hidden="true">✦</span>`}
-      Mochiii
+      ${logoUri ? `<img src="${logoUri}" alt="" class="brand-logo" />` : `<span class="brand-mark" aria-hidden="true">✦</span>`}
+      <div class="brand-text"><span class="brand-name">Mochiii</span><span class="brand-sub">AI Coding Assistant</span></div>
     </div>
     <div class="header-actions">
-      <button type="button" id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
-      <button type="button" id="bookmarkBtn" class="icon-btn" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">☆</button>
+      <button type="button" id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">${ICONS.plus}</button>
       <button type="button" id="historyBtn" class="icon-btn" title="History" aria-label="Chat history"
-        aria-haspopup="dialog" aria-expanded="false" aria-controls="historyPopup">◷</button>
+        aria-haspopup="dialog" aria-expanded="false" aria-controls="historyPopup">${ICONS.history}</button>
+      <button type="button" id="gearBtn" class="icon-btn" title="Model and settings" aria-label="Model and settings"
+        aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPopup">${ICONS.gear}</button>
+      <button type="button" id="moreBtn" class="icon-btn" title="More" aria-label="More"
+        aria-haspopup="true" aria-expanded="false" aria-controls="moreMenu">${ICONS.more}</button>
+    </div>
+    <!-- ⋯: this chat's bookmark, and the pages. -->
+    <div id="moreMenu" class="pop-menu more-menu" hidden>
+      <button type="button" id="bookmarkBtn" class="menu-item" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">${ICONS.star}<span class="mi-text"><span class="mi-name" id="bookmarkLabel">Bookmark this chat</span></span></button>
+      <div class="menu-sep" role="separator"></div>
       ${headerPageButtons()}
     </div>
     <!-- History, Claude Code style: every chat, newest first, bookmarks pinned
@@ -3430,10 +3532,29 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
        on every mutation (which aria-atomic="true" would do, and which is
        unusable at streaming rates). -->
   <div id="transcript" role="log" aria-live="polite" aria-atomic="false" aria-label="Conversation transcript">
-    <div id="firstRun" class="first-run">
-      <p>Mochiii answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
-      <p>The Mochiii daemon starts automatically and is shared with any other window open on this same folder. Just send a prompt.</p>
-      <p class="first-run-quiet">First answer slow? It is loading the local embedding model. If it never arrives, ${RESTART_HINT}.</p>
+    <!-- THE WELCOME (Stage 9, mockup "empty state"). Each card and idea fills
+         the composer with a command and a default argument, selected so that
+         typing replaces it; nothing is sent until the user sends. The open file
+         already goes with every question (editorContext), so no card attaches it
+         again. -->
+    <div id="firstRun" class="first-run welcome">
+      ${logoUri ? `<img src="${logoUri}" alt="" class="welcome-logo" />` : ''}
+      <h1 class="welcome-title">What are we building today?</h1>
+      <p class="welcome-sub">Ask questions, understand your code, make changes, or run tasks.</p>
+      <div class="welcome-cards">
+        <button type="button" class="welcome-card" data-cmd="/explain " data-arg="the code in the current file"><span class="wc-icon">${ICONS.code}</span><span class="wc-text"><span class="wc-title">Explain this code</span><span class="wc-desc">Get a clear explanation</span></span></button>
+        <button type="button" class="welcome-card" data-cmd="/fix " data-arg="the problems in the current file"><span class="wc-icon">${ICONS.bug}</span><span class="wc-text"><span class="wc-title">Find &amp; fix bugs</span><span class="wc-desc">Detect and solve issues</span></span></button>
+        <button type="button" class="welcome-card" data-cmd="/test " data-arg="the current file"><span class="wc-icon">${ICONS.flask}</span><span class="wc-text"><span class="wc-title">Write unit tests</span><span class="wc-desc">Generate tests for this file</span></span></button>
+        <button type="button" class="welcome-card" data-cmd="/refactor " data-arg="the current file for readability"><span class="wc-icon">${ICONS.spark}</span><span class="wc-text"><span class="wc-title">Refactor code</span><span class="wc-desc">Improve and simplify</span></span></button>
+      </div>
+      <div class="welcome-ideas-label">Other ideas</div>
+      <div class="welcome-chips">
+        <button type="button" class="welcome-chip" data-cmd="/review " data-arg="my recent changes">Review changes</button>
+        <button type="button" class="welcome-chip" data-cmd="/doc " data-arg="the current file">Create documentation</button>
+        <button type="button" class="welcome-chip" data-cmd="/run " data-arg="the tests for this project">How to run it</button>
+        <button type="button" class="welcome-chip" data-cmd="/plan " data-arg="the architecture for ">Design architecture</button>
+      </div>
+      <p class="first-run-quiet">The first answer can take a moment while the local index loads. If it never arrives, ${RESTART_HINT}.</p>
     </div>
   </div>
   <!-- THE NOTICES, COLLAPSED. Every strip is still a live region, so a screen
@@ -3488,76 +3609,105 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
         </div>
       </div>
     </div>
+    <!-- THE COMPOSER (Stage 9, mockup sheet 1): one box -- what goes with the
+         question, the question, then one row: add context, @ a file, MCP, the
+         model, the effort, the mode, send. -->
     <div id="composerShell">
-      <div class="composer-top">
-        <label for="promptInput" class="sr-only">Ask a question about your code</label>
-        <textarea id="promptInput" rows="2" placeholder="Ask Mochiii anything… or type /"></textarea>
-        <button type="button" id="sendBtn" title="Send" aria-label="Send">✈</button>
-      </div>
-      <div class="composer-bottom">
-        <div class="composer-left">
-          <!-- Stage 8: what goes in with the question (@), and what the agent can
-               reach (the plug, with how many MCP servers are on). -->
-          <button type="button" class="composer-icon" id="contextAddBtn" title="Add context: a file, the selection, the problems in a file (or type @)" aria-label="Add context">${ICONS.at}</button>
-          <button type="button" class="composer-icon tools-btn" id="toolsBtn" title="MCP servers" aria-label="MCP servers" aria-controls="pageCustomize">${ICONS.plug}<span id="toolsCount" class="tools-count" hidden>0</span></button>
-          <button type="button" class="pill" id="modelChip" title="Choose model" aria-label="Choose model"
-            aria-haspopup="listbox" aria-expanded="false" aria-controls="modelPopup">
-            <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">▾</span>
-          </button>
-          <span class="pill spec-chip" id="specChip" hidden title="Active spec: every prompt works to it (/spec show, /spec off)"></span>
-          <button type="button" class="pill effort-pill" id="effortBtn" data-level="0"
-            aria-label="Thinking effort: Auto. Click to change."
-            title="Thinking effort: how long the model reasons before it answers. Auto uses the model's default. Higher is slower and often more careful. Click to cycle Auto, Low, Medium, High.">
-            <svg class="effort-bars" width="14" height="12" viewBox="0 0 14 12" aria-hidden="true">
-              <rect class="b1" x="0" y="7" width="3.2" height="5" rx="1"/>
-              <rect class="b2" x="5.4" y="4" width="3.2" height="8" rx="1"/>
-              <rect class="b3" x="10.8" y="0" width="3.2" height="12" rx="1"/>
-            </svg>
-            <span class="effort-name">Effort</span><span class="effort-value" id="effortValue">Auto</span>
-          </button>
-        </div>
-        <div class="composer-right">
-          <button type="button" class="pill notices-chip" id="noticesChip" hidden aria-expanded="false" aria-controls="notices"
-            title="Notices about the last answer">
-            <span aria-hidden="true">ⓘ</span><span id="noticesCount">0</span>
-          </button>
-          <button type="button" class="composer-icon context-btn" id="contextBtn" title="Context usage" aria-label="Open context usage" aria-expanded="false" aria-controls="contextPopup">
-            <svg class="context-ring" viewBox="0 0 24 24" aria-hidden="true">
-              <circle class="context-ring-track" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"/>
-              <circle class="context-ring-fill" id="contextRingFill" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"
-                stroke-linecap="round" transform="rotate(-90 12 12)"
-                stroke-dasharray="50.27" stroke-dashoffset="50.27"/>
-            </svg>
-            <span class="context-pct" id="contextPctShort" aria-hidden="true">0%</span>
-          </button>
-          <button type="button" class="composer-icon" id="attachBtn" title="Attach files" aria-label="Attach files">📎</button>
-          <button id="autoApplyToggle" class="pill mode-btn on" aria-haspopup="listbox" aria-expanded="false"
-            aria-label="Select mode"
-            title="Select agent mode (Manual, Plan, Auto)">
-            <span class="bolt" aria-hidden="true" id="modeBtnIcon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></span><span id="modeBtnLabel">Auto</span>
-          </button>
-        </div>
-      </div>
       <div id="attachList" class="attach-list" hidden></div>
+      <label for="promptInput" class="sr-only">Ask a question about your code</label>
+      <textarea id="promptInput" rows="2" placeholder="Ask Mochiii anything… or type /"></textarea>
+      <div class="composer-bar">
+        <button type="button" class="composer-icon" id="contextAddBtn" title="Add context: the current file, the selection, files, images, problems" aria-label="Add context" aria-haspopup="menu" aria-expanded="false" aria-controls="contextMenu">${ICONS.plus}</button>
+        <button type="button" class="composer-icon" id="atBtn" title="Mention a file (or type @)" aria-label="Mention a file">${ICONS.at}</button>
+        <button type="button" class="composer-icon tools-btn" id="toolsBtn" title="MCP servers" aria-label="MCP servers" aria-controls="pageCustomize">${ICONS.plug}<span id="toolsCount" class="tools-count" hidden>0</span></button>
+        <button type="button" class="pill model-chip" id="modelChip" title="Model and settings" aria-label="Choose model"
+          aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPopup">
+          <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">${ICONS.chevron}</span>
+        </button>
+        <span class="pill spec-chip" id="specChip" hidden title="Active spec: every prompt works to it (/spec show, /spec off)"></span>
+        <button type="button" class="pill effort-pill" id="effortBtn" data-level="0"
+          aria-label="Thinking effort: Auto. Click to change."
+          title="Thinking effort: how long the model reasons before it answers. Auto uses the model's default. Higher is slower and often more careful. Click to cycle Auto, Low, Medium, High.">
+          <svg class="effort-bars" width="14" height="12" viewBox="0 0 14 12" aria-hidden="true">
+            <rect class="b1" x="0" y="7" width="3.2" height="5" rx="1"/>
+            <rect class="b2" x="5.4" y="4" width="3.2" height="8" rx="1"/>
+            <rect class="b3" x="10.8" y="0" width="3.2" height="12" rx="1"/>
+          </svg>
+          <span class="effort-value" id="effortValue">Auto</span>
+        </button>
+        <!-- The mode stays in sight: in Auto, edits reach the files without a
+             question, and that is not a state to hide behind a menu. -->
+        <button id="autoApplyToggle" class="pill mode-btn on" aria-haspopup="listbox" aria-expanded="false"
+          aria-label="Select mode"
+          title="Select agent mode (Manual, Plan, Auto)">
+          <span class="bolt" aria-hidden="true" id="modeBtnIcon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></span><span id="modeBtnLabel">Auto</span>
+        </button>
+        <span class="bar-gap"></span>
+        <button type="button" class="pill notices-chip" id="noticesChip" hidden aria-expanded="false" aria-controls="notices"
+          title="Notices about the last answer">
+          ${ICONS.info}<span id="noticesCount">0</span>
+        </button>
+        <button type="button" id="sendBtn" class="send-btn" title="Send" aria-label="Send"><span class="i-send">${ICONS.send}</span><span class="i-stop">${ICONS.stop}</span></button>
+      </div>
     </div>
-    <div id="contextPopup" class="context-popup" hidden role="dialog" aria-label="Context usage">
-      <div class="context-popup-head">
-        <div class="context-popup-title">Context Usage</div>
-        <button type="button" class="context-popup-close" id="contextPopupClose" aria-label="Close context usage">✕</button>
-      </div>
-      <div class="context-popup-summary">
-        <span id="contextPct">0% Full</span>
-        <span id="contextTotals">~0 / 128K Tokens</span>
-      </div>
-      <div class="context-bar" id="contextBar" aria-hidden="true"></div>
-      <div class="context-rows" id="contextRows"></div>
-      <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
+    <!-- ADD CONTEXT (＋): what can go in with the question, each a source that
+         works today. The host does the reading (chatPanel.ts onAddContext). -->
+    <div id="contextMenu" class="pop-menu context-menu" hidden role="menu" aria-label="Add context">
+      <div class="pop-title">Add context</div>
+      <button type="button" class="menu-item" role="menuitem" data-context="currentFile">${ICONS.file}<span class="mi-text"><span class="mi-name">Current file</span><span class="mi-desc" id="ctxCurrentFile">The file open in the editor</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="selection">${ICONS.selection}<span class="mi-text"><span class="mi-name">Selection</span><span class="mi-desc">Use the selected code</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="files">${ICONS.paperclip}<span class="mi-text"><span class="mi-name">Files</span><span class="mi-desc">Documents, code, PDFs</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="image">${ICONS.image}<span class="mi-text"><span class="mi-name">Image</span><span class="mi-desc">A screenshot, a diagram, an error</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="openFile">${ICONS.code}<span class="mi-text"><span class="mi-name">An open file</span><span class="mi-desc">Any file open in a tab</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-context="problems">${ICONS.warning}<span class="mi-text"><span class="mi-name">Diagnostics</span><span class="mi-desc">Errors and warnings in the current file</span></span></button>
     </div>
-    <div id="modelPopup" class="modes-popup model-popup" hidden role="dialog" aria-label="Choose model">
-      <div class="modes-popup-head">
-        <div class="modes-popup-title">Model</div>
+    <!-- MODEL & SETTINGS (⚙ and the model chip): the provider, its models, the
+         effort, the mode, how full the context is, and the ways on to the pages.
+         id="modelPopup" because the model menu's code opens and closes it. -->
+    <div id="modelPopup" class="settings-popover" hidden role="dialog" aria-label="Model and settings">
+      <div class="sp-head">
+        <div class="sp-title">Model &amp; settings</div>
+        <button type="button" class="connect-icon" id="settingsClose" aria-label="Close" title="Close">✕</button>
       </div>
-      <div class="modes-list" id="modelList" role="listbox" aria-label="Models"></div>
+      <div class="sp-scroll">
+        <div class="sp-section">
+          <div class="sp-label">Provider</div>
+          <div class="provider-grid" id="providerGrid" role="list" aria-label="Providers"></div>
+        </div>
+        <div class="sp-section">
+          <div class="sp-label">Model</div>
+          <div class="modes-list model-list" id="modelList" role="listbox" aria-label="Models"></div>
+        </div>
+        <div class="sp-section">
+          <div class="sp-label">Effort</div>
+          <div class="seg-row" id="effortSeg" role="radiogroup" aria-label="Thinking effort">
+            <button type="button" role="radio" aria-checked="false" data-effort=""><span class="seg-name">Auto</span><span class="seg-desc">Model default</span></button>
+            <button type="button" role="radio" aria-checked="false" data-effort="low"><span class="seg-name">Low</span><span class="seg-desc">Faster</span></button>
+            <button type="button" role="radio" aria-checked="false" data-effort="medium"><span class="seg-name">Medium</span><span class="seg-desc">Balanced</span></button>
+            <button type="button" role="radio" aria-checked="false" data-effort="high"><span class="seg-name">High</span><span class="seg-desc">More careful</span></button>
+          </div>
+        </div>
+        <div class="sp-section">
+          <div class="sp-label">Mode</div>
+          <div class="seg-row" id="modeSeg" role="radiogroup" aria-label="Agent mode">
+            <button type="button" role="radio" aria-checked="false" data-mode="manual"><span class="seg-name">Manual</span><span class="seg-desc">You apply edits</span></button>
+            <button type="button" role="radio" aria-checked="false" data-mode="plan"><span class="seg-name">Plan</span><span class="seg-desc">Plan first</span></button>
+            <button type="button" role="radio" aria-checked="false" data-mode="auto"><span class="seg-name">Auto</span><span class="seg-desc">Edits apply</span></button>
+          </div>
+        </div>
+        <div class="sp-section" id="contextPopup" role="group" aria-label="Context usage">
+          <div class="sp-label sp-label-row"><span>Context</span><span id="contextPct">0% Full</span></div>
+          <div class="context-bar" id="contextBar" aria-hidden="true"></div>
+          <div class="context-popup-summary"><span id="contextTotals">~0 / 128K Tokens</span></div>
+          <div class="context-rows" id="contextRows"></div>
+          <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
+        </div>
+        <div class="sp-links">
+          <button type="button" class="menu-item" data-open-page="customize">${ICONS.plug}<span class="mi-text"><span class="mi-name">MCP servers</span></span>${ICONS.chevron}</button>
+          <button type="button" class="menu-item" data-open-page="account">${ICONS.key}<span class="mi-text"><span class="mi-name">Account &amp; API key</span></span>${ICONS.chevron}</button>
+          <button type="button" class="menu-item" data-open-page="settings">${ICONS.sliders}<span class="mi-text"><span class="mi-name">More settings</span></span>${ICONS.chevron}</button>
+        </div>
+      </div>
     </div>
     <div id="modesPopup" class="modes-popup" hidden role="dialog" aria-label="Select mode">
       <div class="modes-popup-head">

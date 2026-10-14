@@ -440,12 +440,36 @@
     }
   }
 
+  // THE ⚙ POPOVER (Stage 9) is the model menu grown: the provider, its models,
+  // the effort, the mode, the context meter. The model chip and the gear both
+  // open it; it keeps the model popup's id, so everything that closed the
+  // model menu closes it.
   function setModelPopupOpen(open) {
     if (!modelPopup || !modelChipEl) {
       return;
     }
     modelPopup.hidden = !open;
     modelChipEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const gear = document.getElementById('gearBtn');
+    if (gear) gear.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      refreshContextUsage();
+    }
+  }
+
+  function toggleSettings() {
+    if (modelPopup && !modelPopup.hidden) {
+      setModelPopupOpen(false);
+      return;
+    }
+    setModesPopupOpen(false);
+    if (controls) {
+      controls.closeMenus();
+      controls.opened();
+    }
+    showModelMenuMessage('Loading models\u2026');
+    setModelPopupOpen(true);
+    vscode.postMessage({ type: 'listModels' });
   }
 
   /** @param {string} text */
@@ -503,7 +527,7 @@
     return item;
   }
 
-  /** @param {{ current?: string, tiers?: Array<{ name: string, slug: string, active: boolean, isDefault: boolean }>, error?: string }} msg */
+  /** @param {{ current?: string, tiers?: Array<{ name: string, slug: string, active: boolean, isDefault: boolean, quiet?: boolean }>, error?: string }} msg */
   function renderModelMenu(msg) {
     if (!modelListEl) {
       return;
@@ -524,12 +548,19 @@
     modelListEl.appendChild(
       modelMenuItem('', 'Default', def ? 'Uses ' + short(def.slug) + ', the configured default' : 'The configured default model', current === '', true, '')
     );
-    for (const t of tiers) {
+    // Models that did not answer when the key was connected go last, dimmed:
+    // still a choice, never the easy one (clients/tui/setup.go modelRows).
+    const ordered = tiers.filter((t) => !t.quiet || current === t.name).concat(tiers.filter((t) => t.quiet && current !== t.name));
+    for (const t of ordered) {
       // When a provider is connected its models ARE the tiers, so the tier name
       // and the model id are the same string; show it once.
       const title = short(t.slug);
-      const desc = t.name === t.slug ? t.slug : t.slug + '  \u00b7  tier ' + t.name;
-      modelListEl.appendChild(modelMenuItem(t.name, title, desc, current === t.name, t.active, t.active ? (t.isDefault ? 'default' : '') : 'inactive'));
+      let desc = t.name === t.slug ? t.slug : t.slug + '  \u00b7  tier ' + t.name;
+      const quiet = t.quiet === true && current !== t.name;
+      if (quiet) desc += '  \u00b7  did not answer when the key was connected';
+      const item = modelMenuItem(t.name, title, desc, current === t.name, t.active, t.active ? (t.isDefault ? 'default' : '') : 'inactive');
+      if (quiet) item.classList.add('quiet');
+      modelListEl.appendChild(item);
     }
     const selected = /** @type {HTMLElement | null} */ (modelListEl.querySelector('[aria-selected="true"]'));
     if (selected) {
@@ -690,7 +721,8 @@
     const effortName = EFFORT_LABELS[effortIndex];
     effortBtn.setAttribute('data-level', String(effortIndex));
     if (effortValueEl) {
-      effortValueEl.textContent = effortName;
+      // "Auto" twice in one row (effort and mode) read as one setting.
+      effortValueEl.textContent = effortIndex === 0 ? 'Effort' : effortName;
     }
     // UNSUPPORTED IS A STATE, NOT A DISABLED BUTTON. The click still works and
     // the chosen value is still remembered and still sent -- it has to be,
@@ -794,6 +826,52 @@
     return Math.round(days / 30) + 'mo';
   }
 
+  /** @param {unknown} when @returns {Date | null} */
+  function dateOf(when) {
+    const t = typeof when === 'number' ? when : Date.parse(String(when || ''));
+    return Number.isFinite(t) && t > 0 ? new Date(t) : null;
+  }
+
+  /** Which day group a chat falls in. @param {unknown} when */
+  function dayGroup(when) {
+    const d = dateOf(when);
+    if (!d) return 'Earlier';
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const day = 24 * 60 * 60 * 1000;
+    if (d.getTime() >= start.getTime()) return 'Today';
+    if (d.getTime() >= start.getTime() - day) return 'Yesterday';
+    if (d.getTime() >= start.getTime() - 6 * day) return 'Earlier this week';
+    return 'Earlier';
+  }
+
+  /** A row's time: the clock today, the day this week, else the date. @param {unknown} when */
+  function whenOf(when) {
+    const d = dateOf(when);
+    if (!d) return ageOf(typeof when === 'string' ? when : undefined);
+    const group = dayGroup(when);
+    if (group === 'Today' || group === 'Yesterday') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (group === 'Earlier this week') return d.toLocaleDateString([], { weekday: 'short' });
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  /**
+   * The title with the searched words marked, built from text nodes.
+   * @param {HTMLElement} el @param {string} text @param {string} query
+   */
+  function markMatch(el, text, query) {
+    clearChildren(el);
+    const q = query.trim().toLowerCase();
+    const at = q ? text.toLowerCase().indexOf(q) : -1;
+    if (at < 0) {
+      el.textContent = text;
+      return;
+    }
+    const mark = document.createElement('mark');
+    mark.textContent = text.slice(at, at + q.length);
+    el.append(document.createTextNode(text.slice(0, at)), mark, document.createTextNode(text.slice(at + q.length)));
+  }
+
   /** @param {string} text */
   function historyMessage(text) {
     if (!historyListEl) {
@@ -817,7 +895,7 @@
     main.className = 'h-main';
     const title = document.createElement('span');
     title.className = 'h-title';
-    title.textContent = e.title || 'Untitled chat';
+    markMatch(title, e.title || 'Untitled chat', historyQuery);
     title.title = e.title || '';
     const meta = document.createElement('span');
     meta.className = 'h-meta';
@@ -826,7 +904,7 @@
     main.appendChild(meta);
     const age = document.createElement('span');
     age.className = 'h-age';
-    age.textContent = e.current ? 'now' : ageOf(e.ended || e.started);
+    age.textContent = e.current ? 'now' : whenOf(e.ended || e.started);
     const star = document.createElement('button');
     star.type = 'button';
     star.className = 'h-act h-star' + (e.bookmarked ? ' on' : '');
@@ -890,6 +968,8 @@
       return;
     }
     clearChildren(historyListEl);
+    // Bookmarks first, then the rest by day (Stage 9, the mockup's history):
+    // Today, Yesterday, Earlier this week, Earlier.
     const pinned = entries.filter((e) => e.bookmarked);
     const recent = entries.filter((e) => !e.bookmarked);
     /** @param {string} label @param {any[]} list */
@@ -897,25 +977,32 @@
       if (list.length === 0) {
         return;
       }
-      if (pinned.length > 0) {
-        const h = document.createElement('div');
-        h.className = 'history-section';
-        h.textContent = label;
-        historyListEl.appendChild(h);
-      }
+      const h = document.createElement('div');
+      h.className = 'history-section';
+      h.textContent = label;
+      historyListEl.appendChild(h);
       for (const e of list) {
         historyListEl.appendChild(historyRow(e));
       }
     };
     section('Bookmarked', pinned);
-    section('Recent', recent);
+    /** @type {Record<string, any[]>} */
+    const byDay = { Today: [], Yesterday: [], 'Earlier this week': [], Earlier: [] };
+    for (const e of recent) {
+      byDay[e.current ? 'Today' : dayGroup(e.ended || e.started)].push(e);
+    }
+    for (const label of Object.keys(byDay)) {
+      section(label, byDay[label]);
+    }
   }
 
   /** @param {boolean} on */
   function setCurrentBookmark(on) {
     currentBookmarked = on;
     if (bookmarkBtn) {
-      bookmarkBtn.textContent = on ? '\u2605' : '\u2606';
+      const label = document.getElementById('bookmarkLabel');
+      if (label) label.textContent = on ? 'Remove bookmark' : 'Bookmark this chat';
+      bookmarkBtn.classList.toggle('on', on);
       bookmarkBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
       bookmarkBtn.title = on ? 'Remove bookmark from this chat' : 'Bookmark this chat';
       bookmarkBtn.setAttribute('aria-label', bookmarkBtn.title);
@@ -1010,15 +1097,7 @@
     // so clicking the chip printed a reply instead of opening a menu.
     modelChipEl.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (modelPopup && !modelPopup.hidden) {
-        setModelPopupOpen(false);
-        return;
-      }
-      setContextPopupOpen(false);
-      setModesPopupOpen(false);
-      showModelMenuMessage('Loading models\u2026');
-      setModelPopupOpen(true);
-      vscode.postMessage({ type: 'listModels' });
+      toggleSettings();
     });
   }
 
@@ -1072,9 +1151,8 @@
   function askForContext() {
     vscode.postMessage({ type: 'addContext', remaining: MAX_ATTACH_FILES - pendingAttachments.length });
   }
-  if (contextAddBtn) {
-    contextAddBtn.addEventListener('click', askForContext);
-  }
+  // ＋ opens the add-context menu and @ the file search; both are controls.js's.
+  void contextAddBtn;
   inputEl.addEventListener('input', (e) => {
     const ie = /** @type {InputEvent} */ (e);
     if (ie.data !== '@') {
@@ -1111,10 +1189,13 @@
   // #firstRun) once the transcript has real content. Deliberately NOT called
   // for 'error' bubbles: the commonest first error is "daemon not found", and
   // that is precisely when the instructions are still worth reading.
+  //
+  // Stage 9: the guidance is the welcome screen, and it comes BACK when the
+  // chat is cleared (clearTranscriptView), so it is held, not looked up.
+  const firstRunEl = document.getElementById('firstRun');
   function dismissFirstRun() {
-    const el = document.getElementById('firstRun');
-    if (el) {
-      el.remove();
+    if (firstRunEl && firstRunEl.parentElement) {
+      firstRunEl.remove();
     }
   }
 
@@ -1145,7 +1226,34 @@
     return '';
   }
 
-  function addBubble(role, text) {
+  const brandLogo = /** @type {HTMLImageElement | null} */ (document.querySelector('.brand-logo'));
+  /** @param {boolean} timed false for a restored turn: its time is not known */
+  function replyHead(timed) {
+    const head = document.createElement('div');
+    head.className = 'reply-head';
+    head.setAttribute('aria-hidden', 'true');
+    if (brandLogo && brandLogo.src) {
+      const img = document.createElement('img');
+      img.className = 'reply-logo';
+      img.src = brandLogo.src;
+      img.alt = '';
+      head.appendChild(img);
+    }
+    const name = document.createElement('span');
+    name.className = 'reply-name';
+    name.textContent = 'Mochiii';
+    head.appendChild(name);
+    if (timed) {
+      const time = document.createElement('span');
+      time.className = 'reply-time';
+      time.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      head.appendChild(time);
+    }
+    return head;
+  }
+
+  /** @param {string} role @param {string} text @param {boolean} [restored] */
+  function addBubble(role, text, restored) {
     if (role === 'user' || role === 'assistant') {
       dismissFirstRun();
     }
@@ -1165,6 +1273,12 @@
       'aria-label',
       role === 'user' ? 'Your message' : role === 'error' ? 'Error' : 'Mochiii\u2019s reply'
     );
+
+    // MOCHIII'S REPLY CARRIES A HEAD (Stage 9, the mockups): the lotus, the
+    // name and the time. The user's turn is a bubble on the right instead.
+    if (role === 'assistant') {
+      card.appendChild(replyHead(!restored));
+    }
 
     const visibleLabel = roleLabel(role);
     if (visibleLabel) {
@@ -1544,12 +1658,32 @@
       }
       const block = document.createElement('div');
       block.className = 'code-block';
-      if (lang) {
-        const langEl = document.createElement('div');
-        langEl.className = 'code-lang';
-        langEl.textContent = lang;
-        block.appendChild(langEl);
-      }
+      // A header on every block (Stage 9): its language, and a Copy of this
+      // block alone -- the reply's own Copy takes the prose with it.
+      const head = document.createElement('div');
+      head.className = 'code-head';
+      const langEl = document.createElement('span');
+      langEl.className = 'code-lang';
+      langEl.textContent = lang || 'code';
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'code-copy';
+      copy.textContent = 'Copy';
+      copy.setAttribute('aria-label', 'Copy this code' + (lang ? ' (' + lang + ')' : ''));
+      const text = code;
+      copy.addEventListener('click', () => {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => {
+            copy.textContent = 'Copied';
+            setTimeout(() => {
+              copy.textContent = 'Copy';
+            }, 1200);
+          });
+        }
+      });
+      head.appendChild(langEl);
+      head.appendChild(copy);
+      block.appendChild(head);
       const lines = code.split('\n');
       for (let n = 0; n < lines.length; n++) {
         const row = document.createElement('div');
@@ -1650,8 +1784,8 @@
     if (composerShellEl) {
       composerShellEl.classList.toggle('sending', value);
     }
+    // The button holds both icons (chatPanel.ts); .stop shows the square.
     sendBtn.classList.toggle('stop', value);
-    sendBtn.textContent = value ? '\u25A0' : '\u2708';
     sendBtn.title = value ? 'Stop this answer' : 'Send';
     sendBtn.setAttribute('aria-label', value ? 'Stop this answer' : 'Send');
     inputEl.placeholder = value
@@ -2225,7 +2359,11 @@
   // transcript when the turn ends.
   /** @type {HTMLDivElement | null} */
   let currentTasksEl = null;
-  function showTasks(text) {
+  // THE STEPS (Stage 9, the mockup's "Planning steps"): the spec workflow's
+  // task list as a checklist -- done, the one under way, blocked, still to do.
+  // The plain text stays as the region's accessible name.
+  /** @param {string} text @param {Array<{ title: string, status: string }>} [items] */
+  function showTasks(text, items) {
     if (!currentTasksEl) {
       currentTasksEl = document.createElement('div');
       currentTasksEl.className = 'spec-notice spec-notice-tasks';
@@ -2233,7 +2371,37 @@
       currentTasksEl.setAttribute('aria-live', 'polite');
       transcriptEl.appendChild(currentTasksEl);
     }
-    currentTasksEl.textContent = String(text || '');
+    if (!Array.isArray(items) || items.length === 0) {
+      currentTasksEl.textContent = String(text || '');
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      return;
+    }
+    clearChildren(currentTasksEl);
+    currentTasksEl.classList.add('steps');
+    currentTasksEl.setAttribute('aria-label', String(text || ''));
+    const done = items.filter((t) => t.status === 'done').length;
+    const head = document.createElement('div');
+    head.className = 'steps-head';
+    head.textContent = (done === items.length ? 'Steps done' : 'Working through the steps\u2026') + '  ' + done + ' of ' + items.length;
+    currentTasksEl.appendChild(head);
+    const list = document.createElement('ol');
+    list.className = 'steps-list';
+    list.setAttribute('aria-hidden', 'true');
+    /** @type {Record<string, string>} */
+    const marks = { done: '\u2713', active: '\u25cc', blocked: '\u2715' };
+    for (const t of items) {
+      const li = document.createElement('li');
+      li.setAttribute('data-status', t.status);
+      const mark = document.createElement('span');
+      mark.className = 'step-mark';
+      mark.textContent = marks[t.status] || '';
+      const title = document.createElement('span');
+      title.className = 'step-title';
+      title.textContent = t.title;
+      li.append(mark, title);
+      list.appendChild(li);
+    }
+    currentTasksEl.appendChild(list);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 
@@ -2503,12 +2671,19 @@
     web_search: 'Searched the web',
   };
   const WORK_STATE_WORDS = { run: 'running', ok: 'done', fail: 'failed', denied: 'not run', step: '' };
+  // The badge each row carries (Stage 9, the mockup's "Tool Execution" card).
+  const WORK_BADGES = { run: 'Running', ok: 'Done', fail: 'Failed', denied: 'Not run', step: '' };
   const WORK_GLYPHS = { run: '\u25cc', ok: '\u2713', fail: '\u2715', denied: '\u2298', step: '\u203a' };
   // compact: a block starts folded; expanded: it starts open (mochiii.toolActivity).
   let toolActivityMode = 'compact';
   let defaultModeApplied = false;
   /** @type {HTMLDetailsElement | null} */
   let workBlockEl = null;
+
+  /** @param {number} ms */
+  function workDuration(ms) {
+    return ms < 1000 ? Math.round(ms) + 'ms' : (ms / 1000).toFixed(ms < 60000 ? 1 : 0) + 's';
+  }
 
   /** @param {any} activity */
   function toolLabel(activity) {
@@ -2602,7 +2777,11 @@
       name.className = 'work-name';
       const why = document.createElement('span');
       why.className = 'work-why';
-      row.append(glyph, name, why);
+      const badge = document.createElement('span');
+      badge.className = 'work-badge';
+      const time = document.createElement('span');
+      time.className = 'work-time';
+      row.append(glyph, name, why, badge, time);
       const list = block.querySelector('.work-rows');
       if (list) {
         list.appendChild(row);
@@ -2620,6 +2799,10 @@
     if (glyphEl) glyphEl.textContent = WORK_GLYPHS[state];
     if (nameEl) nameEl.textContent = label;
     if (whyEl) whyEl.textContent = reason;
+    const badgeEl = row.querySelector('.work-badge');
+    const timeEl = row.querySelector('.work-time');
+    if (badgeEl) badgeEl.textContent = WORK_BADGES[state];
+    if (timeEl) timeEl.textContent = (state === 'ok' || state === 'fail') && activity.duration_ms ? workDuration(activity.duration_ms) : '';
     const word = WORK_STATE_WORDS[state];
     row.setAttribute('aria-label', label + (word ? ': ' + word : '') + (reason ? ', ' + reason : ''));
     row.title = state === 'ok'
@@ -3066,6 +3249,9 @@
 
   function clearTranscriptView() {
     clearChildren(transcriptEl);
+    if (firstRunEl) {
+      transcriptEl.appendChild(firstRunEl);
+    }
     currentAssistantBubble = null;
     currentAssistantCard = null;
     currentAssistantRaw = '';
@@ -3106,6 +3292,37 @@
           setModelPopupOpen(false);
           setModesPopupOpen(false);
           setContextPopupOpen(false);
+          if (controls) controls.closeMenus();
+        },
+      })
+    : null;
+
+  const controls = window.MochiiiControls
+    ? window.MochiiiControls.init(vscode, {
+        toggleSettings: () => toggleSettings(),
+        closeSettings: () => setModelPopupOpen(false),
+        getEffort: () => EFFORTS[effortIndex],
+        setEffort: (/** @type {string} */ e) => setEffortLevel(e),
+        getMode: () => currentMode,
+        setMode: (/** @type {string} */ m) => {
+          currentMode = m || 'auto';
+          renderMode();
+        },
+        openPage: (/** @type {string} */ name) => {
+          if (pages) pages.open(name);
+        },
+        closePopups: () => {
+          setHistoryOpen(false);
+          setModelPopupOpen(false);
+          setModesPopupOpen(false);
+        },
+        attachRemaining: () => MAX_ATTACH_FILES - pendingAttachments.length,
+        focusComposer: () => inputEl.focus(),
+        // The command, then its default argument selected: typing replaces it.
+        prefill: (/** @type {string} */ cmd, /** @type {string} */ arg) => {
+          inputEl.value = cmd + arg;
+          inputEl.focus();
+          inputEl.setSelectionRange(cmd.length, cmd.length + arg.length);
         },
       })
     : null;
@@ -3136,7 +3353,7 @@
     switch (msg.type) {
       case 'history':
         for (const turn of msg.turns) {
-          const body = addBubble(turn.role, '');
+          const body = addBubble(turn.role, '', true);
           if (turn.role === 'assistant') {
             currentAssistantRaw = turn.content || '';
             renderFencedContent(body, currentAssistantRaw);
@@ -3197,6 +3414,7 @@
       // context the user controls directly.
       case 'editorContext':
         editorContextChars = typeof msg.chars === 'number' && msg.chars > 0 ? msg.chars : 0;
+        if (controls) controls.currentFile(typeof msg.file === 'string' ? msg.file : '');
         refreshContextUsage();
         break;
       case 'historyInfo':
@@ -3301,7 +3519,7 @@
         showSpecNotice(msg.kind, msg.text);
         break;
       case 'tasks':
-        showTasks(msg.text);
+        showTasks(msg.text, msg.items);
         break;
       case 'activeSpec':
         setActiveSpec(msg.spec);
@@ -3351,6 +3569,7 @@
         break;
       case 'modelMenu':
         renderModelMenu(msg);
+        if (controls) controls.renderProviders(msg);
         break;
       case 'info':
         addInfoLine(String(msg.text || ''));

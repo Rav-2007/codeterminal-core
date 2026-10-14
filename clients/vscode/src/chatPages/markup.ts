@@ -28,14 +28,39 @@ export const ICONS = {
   shield: svg('<path d="M8 1.8 13 3.6v4c0 3-2.1 5.4-5 6.6-2.9-1.2-5-3.6-5-6.6v-4L8 1.8z"/><path d="m5.8 8 1.6 1.6 2.9-3"/>'),
   wrench: svg('<path d="M10.2 2.2a3.3 3.3 0 0 0-3.9 4.4L2.4 10.5a1.4 1.4 0 0 0 2 2l3.9-3.9a3.3 3.3 0 0 0 4.4-3.9l-1.9 1.9-1.6-.4-.4-1.6 1.4-2.4z"/>'),
   info: svg('<circle cx="8" cy="8" r="6"/><path d="M8 7.2v3.6M8 5.1v.1"/>'),
+  // Stage 9: the header, the composer and the cards (docs: the two mockup sheets).
+  plus: svg('<path d="M8 3v10M3 8h10"/>'),
+  history: svg('<circle cx="8" cy="8" r="5.8"/><path d="M8 4.8V8l2.2 1.4"/>'),
+  gear: svg('<circle cx="8" cy="8" r="2"/><path d="M8 1.6l1 1.7 1.9-.4.6 1.9 1.8.8-.4 1.9L14.4 8l-1.5 1.5.4 1.9-1.8.8-.6 1.9-1.9-.4-1 1.7-1-1.7-1.9.4-.6-1.9-1.8-.8.4-1.9L1.6 8l1.5-1.5-.4-1.9 1.8-.8.6-1.9 1.9.4z"/>'),
+  more: svg('<circle cx="3.5" cy="8" r=".9"/><circle cx="8" cy="8" r=".9"/><circle cx="12.5" cy="8" r=".9"/>'),
+  star: svg('<path d="M8 2.2l1.8 3.6 4 .6-2.9 2.8.7 4L8 11.3l-3.6 1.9.7-4L2.2 6.4l4-.6z"/>'),
+  send: svg('<path d="M8 13V3.5M3.8 7.6 8 3.4l4.2 4.2"/>'),
+  stop: svg('<rect x="4" y="4" width="8" height="8" rx="1.5"/>'),
+  copy: svg('<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.8A1.3 1.3 0 0 0 9.2 2.5H3.8a1.3 1.3 0 0 0-1.3 1.3v5.4a1.3 1.3 0 0 0 1.3 1.3h1.7"/>'),
+  check: svg('<path d="m3.5 8.3 2.9 2.9 6.1-6.4"/>'),
+  chevron: svg('<path d="m4.5 6 3.5 3.5L11.5 6"/>'),
+  file: svg('<path d="M4 1.8h5l3 3v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z"/><path d="M9 1.8v3h3"/>'),
+  selection: svg('<path d="M2.5 4.5v-2h2M11.5 2.5h2v2M13.5 11.5v2h-2M4.5 13.5h-2v-2"/><path d="M5.5 6h5M5.5 8h5M5.5 10h3"/>'),
+  image: svg('<rect x="2" y="2.8" width="12" height="10.4" rx="1.5"/><circle cx="5.6" cy="6.2" r="1.2"/><path d="m2.5 12 3.6-3.6 2.4 2.4 1.8-1.8 3.2 3.2"/>'),
+  warning: svg('<path d="M8 2.2 14.2 13H1.8L8 2.2z"/><path d="M8 6.4v3M8 11.2v.1"/>'),
+  paperclip: svg('<path d="M12.6 7.4 7.8 12.2a3 3 0 0 1-4.3-4.3l5-5a2 2 0 0 1 2.8 2.9l-5 4.9a1 1 0 0 1-1.4-1.4l4.6-4.6"/>'),
+  search: svg('<circle cx="7" cy="7" r="4.3"/><path d="m10.2 10.2 3.3 3.3"/>'),
+  terminal: svg('<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="m4.5 6.5 2 1.8-2 1.8M8.5 10.2h3"/>'),
+  pencil: svg('<path d="M10.8 2.6a1.6 1.6 0 0 1 2.3 2.3L5.6 12.4l-3 .7.7-3z"/>'),
+  bug: svg('<rect x="4.5" y="5" width="7" height="8.5" rx="3.5"/><path d="M6 5V4a2 2 0 0 1 4 0v1M2 9h2.5M11.5 9H14M2.8 5.6l1.9 1.2M13.2 5.6l-1.9 1.2M2.8 12.6l1.9-1.2M13.2 12.6l-1.9-1.2M8 7.5v5"/>'),
+  flask: svg('<path d="M6 1.8h4M6.6 1.8v4.4L2.6 12.6a1.2 1.2 0 0 0 1 1.8h8.8a1.2 1.2 0 0 0 1-1.8L9.4 6.2V1.8M4.6 9.6h6.8"/>'),
+  spark: svg('<path d="M8 1.8 9.4 6.6 14.2 8 9.4 9.4 8 14.2 6.6 9.4 1.8 8l4.8-1.4z"/>'),
+  code: svg('<path d="m5.5 4.5-3.5 3.5 3.5 3.5M10.5 4.5 14 8l-3.5 3.5M9.2 2.8 6.8 13.2"/>'),
+  key: svg('<circle cx="5.2" cy="10.8" r="2.7"/><path d="m7.2 8.8 6-6M11 5l1.8 1.8M12.5 3.5l1.3 1.3"/>'),
+  globe: svg('<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c1.8 1.7 2.6 3.7 2.6 6S9.8 12.3 8 14C6.2 12.3 5.4 10.3 5.4 8S6.2 3.7 8 2z"/>'),
+  dot: svg('<circle cx="8" cy="8" r="4.5"/>'),
 };
 
-/** The three header buttons that open a page. Appended after the existing ones. */
+/** The three ⋯ menu items that open a page (Stage 9: they were header icons). */
 export function headerPageButtons(): string {
-  return `<span class="header-divider" aria-hidden="true"></span>
-      <button type="button" id="customizeBtn" class="icon-btn page-btn" title="Customize: MCP servers, specs, tools" aria-label="Customize" aria-controls="pageCustomize" aria-expanded="false">${ICONS.customize}</button>
-      <button type="button" id="accountBtn" class="icon-btn page-btn" title="Account: provider, key and model" aria-label="Account" aria-controls="pageAccount" aria-expanded="false">${ICONS.account}</button>
-      <button type="button" id="settingsBtn" class="icon-btn page-btn" title="Settings" aria-label="Settings" aria-controls="pageSettings" aria-expanded="false">${ICONS.settings}</button>`;
+  return `<button type="button" id="customizeBtn" class="menu-item page-btn" title="Customize: MCP servers, specs, tools" aria-label="Customize" aria-controls="pageCustomize" aria-expanded="false">${ICONS.customize}<span class="mi-text"><span class="mi-name">Customize</span><span class="mi-desc">MCP servers, specs, tools, skills</span></span></button>
+      <button type="button" id="accountBtn" class="menu-item page-btn" title="Account: provider, key and model" aria-label="Account" aria-controls="pageAccount" aria-expanded="false">${ICONS.account}<span class="mi-text"><span class="mi-name">Account</span><span class="mi-desc">Provider, API key and spend</span></span></button>
+      <button type="button" id="settingsBtn" class="menu-item page-btn" title="Settings" aria-label="Settings" aria-controls="pageSettings" aria-expanded="false">${ICONS.settings}<span class="mi-text"><span class="mi-name">Settings</span><span class="mi-desc">Model, behaviour, workspace, privacy</span></span></button>`;
 }
 
 function pageHead(id: string, title: string, subtitle: string): string {
@@ -74,6 +99,7 @@ function customizePage(): string {
         ['market', 'Marketplace'],
       ])}
       <div id="mcpPanel-installed" role="tabpanel" aria-labelledby="mcpTab-installed">
+        <div class="mcp-head"><h3>MCP Servers</h3><button type="button" class="pg-btn primary small" data-mcp-browse>${ICONS.plus}<span>Add Server</span></button></div>
         <p id="mcpNotice" class="page-note" hidden></p>
         <div id="mcpInstalledList" class="rows" aria-live="polite"></div>
         <div id="mcpEmpty" class="empty" hidden>
