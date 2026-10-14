@@ -3110,8 +3110,26 @@
       })
     : null;
 
+  const connectPopup = window.MochiiiConnect
+    ? window.MochiiiConnect.init(vscode, {
+        closePopups: () => {
+          setHistoryOpen(false);
+          setModelPopupOpen(false);
+          setModesPopupOpen(false);
+          setContextPopupOpen(false);
+        },
+        closePage: () => {
+          if (pages && pages.isOpen()) pages.close();
+        },
+        focusComposer: () => inputEl.focus(),
+      })
+    : null;
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
+    if (connectPopup && connectPopup.handle(msg)) {
+      return;
+    }
     if (pages && pages.handle(msg)) {
       return;
     }

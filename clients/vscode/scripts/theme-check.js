@@ -62,6 +62,7 @@ const webviewFiles = [
   path.join(root, 'media', 'main.js'),
   path.join(root, 'media', 'marketplace.js'),
   path.join(root, 'media', 'pages.js'),
+  path.join(root, 'media', 'connect.js'),
 ];
 
 /** Colour literals: #rgb/#rrggbb/#rrggbbaa, plus the legacy functional forms. */

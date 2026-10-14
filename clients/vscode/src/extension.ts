@@ -10,7 +10,8 @@ import { bundledDaemonDir, daemonBinaryName, resolveConfigPathSetting } from './
 import { ConnectResponse, probeDaemon, resolvedWorkspaceRoot, sendConnect, setWorkspaceRoot } from './daemonClient';
 import { ensureModelAvailable } from './modelSetup';
 import { API_KEY_SECRET, clearApiKey, ensureApiKey, getApiKey, promptForApiKey } from './apiKey';
-import { formatConnectResult, providerByName, providerForBase, providerLabel } from './connectFlow';
+import { ANY_KEY_CHOICE, formatConnectResult, keyMismatch, providerByName, providerChoices, providerForBase, providerLabel } from './connectFlow';
+import { ConnectOutcome, setConnectKey } from './connectBridge';
 import { DaemonHandle, DaemonSupervisor } from './daemonSupervisor';
 import {
   CREDENTIALS_FROM_STDIN_FLAG,
@@ -435,29 +436,61 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       cachedApiKey = saved;
       return { message: 'Key stored in VS Code. Open a folder to start asking questions.', inUse: false };
     }
+    // Step 1: the provider. Step 2: its key. The command palette's path; the
+    // chat asks the same two things in its own popup (ChatPanel.openConnect).
+    if (!base) {
+      const pick = await vscode.window.showQuickPick(
+        [ANY_KEY_CHOICE, ...providerChoices()].map((p) => ({ label: p.name, description: p.hint, detail: p.apiBase, apiBase: p.apiBase })),
+        {
+          title: 'Mochiii: connect a model provider (1/2)',
+          placeHolder: 'Which provider is the key from?',
+          matchOnDescription: true,
+          ignoreFocusOut: true,
+        },
+      );
+      if (!pick) {
+        return { message: 'Cancelled: no key was sent.', inUse: false };
+      }
+      base = pick.apiBase;
+    }
     const named = base ? providerForBase(base) : undefined;
     const key = await vscode.window.showInputBox({
-      title: base ? `Mochiii: API key for ${named ? named.name : base}` : 'Mochiii: connect a model provider',
+      title: `Mochiii: API key${named ? ` for ${named.name}` : base ? ` for ${base}` : ''} (2/2)`,
       prompt:
-        'Paste the API key. Most providers are recognised from the key itself (Groq, NVIDIA, OpenAI, Anthropic, ' +
-        'Gemini, OpenRouter and more); it is checked with the provider and stored for this machine. It never ' +
-        'appears in the chat.',
-      placeHolder: 'gsk_…   nvapi-…   sk-or-…   sk-ant-…   AIza…',
+        'Paste the API key. It is checked with the provider and stored for this machine. It never appears in the chat.',
       password: true,
       ignoreFocusOut: true,
-      validateInput: (v) => (v.trim() === '' ? 'Paste a key, or press Escape to cancel.' : undefined),
+      validateInput: (v) => (v.trim() === '' ? 'Paste a key, or press Escape to cancel.' : base ? keyMismatch(v, base) : undefined),
     });
     if (!key || key.trim() === '') {
       return { message: 'Cancelled: no key was sent.', inUse: false };
     }
+    return connectKey(key.trim(), base || undefined, true);
+  }
+
+  // The key path itself, shared by the palette above and the chat's popup
+  // (connectBridge.ts). The daemon proves the key with the provider at apiBase,
+  // stores it and uses it at once.
+  async function connectKey(key: string, base: string | undefined, notify: boolean): Promise<ConnectOutcome> {
+    if (!supervisor) {
+      return { message: 'Open a folder first: there is no daemon to check the key with.', inUse: false };
+    }
+    if (base) {
+      const mismatch = keyMismatch(key, base);
+      if (mismatch) {
+        return { message: mismatch, inUse: false };
+      }
+    }
     const ask = (apiBase?: string): Thenable<ConnectResponse> =>
-      vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `Mochiii: checking the key with ${apiBase ? providerLabel(apiBase) : 'its provider'}…`,
-        },
-        () => sendConnect(CLIENT_NAME, { api_key: key.trim(), api_base: apiBase }),
-      );
+      notify
+        ? vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: `Mochiii: checking the key with ${apiBase ? providerLabel(apiBase) : 'its provider'}…`,
+            },
+            () => sendConnect(CLIENT_NAME, { api_key: key, api_base: apiBase }),
+          )
+        : sendConnect(CLIENT_NAME, { api_key: key, api_base: apiBase });
     let resp: ConnectResponse;
     try {
       resp = await ask(base);
@@ -465,6 +498,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // user says whose it is. The terminal asks them to paste it again; here
       // the key is still in hand, so they pick from the daemon's candidates.
       if (resp.outcome === 'needs_provider' && resp.candidates && resp.candidates.length > 0) {
+        // The chat's popup asks with its own list (connect.js), the key still
+        // in its field; only the palette path asks here.
+        if (!notify) {
+          const candidates = resp.candidates.map((id) => providerByName(id)?.apiBase).filter((b): b is string => !!b);
+          return { message: `That key was sent nowhere: ${resp.detail}. Pick its provider, then press Connect again.`, inUse: false, candidates };
+        }
         const items = resp.candidates.map((id) => {
           const p = providerByName(id);
           return { label: p ? p.name : id, description: p ? p.apiBase : '', id };
@@ -506,6 +545,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('mochiii.connect', (opts?: { base?: string }) => connectThroughDaemon(opts?.base))
   );
+  setConnectKey((key, apiBase) => connectKey(key, apiBase || undefined, false));
+  context.subscriptions.push({ dispose: () => setConnectKey(undefined) });
 
   // /connect show: what the daemon has stored and is using -- masked by the
   // daemon. A key VS Code still keeps for itself is named, since it wins.

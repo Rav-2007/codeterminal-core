@@ -33,6 +33,7 @@ import {
   applyEdit,
   fetchAvailableTiers,
   preflightSession,
+  sendConnect,
   probeDaemon,
   chatHistory,
   resetChat,
@@ -43,6 +44,8 @@ import {
 import { ChatHost, panelHost, viewHost } from './chatHost';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
 import { activeWorkingFolder } from './workingFolder';
+import { ConnectOutcome, connectKey, hasConnectKey } from './connectBridge';
+import { ANY_KEY_CHOICE, modelChoices, providerChoices } from './connectFlow';
 import { ICONS, chatPagesMarkup, chatPagesStyles, headerPageButtons } from './chatPages/markup';
 import { ChatPagesHost } from './chatPages/pagesHost';
 import { mcpMarketplaceStyles } from './mcpMarketplace';
@@ -126,6 +129,19 @@ function turnsFromWire(turns: Turn[] | undefined): Turn[] {
 // one conversation: the transcript (source of truth for building the next
 // PromptRequest.History, mirroring buildHistory in clients/tui/chat.go) and
 // the in-flight connection, if any.
+// The connect popup while it is open (ChatPanel.openConnect). outcome is set
+// once a key has been connected from it, so leaving the model step after that
+// reports the connect rather than a cancel.
+interface ConnectPending {
+  promise: Promise<ConnectOutcome>;
+  resolve: (o: ConnectOutcome) => void;
+  base: string;
+  currentBase: string;
+  keyInForce: boolean;
+  inForce: string;
+  outcome?: ConnectOutcome;
+}
+
 export class ChatPanel {
   private static current: ChatPanel | undefined;
 
@@ -157,6 +173,11 @@ export class ChatPanel {
   private currentModel = '';
   // The daemon's handshake said a prompt sent now would carry no key.
   private needsApiKey = false;
+  // The connect popup over the composer, while it is open: whoever opened it
+  // (a question waiting for a key, /connect, a button, the first run) waits here.
+  private connectPending?: ConnectPending;
+  // The first-run popup opens once per panel, however often the session is read.
+  private firstRunConnectShown = false;
 
   // THE SHARED CHAT (daemon/chatsync.go). The workspace's chat is ONE
   // conversation, and the terminal client writes to it too; this panel used to
@@ -359,6 +380,7 @@ export class ChatPanel {
       currentModel: () => this.currentModel,
       selectTier: (tier) => this.onSelectModel(tier),
       providerNotes: () => [...this.providerNotes.values()],
+      connect: () => this.openConnect().then((r) => this.afterConnect(r, false)),
     });
     this.disposables.push(this.pages);
     this.host.webview.html = this.getHtml(extensionUri);
@@ -451,6 +473,13 @@ export class ChatPanel {
       return;
     }
     this.needsApiKey = session.needsApiKey;
+    // FIRST RUN, as the terminal opens on its setup: with no key in force the
+    // chat opens on the provider list. Esc leaves it; the "Connect a model"
+    // card and the first question still ask again.
+    if (session.needsApiKey && !this.firstRunConnectShown) {
+      this.firstRunConnectShown = true;
+      void this.openConnect(undefined, { firstRun: true }).then((r) => this.afterConnect(r, false));
+    }
     this.chatSync = session.chatRevision !== '';
     this.chatRev = session.chatRevision;
     const persisted = turnsFromWire(session.turns);
@@ -513,6 +542,9 @@ export class ChatPanel {
     id?: string;
     on?: boolean;
     retry?: boolean;
+    // connectSubmit: the provider chosen in the connect popup and its key.
+    apiBase?: string;
+    key?: string;
   }): void {
     if (this.pages.handle(msg as unknown as Record<string, unknown>)) {
       return;
@@ -567,9 +599,16 @@ export class ChatPanel {
     } else if (msg.type === 'newChat') {
       void this.onNewChat();
     } else if (msg.type === 'connect') {
-      // "Change key" under a key error, and the Account page. The command
-      // owns the masked prompt, the daemon's check and the restart.
-      void vscode.commands.executeCommand('mochiii.connect');
+      // "Change key" under a key error: the popup over the composer.
+      void this.openConnect().then((r) => this.afterConnect(r, false));
+    } else if (msg.type === 'connectSubmit' && typeof msg.apiBase === 'string' && typeof msg.key === 'string') {
+      void this.onConnectSubmit(msg.apiBase, msg.key);
+    } else if (msg.type === 'connectKeep') {
+      void this.onConnectKeep();
+    } else if (msg.type === 'connectModel' && typeof msg.tier === 'string') {
+      void this.onConnectModel(msg.tier);
+    } else if (msg.type === 'connectCancel') {
+      this.onConnectCancel();
     }
   }
 
@@ -967,11 +1006,11 @@ export class ChatPanel {
       // The provider-aware flow in extension.ts (mochiii.connect): a masked
       // box, the daemon proves and stores the key and uses it at once.
       connectApiKey: async (base?: string) => {
-        const r = await vscode.commands.executeCommand<{ message: string; inUse: boolean }>('mochiii.connect', { base });
-        if (r?.inUse) {
+        const r = await this.openConnect(base);
+        if (r.inUse) {
           this.needsApiKey = false;
         }
-        return r?.message ?? 'connect did not run.';
+        return r.message;
       },
       // Both return the sentence to print. The panel never reads or deletes a
       // credential itself -- it asks the extension, which owns SecretStorage.
@@ -1157,8 +1196,8 @@ export class ChatPanel {
   // sent the moment a key is in use -- or handed back, unsent, if not.
   private async connectThenStart(run: () => void): Promise<void> {
     this.needsApiKey = false; // no second box while this one is open
-    const r = await vscode.commands.executeCommand<{ message: string; inUse: boolean }>('mochiii.connect', {});
-    if (r?.inUse) {
+    const r = await this.openConnect();
+    if (r.inUse) {
       void this.host.webview.postMessage({ type: 'info', text: 'Key connected · sending your question' });
       void this.refreshModelAfterConnect();
       run();
@@ -1167,9 +1206,200 @@ export class ChatPanel {
     this.needsApiKey = true;
     this.replyLocal(
       'Your question was not sent: Mochiii needs a model provider key first, and none is in use.\n\n' +
-        (r?.message ?? '') +
+        r.message +
         '\n\nRun /connect, then send the question again.',
     );
+  }
+
+  // THE CONNECT POPUP: the provider, its key, then a model -- the terminal's
+  // setup (clients/tui/setup.go) in the chat above the composer, rather than in
+  // VS Code's input box at the top of the window. docs/PROVIDER_MODEL_FLOW.md.
+  // One popup at a time; a second opener waits on the same answer. base, when
+  // given (/connect groq), skips the provider list.
+  openConnect(base?: string, opts: { firstRun?: boolean } = {}): Promise<ConnectOutcome> {
+    if (!hasConnectKey()) {
+      // No daemon behind this window: the command keeps its own path.
+      return Promise.resolve(
+        vscode.commands.executeCommand<ConnectOutcome>('mochiii.connect', { base }),
+      ).then((r) => r ?? { message: 'connect did not run.', inUse: false });
+    }
+    if (!this.connectPending) {
+      let resolve!: (o: ConnectOutcome) => void;
+      const promise = new Promise<ConnectOutcome>((r) => (resolve = r));
+      this.connectPending = { promise, resolve, base: base ?? '', currentBase: '', keyInForce: false, inForce: '' };
+    }
+    void this.postConnectOpen(this.connectPending, opts.firstRun === true);
+    return this.connectPending.promise;
+  }
+
+  // What is in force now, so the list can mark the provider in use and the key
+  // step can offer to keep its key. Only the daemon's MASKED key comes back.
+  private async postConnectOpen(pending: ConnectPending, firstRun: boolean): Promise<void> {
+    let maskedKey = '';
+    try {
+      const shown = await sendConnect(CLIENT_NAME, { show: true });
+      const inForce = shown.key_source ? shown.key_source !== 'none' : shown.in_use && !!shown.masked_key;
+      pending.keyInForce = inForce;
+      pending.currentBase = inForce ? shown.active_api_base || shown.api_base || '' : '';
+      maskedKey = inForce ? shown.active_masked_key || shown.masked_key || '' : '';
+    } catch {
+      // Nothing marked: the list still works without it.
+    }
+    if (this.connectPending !== pending) {
+      return;
+    }
+    this.postSafe({
+      type: 'connectOpen',
+      providers: [ANY_KEY_CHOICE, ...providerChoices()],
+      base: pending.base,
+      currentBase: pending.currentBase,
+      maskedKey,
+      keyInForce: pending.keyInForce,
+      firstRun,
+    });
+  }
+
+  // The key arrives from the popup's password field and goes straight to the
+  // daemon (connectBridge.ts). It is not kept, logged or echoed back.
+  private async onConnectSubmit(apiBase: string, key: string): Promise<void> {
+    const pending = this.connectPending;
+    if (!pending) {
+      return;
+    }
+    // Only an address the popup offered: "Any key" (''), a known provider's,
+    // or the one /connect <address> opened it with.
+    const known = apiBase === '' || providerChoices().some((p) => p.apiBase === apiBase) || (pending.base !== '' && apiBase === pending.base);
+    if (!known || key.trim() === '') {
+      this.postSafe({ type: 'connectError', text: key.trim() === '' ? 'Paste a key first.' : 'Choose a provider from the list.' });
+      return;
+    }
+    const r = await connectKey(key.trim(), apiBase);
+    if (this.connectPending !== pending) {
+      return; // cancelled while the daemon was checking
+    }
+    if (r.candidates && r.candidates.length > 0) {
+      this.postSafe({ type: 'connectNeedsProvider', candidates: r.candidates, text: r.message });
+    } else if (r.inUse) {
+      // In use from the next question; the popup moves on to its models.
+      pending.outcome = r;
+      void this.refreshModelAfterConnect();
+      await this.showModelStep(pending);
+    } else {
+      this.postSafe({ type: 'connectError', text: r.message });
+    }
+  }
+
+  // "Keep the current key": the provider in use was picked again, by someone
+  // who wants another model. Nothing is sent; the model list follows.
+  private async onConnectKeep(): Promise<void> {
+    const pending = this.connectPending;
+    if (!pending || !pending.keyInForce) {
+      return;
+    }
+    await this.showModelStep(pending);
+  }
+
+  // THE MODEL STEP. After a connect, a list with nothing to choose between
+  // (fewer than two models) is skipped, as the terminal does: the connect's own
+  // answer already names the model. Opened to change the model, it is shown
+  // whatever it holds, and a failure is said.
+  private async showModelStep(pending: ConnectPending): Promise<void> {
+    const after = pending.outcome;
+    this.postSafe({ type: 'connectModelsLoading' });
+    let tiers: Awaited<ReturnType<typeof fetchAvailableTiers>>;
+    try {
+      tiers = await fetchAvailableTiers(CLIENT_NAME);
+    } catch (err) {
+      if (this.connectPending !== pending) {
+        return;
+      }
+      if (after) {
+        this.finishConnect(after);
+      } else {
+        this.postSafe({ type: 'connectError', text: `The model list could not be read: ${(err as Error).message}` });
+      }
+      return;
+    }
+    if (this.connectPending !== pending) {
+      return;
+    }
+    const { rows, inForce } = modelChoices(tiers, this.preferredTier);
+    if (after && rows.length < 2) {
+      this.finishConnect(after);
+      return;
+    }
+    if (rows.length === 0) {
+      this.postSafe({ type: 'connectError', text: 'The provider in use offers no model here. Choose another provider.' });
+      return;
+    }
+    pending.inForce = inForce;
+    this.postSafe({ type: 'connectModels', rows, inForce });
+  }
+
+  // A model chosen in the popup: the daemon remembers it beside the key in
+  // force (choose_model, as the Settings page and the terminal's /model do),
+  // and this panel sends it from the next question.
+  private async onConnectModel(tier: string): Promise<void> {
+    const pending = this.connectPending;
+    if (!pending) {
+      return;
+    }
+    const done = (line: string): void => {
+      const before = pending.outcome?.message ?? '';
+      this.finishConnect({ message: [before, line].filter((x) => x !== '').join('\n'), inUse: true });
+    };
+    if (tier === pending.inForce) {
+      done('');
+      return;
+    }
+    let saved = '';
+    try {
+      const resp = await sendConnect(CLIENT_NAME, { choose_model: tier });
+      if (resp.error) {
+        this.postSafe({ type: 'connectError', text: resp.error });
+        return;
+      }
+      if (resp.model_saved === false && resp.detail) {
+        saved = ` ${resp.detail}`;
+      }
+    } catch (err) {
+      this.postSafe({ type: 'connectError', text: `Could not reach the Mochiii daemon: ${(err as Error).message}` });
+      return;
+    }
+    if (this.connectPending !== pending) {
+      return;
+    }
+    const err = await this.applyTier(tier);
+    if (err) {
+      this.postSafe({ type: 'connectError', text: err });
+      return;
+    }
+    done(`Model set to ${tier}.${saved}`);
+  }
+
+  // Esc, Cancel or "Keep <model>". After a key was connected, leaving the
+  // model step is not a cancel: the key is in use, and the answer says so.
+  private onConnectCancel(): void {
+    const after = this.connectPending?.outcome;
+    this.finishConnect(after ?? { message: 'Cancelled: no key was sent.', inUse: false });
+  }
+
+  private finishConnect(r: ConnectOutcome): void {
+    const pending = this.connectPending;
+    this.connectPending = undefined;
+    this.postSafe({ type: 'connectClose' });
+    pending?.resolve(r);
+  }
+
+  private afterConnect(r: ConnectOutcome, quiet: boolean): void {
+    if (!r.inUse) {
+      return;
+    }
+    this.needsApiKey = false;
+    if (!quiet && r.message !== '') {
+      this.postSafe({ type: 'info', text: r.message.split('\n')[0] });
+    }
+    void this.refreshModelAfterConnect();
   }
 
   private startModelTurn(
@@ -1880,6 +2110,8 @@ export class ChatPanel {
     // sockets left reading a dead webview.
     this.disposed = true;
     this.inFlight?.abort();
+    this.connectPending?.resolve({ message: 'Cancelled: the chat was closed.', inUse: false });
+    this.connectPending = undefined;
     if (ChatPanel.current === this) {
       ChatPanel.current = undefined;
     }
@@ -1894,6 +2126,7 @@ export class ChatPanel {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.js'));
     const pagesUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'pages.js'));
     const marketUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'marketplace.js'));
+    const connectUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'connect.js'));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'logo.png'));
     const nonce = getNonce();
 
@@ -1912,6 +2145,7 @@ ${mcpMarketplaceStyles('.market-root')}
 <body>
 ${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${marketUri}"></script>
   <script nonce="${nonce}" src="${pagesUri}"></script>
+  <script nonce="${nonce}" src="${connectUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -2693,6 +2927,74 @@ export function chatPanelStyles(): string {
     color: var(--ct-ink);
   }
   .modes-popup[hidden] { display: none !important; }
+  /* CONNECT POPUP (media/connect.js): above the composer, full width. */
+  .connect-popup {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    bottom: calc(100% + 8px);
+    max-height: min(440px, 70vh);
+    display: flex;
+    flex-direction: column;
+    background: var(--ct-popover-bg);
+    border: 1px solid var(--ct-border);
+    border-radius: 16px;
+    box-shadow: var(--ct-shadow);
+    z-index: 25;
+    color: var(--ct-ink);
+    overflow: hidden;
+  }
+  .connect-popup[hidden], .connect-body[hidden], .connect-icon[hidden], .connect-notice[hidden], .connect-btn[hidden],
+  .connect-loading[hidden], .connect-input[hidden], .connect-list[hidden] { display: none !important; }
+  .connect-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px; }
+  .connect-titles { flex: 1; min-width: 0; }
+  .connect-step { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ct-muted); }
+  .connect-title { font-weight: 600; font-size: 13.5px; margin-top: 2px; }
+  .connect-icon {
+    width: 26px; height: 26px; border: none; border-radius: 7px; background: transparent;
+    color: var(--ct-muted); cursor: pointer; font-size: 15px; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .connect-icon:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
+  .connect-body { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; min-height: 0; }
+  .connect-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--ct-control-bg);
+    color: var(--ct-ink);
+    border: 1px solid var(--ct-control-border);
+    border-radius: 9px;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+  }
+  .connect-input:focus { outline: 2px solid var(--ct-accent); outline-offset: -1px; border-color: transparent; }
+  .connect-list { overflow-y: auto; max-height: min(300px, 50vh); display: flex; flex-direction: column; gap: 2px; }
+  .connect-item {
+    display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: none; border-radius: 9px;
+    background: transparent; color: var(--ct-ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .connect-item:hover, .connect-item:focus-visible { background: var(--ct-accent-soft); outline: none; }
+  .connect-name { flex: 1; min-width: 0; }
+  .connect-hint { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--ct-muted); flex-shrink: 0; }
+  .connect-empty { padding: 10px; color: var(--ct-muted); font-size: 12px; }
+  .connect-label { font-size: 12.5px; }
+  .connect-note { font-size: 11.5px; color: var(--ct-muted); }
+  .connect-notice {
+    font-size: 12px; white-space: pre-wrap; color: var(--ct-danger); padding: 8px 10px; border-radius: 9px; margin: 0 12px 8px;
+    background: color-mix(in srgb, var(--ct-danger) 10%, transparent);
+  }
+  .connect-item.current .connect-name { font-weight: 600; }
+  .connect-item.quiet { opacity: 0.55; }
+  .connect-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ct-ok); flex-shrink: 0; }
+  .connect-cur { font-size: 11px; color: var(--ct-ok); flex-shrink: 0; }
+  .connect-help { font-size: 11px; color: var(--ct-muted); font-style: italic; }
+  .connect-loading { font-size: 12.5px; color: var(--ct-muted); padding: 10px 2px; }
+  .connect-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+  .connect-btn { border-radius: 9px; padding: 6px 14px; font: inherit; font-size: 12.5px; cursor: pointer; border: 1px solid var(--ct-control-border); }
+  .connect-btn.ghost { background: transparent; color: var(--ct-ink); }
+  .connect-btn.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); border-color: transparent; }
+  .connect-btn.primary:hover { background: var(--ct-accent-solid-hover); }
+  .connect-btn:disabled { opacity: 0.6; cursor: default; }
   /* HISTORY PANEL (Claude Code style): under the header, a search box and the
      chats -- bookmarks first, then newest. */
   #appHeader { position: relative; }
@@ -3150,6 +3452,42 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
   </div>
   <div id="composer">
     <div id="slashMenu" role="listbox" aria-label="Slash commands"></div>
+    <!-- Connect a model provider (media/connect.js): the provider, its key, then a
+         model -- the terminal's setup, in the chat. docs/PROVIDER_MODEL_FLOW.md -->
+    <div id="connectPopup" class="connect-popup" hidden role="dialog" aria-labelledby="connectTitle">
+      <div class="connect-head">
+        <button type="button" class="connect-icon" id="connectBack" hidden aria-label="Back to providers" title="Back">‹</button>
+        <div class="connect-titles">
+          <div class="connect-step" id="connectStep">Step 1 of 3</div>
+          <div class="connect-title" id="connectTitle">Select Provider</div>
+        </div>
+        <button type="button" class="connect-icon" id="connectClose" aria-label="Cancel" title="Cancel">✕</button>
+      </div>
+      <div class="connect-notice" id="connectNotice" role="alert" hidden></div>
+      <div class="connect-body" id="connectPick">
+        <input id="connectFilter" class="connect-input" type="text" placeholder="Search providers…" aria-label="Search providers" autocomplete="off" spellcheck="false">
+        <div class="connect-list" id="connectList" role="listbox" aria-label="Model providers"></div>
+        <div class="connect-help">Type to search, ↑/↓ to move, Enter to select, Esc to cancel</div>
+      </div>
+      <div class="connect-body" id="connectKeyStep" hidden>
+        <label for="connectKey" class="connect-label" id="connectKeyLabel">Paste your API key</label>
+        <input id="connectKey" class="connect-input" type="password" autocomplete="off" spellcheck="false">
+        <div class="connect-note">Checked with the provider, then stored on this machine. It never appears in the chat.</div>
+        <div class="connect-actions">
+          <button type="button" class="connect-btn ghost" id="connectKeepKey" hidden>Keep current key</button>
+          <button type="button" class="connect-btn ghost" id="connectCancelBtn">Cancel</button>
+          <button type="button" class="connect-btn primary" id="connectSubmit">Connect</button>
+        </div>
+      </div>
+      <div class="connect-body" id="connectModelStep" hidden>
+        <div class="connect-loading" id="connectModelsLoading" role="status">Loading models…</div>
+        <input id="connectModelFilter" class="connect-input" type="text" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false">
+        <div class="connect-list" id="connectModelList" role="listbox" aria-label="Models"></div>
+        <div class="connect-actions">
+          <button type="button" class="connect-btn ghost" id="connectKeepModel">Keep current model</button>
+        </div>
+      </div>
+    </div>
     <div id="composerShell">
       <div class="composer-top">
         <label for="promptInput" class="sr-only">Ask a question about your code</label>

@@ -70,7 +70,7 @@ export const SLASH_CATALOG: SlashDef[] = [
   {
     name: 'connect',
     kind: 'local',
-    summary: 'connect a model provider by its API key: Groq, NVIDIA, OpenAI, Anthropic, Gemini, OpenRouter... (/connect <provider>, show, forget)',
+    summary: 'choose a provider, paste its key, choose a model (/connect <provider> skips the list; /connect show, /connect forget)',
   },
   { name: 'exit', kind: 'local', summary: 'close the chat panel' },
 

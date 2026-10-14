@@ -111,6 +111,8 @@ const MUST_CONTAIN = [
   // the chat still opens; its header buttons simply do nothing.
   'extension/media/pages.js',
   'extension/media/marketplace.js',
+  // The connect popup. Without it the chat's key prompt never opens.
+  'extension/media/connect.js',
   'extension/media/logo.png',
   // The side-bar container's icon, named by package.json's viewsContainers. Another
   // silent absence: the extension installs, the container still appears, and

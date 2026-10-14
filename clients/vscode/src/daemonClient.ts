@@ -269,6 +269,9 @@ export interface StatusTier {
   active: boolean;
   // default marks models.json's default_tier (protocol.StatusTier.Default).
   default?: boolean;
+  // quiet: listed by the provider, but it did not answer when the key was
+  // connected (protocol.StatusTier.Quiet). Still selectable; offered last.
+  quiet?: boolean;
 }
 
 export interface StatusResponse {

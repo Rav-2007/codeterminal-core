@@ -256,10 +256,6 @@ var summaryMayDiffer = map[string]string{
 		"extension's still prints the tiers, so its summary must not promise a list",
 	"exit": "the command genuinely does different things: the TUI quits the " +
 		"process, the extension closes a panel and leaves the editor running",
-	"connect": "the TUI's /connect also takes a provider address to switch " +
-		"provider (2026-10-05), and since 2026-10-11 opens the setup -- choose a " +
-		"provider, paste its key, choose a model; the extension's does neither " +
-		"YET, so its summary must not advertise them",
 	"mcp-server": "the TUI's asks the RUNNING daemon for its tools and adds, " +
 		"changes or removes the user's own MCP servers in the terminal " +
 		"(2026-10-11); the extension's opens its Customize page on the MCP " +

@@ -41,6 +41,8 @@ export interface PagesPanel {
   selectTier(tier: string): Promise<void>;
   /** Provider-level notices this panel has seen (degradedOnce.ts). */
   providerNotes(): string[];
+  /** The connect popup over the composer; settles when it closes. */
+  connect?(): Promise<unknown>;
 }
 
 type PageName = 'customize' | 'account' | 'settings';
@@ -130,6 +132,10 @@ export class ChatPagesHost implements vscode.Disposable {
         void this.load(msg.page);
         return true;
       case 'page:command': {
+        if (msg.name === 'connect' && this.panel.connect) {
+          void this.panel.connect().then(() => this.reloadAfter(msg.name));
+          return true;
+        }
         const cmd = pageCommand(msg.name);
         if (cmd) {
           void Promise.resolve(vscode.commands.executeCommand(cmd)).then(() => this.reloadAfter(msg.name));
