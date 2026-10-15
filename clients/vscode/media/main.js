@@ -1168,7 +1168,7 @@
   });
   if (toolsBtn) {
     toolsBtn.addEventListener('click', () => {
-      if (pages) pages.open('customize', { tab: 'mcp', sub: 'installed' });
+      if (pages) pages.openMcp();
     });
   }
   /** @param {any} msg */
@@ -3172,8 +3172,11 @@
     if (!pages) {
       return false;
     }
-    if (m[1] === 'mcp' || m[1] === 'mcp-server') {
-      pages.open('customize', { tab: 'mcp', sub: arg ? 'market' : 'installed', search: arg || undefined });
+    if ((m[1] === 'mcp' || m[1] === 'mcp-server') && !arg) {
+      // Bare /mcp is Claude Code's dialog: every server and what it needs.
+      pages.openMcp();
+    } else if (m[1] === 'mcp' || m[1] === 'mcp-server') {
+      pages.open('customize', { tab: 'mcp', sub: 'market', search: arg });
     } else {
       pages.open(m[1] === 'account' ? 'account' : 'settings');
     }

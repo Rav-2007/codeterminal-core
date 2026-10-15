@@ -50,7 +50,8 @@ export interface PagesPanel {
   connect?(): Promise<unknown>;
 }
 
-type PageName = 'customize' | 'account' | 'settings';
+// 'mcp' is the /mcp dialog, which loads the servers only.
+type PageName = 'customize' | 'account' | 'settings' | 'mcp';
 
 export class ChatPagesHost implements vscode.Disposable {
   private readonly loaded = new Set<PageName>();
@@ -67,7 +68,7 @@ export class ChatPagesHost implements vscode.Disposable {
       this.disposables.push(
         mcp.onDidChangeState(() => {
           this.postToolsCount();
-          if (this.loaded.has('customize')) {
+          if (this.loaded.has('customize') || this.loaded.has('mcp')) {
             this.postMcp();
           }
         }),
@@ -201,6 +202,11 @@ export class ChatPagesHost implements vscode.Disposable {
     } else if (page === 'settings') {
       this.loaded.add('settings');
       await this.postSettings();
+    } else if (page === 'mcp') {
+      // The /mcp dialog: the servers only, not the rest of Customize.
+      this.loaded.add('mcp');
+      await pagesContext?.mcpServers?.refresh();
+      this.postMcp();
     } else if (page === 'customize') {
       this.loaded.add('customize');
       await pagesContext?.mcpServers?.refresh();
@@ -312,6 +318,9 @@ export class ChatPagesHost implements vscode.Disposable {
         command: s.command,
         source: s.source,
         disabled: !!s.disabled,
+        // A remote server's address and transport, for the /mcp dialog.
+        url: s.url ?? '',
+        transport: s.transport ?? '',
         env: s.env ?? [],
         // Whether it really starts, not only whether it is switched on.
         status: serverStatus(s),

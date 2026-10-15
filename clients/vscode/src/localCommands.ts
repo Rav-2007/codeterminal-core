@@ -256,6 +256,7 @@ export async function runLocalCommand(
     // the marketplace. Like /config and /account it answers nothing in the
     // chat: the page is the answer. (The webview opens these itself before
     // sending; this is the same thing for any route that does reach here.)
+    case 'mcp':
     case 'mcp-server':
       await host.openPage('customize', args.trim());
       return '';

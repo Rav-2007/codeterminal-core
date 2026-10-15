@@ -424,11 +424,12 @@ suite('local commands against a hostile workspace', () => {
     // (2026-10-13). What it must prove now is that it went to the marketplace,
     // through the host, rather than anywhere that could start a daemon.
     // /config and /account open pages the same way, and like /mcp-server
-    // answer nothing in the chat.
+    // answer nothing in the chat. /mcp is /mcp-server's other name (the
+    // webview opens its dialog before sending; this is the route that reaches here).
     assert.deepStrictEqual(
       [...host.pagesOpened].sort(),
-      ['account', 'customize', 'settings'],
-      `/mcp-server, /config and /account did not each open their page through the host: ${JSON.stringify(host.pagesOpened)}`,
+      ['account', 'customize', 'customize', 'settings'],
+      `/mcp, /mcp-server, /config and /account did not each open their page through the host: ${JSON.stringify(host.pagesOpened)}`,
     );
     for (const name of ['mcp-server', 'config', 'account']) {
       assert.strictEqual(replies.get(name), '', `/${name} answered in the chat instead of opening its page`);

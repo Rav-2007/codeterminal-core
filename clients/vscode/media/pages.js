@@ -356,6 +356,229 @@
       }
     }
 
+    // ---- the /mcp dialog ---------------------------------------------------------
+    //
+    // Claude Code's /mcp: one list of every server, grouped by where it comes
+    // from, each with a pill for its state; open one for big buttons that do
+    // what it needs (Authenticate, Set key, Check connection, Disable). It reads
+    // the same page:mcp message as Customize > MCP (renderMcp keeps the last
+    // one) and acts through the same mcp:row table, so the two always agree.
+
+    const dlg = document.getElementById('mcpDlg');
+    const dlgFilter = /** @type {HTMLInputElement | null} */ (document.getElementById('mcpDlgFilter'));
+    /** @type {any} */
+    let lastMcp = null;
+    /** The server the detail view shows, or '' for the list. */
+    let dlgServer = '';
+    /** @type {HTMLElement | null} */
+    let dlgReturnFocus = null;
+
+    // A server's pill in the dialog: mcpLook's verdict in Claude Code's words.
+    /** @param {any} s */
+    function dlgLook(s) {
+      const own = s.source !== 'config' && s.source !== 'project';
+      const look = mcpLook(s, s.status || { short: '', detail: '', needsKey: false }, own);
+      /** @type {Record<string, [string, string]>} */
+      const words = {
+        Connected: ['✓ Connected', 'on'],
+        'Sign in': ['⚠ Needs auth', 'warn'],
+        'Needs key': ['⚠ Needs key', 'warn'],
+        'Pending approval': ['⚠ Pending approval', 'warn'],
+        Failed: ['✘ Failed', 'bad'],
+        'Tools failed': ['⚠ Tools failed', 'bad'],
+        Paused: ['Disabled', ''],
+        Rejected: ['Rejected', ''],
+      };
+      const [badge, tone] = words[look.badge] || ['Not started', ''];
+      return { badge, tone, look, own };
+    }
+
+    function openMcp() {
+      if (!dlg) return;
+      hooks.closePopups();
+      if (current) close();
+      dlgReturnFocus = /** @type {HTMLElement | null} */ (document.activeElement);
+      dlgServer = '';
+      if (dlgFilter) dlgFilter.value = '';
+      dlg.hidden = false;
+      renderMcpDialog();
+      if (dlgFilter) dlgFilter.focus();
+      vscode.postMessage({ type: 'page:load', page: 'mcp' });
+    }
+
+    function closeMcp() {
+      if (!dlg || dlg.hidden) return;
+      dlg.hidden = true;
+      dlgServer = '';
+      if (dlgReturnFocus && document.body.contains(dlgReturnFocus)) dlgReturnFocus.focus();
+      else hooks.focusComposer();
+      dlgReturnFocus = null;
+    }
+
+    /** @param {string} name */
+    function showServer(name) {
+      dlgServer = name;
+      renderMcpDialog();
+      const back = document.getElementById('mcpDlgBack');
+      if (back) back.focus();
+    }
+
+    function renderMcpDialog() {
+      if (!dlg || dlg.hidden) return;
+      const listView = document.getElementById('mcpDlgList');
+      const detailView = document.getElementById('mcpDlgDetail');
+      const servers = (lastMcp && lastMcp.servers) || [];
+      const chosen = dlgServer ? servers.find((/** @type {any} */ s) => s.name === dlgServer) : null;
+      // A server removed while it was open: back to the list.
+      if (dlgServer && !chosen) dlgServer = '';
+      if (listView) listView.hidden = !!chosen;
+      if (detailView) detailView.hidden = !chosen;
+      if (chosen) renderMcpDetail(chosen);
+      else renderMcpList(servers);
+    }
+
+    /** @param {any[]} servers */
+    function renderMcpList(servers) {
+      const groups = document.getElementById('mcpDlgGroups');
+      const notice = document.getElementById('mcpDlgNotice');
+      if (!groups) return;
+      groups.replaceChildren();
+      const q = dlgFilter ? dlgFilter.value.trim().toLowerCase() : '';
+      const shown = servers.filter((s) => !q || String(s.name).toLowerCase().includes(q));
+      /** @type {[string, string][]} */
+      const order = [
+        ['project', "This project's .mcp.json"],
+        ['user', 'Yours (all projects)'],
+        ['config', "The daemon's models.json"],
+      ];
+      for (const [source, title] of order) {
+        const inGroup = shown.filter((s) => (s.source === 'project' || s.source === 'config' ? s.source : 'user') === source);
+        if (inGroup.length === 0) continue;
+        groups.append(el('div', 'mcp-dlg-group', title + ' (' + inGroup.length + ')'));
+        for (const s of inGroup) {
+          const { badge, tone } = dlgLook(s);
+          const item = el('button', 'mcp-dlg-item');
+          /** @type {HTMLButtonElement} */ (item).type = 'button';
+          item.append(el('span', 'mcp-dlg-name', s.name), el('span', 'mcp-pill' + (tone ? ' ' + tone : ''), badge));
+          item.setAttribute('aria-label', s.name + ': ' + badge.replace(/^\W+\s*/, ''));
+          item.addEventListener('click', () => showServer(s.name));
+          groups.append(item);
+        }
+      }
+      let text = (lastMcp && lastMcp.notice) || '';
+      if (!lastMcp) text = 'Asking the daemon…';
+      else if (servers.length === 0) text = text || 'No MCP servers yet. Add one, or browse the marketplace.';
+      else if (shown.length === 0) text = 'No server matches “' + q + '”.';
+      if (notice) {
+        notice.textContent = text;
+        notice.hidden = !text;
+      }
+    }
+
+    /** @param {any} s */
+    function renderMcpDetail(s) {
+      const { badge, tone, look, own } = dlgLook(s);
+      setText('mcpDlgName', s.name);
+      const pill = document.getElementById('mcpDlgBadge');
+      if (pill) {
+        pill.textContent = badge;
+        pill.className = 'mcp-pill' + (tone ? ' ' + tone : '');
+      }
+      const info = document.getElementById('mcpDlgInfo');
+      if (info) {
+        info.replaceChildren();
+        /** @param {string} text @param {string} [className] */
+        const line = (text, className) => info.append(el('p', className, text));
+        if (look.problem) line(look.problem, 'mcp-problem');
+        else if (look.title) line(look.title);
+        if (look.sub) line(look.sub);
+        const where = el('p');
+        if (s.url) where.append((s.transport ? s.transport.toUpperCase() + ' ' : '') + 'at ', el('code', '', s.url));
+        else where.append(el('code', '', s.command));
+        info.append(where);
+        if (s.env && s.env.length) line('Reads ' + s.env.join(', '));
+        for (const w of s.warnings || []) line(w, 'mcp-problem');
+        line(
+          s.source === 'project'
+            ? "Proposed by this project's .mcp.json."
+            : s.source === 'config'
+              ? "Defined in the daemon's models.json; change it there."
+              : 'Added by you; kept in ~/.mochiii/mcp-servers.json.',
+        );
+      }
+      const acts = document.getElementById('mcpDlgActions');
+      if (!acts) return;
+      acts.replaceChildren();
+      /** @param {string} label @param {string} action @param {string} [className] @param {string} [aria] */
+      const button = (label, action, className, aria) => {
+        const b = el('button', 'mcp-dlg-btn' + (className ? ' ' + className : ''), label);
+        /** @type {HTMLButtonElement} */ (b).type = 'button';
+        if (aria) b.setAttribute('aria-label', aria);
+        b.addEventListener('click', () => vscode.postMessage({ type: 'mcp:row', action, name: s.name }));
+        acts.append(b);
+      };
+      if (s.approval === 'pending' || s.approval === 'rejected') {
+        if (s.canApprove) button('Approve…', 'approve', 'primary', 'Approve ' + s.name + ', which this project proposes');
+        else acts.append(el('p', 'mcp-dlg-notice', 'Trust this folder (Restricted Mode, bottom left) to approve it.'));
+        if (s.approval === 'pending') button('Reject', 'reject', 'danger', 'Reject ' + s.name);
+        return;
+      }
+      const needsKey = look.badge === 'Needs key';
+      if (s.canSignIn && !s.signedIn) button('Authenticate', 'signIn', 'primary', 'Sign in to ' + s.name + ' in the browser');
+      if (s.canSetKey) button('Set key…', 'setKey', needsKey ? 'primary' : '', 'Set a key for ' + s.name);
+      if (s.canCheck) button('Check connection', 'check', '', 'Start ' + s.name + ' now and see whether it works');
+      if (s.canSignIn && s.signedIn) {
+        button('Re-authenticate', 'signIn', '', 'Sign in to ' + s.name + ' again');
+        button('Clear authentication', 'signOut', '', 'Sign out of ' + s.name);
+      }
+      if (own) {
+        button(s.disabled ? 'Enable' : 'Disable', s.disabled ? 'enable' : 'disable');
+        button('Edit…', 'edit', '', 'Change ' + s.name);
+        button('Remove', 'remove', 'danger', 'Remove ' + s.name);
+      }
+    }
+
+    if (dlg) {
+      dlg.addEventListener('click', (e) => {
+        if (e.target === dlg) closeMcp();
+      });
+      dlg.addEventListener('keydown', (e) => {
+        if (/** @type {KeyboardEvent} */ (e).key !== 'Escape') return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (dlgServer) showList();
+        else closeMcp();
+      });
+      const x = document.getElementById('mcpDlgClose');
+      if (x) x.addEventListener('click', closeMcp);
+      const back = document.getElementById('mcpDlgBack');
+      if (back) back.addEventListener('click', showList);
+      if (dlgFilter) dlgFilter.addEventListener('input', renderMcpDialog);
+      dlg.querySelectorAll('[data-mcpdlg]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const what = b.getAttribute('data-mcpdlg');
+          closeMcp();
+          if (what === 'add') vscode.postMessage({ type: 'page:command', name: 'mcpAdd' });
+          else open('customize', { tab: 'mcp', sub: 'market' });
+        }),
+      );
+    }
+
+    function showList() {
+      const was = dlgServer;
+      dlgServer = '';
+      renderMcpDialog();
+      // Back on the row it came from, as Claude Code's list does.
+      const rows = document.querySelectorAll('#mcpDlgGroups .mcp-dlg-item');
+      for (const r of Array.from(rows)) {
+        if (r.querySelector('.mcp-dlg-name')?.textContent === was) {
+          /** @type {HTMLElement} */ (r).focus();
+          return;
+        }
+      }
+      if (dlgFilter) dlgFilter.focus();
+    }
+
     /** @param {any} msg */
     function renderSpecs(msg) {
       const list = document.getElementById('specList');
@@ -542,7 +765,9 @@
           renderSettings(msg);
           return true;
         case 'page:mcp':
+          lastMcp = msg;
           renderMcp(msg);
+          renderMcpDialog();
           return true;
         case 'page:specs':
           renderSpecs(msg);
@@ -569,8 +794,12 @@
     return {
       handle,
       open,
-      close,
-      isOpen: () => current !== '',
+      openMcp,
+      close: () => {
+        closeMcp();
+        close();
+      },
+      isOpen: () => current !== '' || !!(dlg && !dlg.hidden),
     };
   }
 
