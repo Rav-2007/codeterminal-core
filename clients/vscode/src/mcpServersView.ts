@@ -47,7 +47,9 @@ import { McpPopupHost, mcpPopupHost } from './mcpPopup';
 async function popup(): Promise<McpPopupHost | undefined> {
   const host = mcpPopupHost();
   if (host) {
-    await vscode.commands.executeCommand('mochiii.chatView.focus').then(undefined, () => undefined);
+    // The chat's own host, not a fixed view: it may be in the Activity Bar's
+    // side bar, the secondary one, or an editor tab.
+    host.reveal();
   }
   return host;
 }

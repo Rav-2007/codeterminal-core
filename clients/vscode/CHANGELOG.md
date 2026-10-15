@@ -3,6 +3,48 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [1.0.0] - Unreleased
+
+The first non-preview release. Everything since 0.1.1 (PRs #23–#40), plus the
+1.0.0 fixes below. A 0.1.1 install updates in place: no setting was renamed or
+removed, and the chat's view ids are unchanged.
+
+### Added
+
+- **Mochiii has its own icon in the Activity Bar**, beside Explorer, Search and
+  the other agents. Clicking it opens the chat in the primary side bar. The
+  secondary side bar home stays, so the chat can still sit beside your files.
+  It is one conversation shown in one place at a time; the other place says
+  where the chat is and offers **Move the chat here**, and never cuts off an
+  answer, an approval or an edit review because you clicked it.
+- **The chat in the side bar** (0.2.0 overhaul, #23; Stage 8, #29; Stage 9, #30):
+  a work block that folds each turn's tool steps, Try again and Continue on a
+  failed turn, a working-folder chooser, Customize, Account and Settings pages,
+  `@` context and the composer redesign.
+- **MCP servers** (#26, #27, #32–#37): an MCP Servers view and a marketplace
+  backed by mochiii.in; server keys kept by the daemon; health checks; remote
+  servers over streamable HTTP and SSE; browser sign-in (OAuth); and servers a
+  project's `.mcp.json` proposes, each run only once you approve it.
+- **The agent can delete, move and restore files** (#38), each asked about, with
+  a trash; and **run a terminal command** (#39), approved per call.
+- **Project rules** that reach every later chat (#28, #31) and **GitHub reading**:
+  issues, pull requests and why CI failed (#40).
+- `mochiii.developerDiagnostics` (off by default) shows which daemon component
+  raised each notice in the chat. **Mochiii: Show Daemon Log** has the full record.
+
+### Changed
+
+- **Connected tools past the menu limit stay usable.** The model is shown at
+  most 24 tools at a time, because a wider menu measurably made it choose worse.
+  That limit used to cut the list alphabetically, so a question about Supabase
+  projects could run without `list_projects`. Now each question keeps the tools
+  that match it best, and the model can look up the rest (`find_tools`) when a
+  task needs them. Every call still asks before it runs, exactly as before.
+- The chat no longer shows "degraded (tool_menu_truncated)" with a list of
+  internal tool names on every turn. Notices are written in plain words; the
+  internal component name appears only with `mochiii.developerDiagnostics` on.
+- No longer marked as a preview on the Marketplace.
+
 ## [0.1.1] - 2026-10-11
 
 Adds the **Windows** package. 0.1.0 shipped for Linux only — not by choice: the

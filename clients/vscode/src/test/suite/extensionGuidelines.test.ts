@@ -10,7 +10,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-import { CHAT_VIEW_ID, CHAT_VIEW_TYPE, ChatPanel } from '../../chatPanel';
+import { CHAT_ACTIVITY_VIEW_ID, CHAT_VIEW_ID, CHAT_VIEW_IDS, CHAT_VIEW_TYPE, ChatPanel } from '../../chatPanel';
+import { MOVE_CHAT_HERE_COMMAND, chatElsewhereHtml, chatElsewhereOptions } from '../../chatElsewhere';
 import { StubDaemon, pointAtEmptyRuntimeDir, writeLine } from '../stubDaemon';
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -55,38 +56,64 @@ suite('the manifest meets the Marketplace guidelines', () => {
   // the old code failed -- there was simply no contribution, and no test could
   // notice the absence of something nobody had declared.
   //
-  // IN THE SECONDARY SIDE BAR, where Copilot's chat lives, and not the activity
-  // bar (2026-10-13). The primary side bar shows one container at a time, so
-  // with Mochiii there opening the Explorer hid the chat and opening the chat
-  // hid the files -- reported from the first walkthrough. A VS Code too old to
-  // know `secondarySidebar` puts the views in the Explorer instead, still
-  // beside the files.
-  test('contributes a secondary-side-bar container with the chat view in it', () => {
-    assert.ok(
-      !pkg.contributes.viewsContainers?.activitybar,
-      'an activity-bar container is back: the chat and the Explorer would hide each other again',
-    );
-    const containers = pkg.contributes.viewsContainers?.secondarySidebar ?? [];
-    assert.ok(containers.length > 0, 'no secondary-side-bar container: the extension has no sidebar home');
-    const container = containers[0];
-    assert.strictEqual(container.id, 'mochiii', `container id = ${container.id}`);
+  // IN THE SECONDARY SIDE BAR, where Copilot's chat lives (2026-10-13): the
+  // primary side bar shows one container at a time, so with Mochiii ONLY there
+  // opening the Explorer hid the chat and opening the chat hid the files. A VS
+  // Code too old to know `secondarySidebar` puts the views in the Explorer.
+  //
+  // AND IN THE ACTIVITY BAR TOO (2026-10-15). Without an icon there Mochiii was
+  // the one agent missing from the bar beside Claude Code and Codex, and the
+  // user asked for it. The secondary home stays, so the reason above still
+  // holds; the Activity Bar is a second door to the same chat.
+  test('contributes the chat in the secondary side bar and in its own Activity Bar container', () => {
+    const containers = [
+      ...(pkg.contributes.viewsContainers?.secondarySidebar ?? []).map((c: Record<string, string>) => ({ ...c, where: 'secondarySidebar' })),
+      ...(pkg.contributes.viewsContainers?.activitybar ?? []).map((c: Record<string, string>) => ({ ...c, where: 'activitybar' })),
+    ];
+    const secondary = containers.find((c) => c.where === 'secondarySidebar');
+    const activity = containers.find((c) => c.where === 'activitybar');
+    assert.ok(secondary, 'no secondary-side-bar container: the chat could not sit beside the files');
+    assert.ok(activity, 'no Activity Bar container: Mochiii has no icon beside the other agents');
+    assert.strictEqual(secondary.id, 'mochiii', `secondary container id = ${secondary.id}`);
 
-    // The icon must exist on disk. A container whose icon is missing still
-    // appears, with a blank square where the one entry point to the product
-    // should be -- and nothing errors.
-    assert.ok(typeof container.icon === 'string' && container.icon.length > 0, 'container has no icon');
-    const iconPath = path.join(ROOT, container.icon);
-    assert.ok(fs.existsSync(iconPath), `container icon is not on disk: ${container.icon}`);
-    assert.ok(/\.svg$/.test(container.icon), "a container's icon must be an SVG; VS Code masks it");
+    for (const [container, viewId] of [
+      [secondary, CHAT_VIEW_ID],
+      [activity, CHAT_ACTIVITY_VIEW_ID],
+    ] as const) {
+      // The icon must exist on disk. A container whose icon is missing still
+      // appears, with a blank square where the one entry point to the product
+      // should be -- and nothing errors.
+      assert.ok(typeof container.icon === 'string' && container.icon.length > 0, `${container.id} has no icon`);
+      assert.ok(fs.existsSync(path.join(ROOT, container.icon)), `container icon is not on disk: ${container.icon}`);
+      assert.ok(/\.svg$/.test(container.icon), "a container's icon must be an SVG; VS Code masks it");
+      assert.strictEqual(container.title, 'Mochiii');
 
-    // The view itself, in that container, declared as a webview and with the
-    // id extension.ts registers its provider under. These three strings have to
-    // agree or the provider is registered for a view that does not exist and
-    // the container renders empty.
-    const views = pkg.contributes.views?.[container.id] ?? [];
-    const chat = views.find((v: { id: string }) => v.id === CHAT_VIEW_ID);
-    assert.ok(chat, `no view with id ${CHAT_VIEW_ID} in container ${container.id}: ${JSON.stringify(views)}`);
-    assert.strictEqual(chat.type, 'webview', 'the chat view must be declared type "webview"');
+      // The view itself, in that container, declared as a webview and with the
+      // id extension.ts registers its provider under. These strings have to
+      // agree or the provider is registered for a view that does not exist and
+      // the container renders empty.
+      const views = pkg.contributes.views?.[container.id] ?? [];
+      const chat = views.find((v: { id: string }) => v.id === viewId);
+      assert.ok(chat, `no view with id ${viewId} in container ${container.id}: ${JSON.stringify(views)}`);
+      assert.strictEqual(chat.type, 'webview', 'the chat view must be declared type "webview"');
+    }
+    assert.deepStrictEqual([...CHAT_VIEW_IDS].sort(), [CHAT_ACTIVITY_VIEW_ID, CHAT_VIEW_ID].sort());
+  });
+
+  // The host that is not showing the chat says where it is and offers ONE
+  // thing, with no script: a link to the move command, which is the only
+  // command its webview may run.
+  test('the "open elsewhere" placeholder runs no script and links only the move command', () => {
+    const html = chatElsewhereHtml(CHAT_ACTIVITY_VIEW_ID, 'secondary', true);
+    assert.ok(!/<script/i.test(html), 'the placeholder has a script');
+    assert.ok(html.includes(`command:${MOVE_CHAT_HERE_COMMAND}?${encodeURIComponent(JSON.stringify([CHAT_ACTIVITY_VIEW_ID]))}`), html);
+    assert.ok(html.includes('stops the answer in progress'), 'a busy chat must warn that moving it stops the answer');
+    assert.ok(!chatElsewhereHtml(CHAT_VIEW_ID, 'activity', false).includes('stops the answer'), 'an idle chat warned about nothing');
+    const opts = chatElsewhereOptions();
+    assert.strictEqual(opts.enableScripts, false);
+    assert.deepStrictEqual(opts.enableCommandUris, [MOVE_CHAT_HERE_COMMAND]);
+    const ids = pkg.contributes.commands.map((c: { command: string }) => c.command);
+    assert.ok(!ids.includes(MOVE_CHAT_HERE_COMMAND), 'the move command needs a view id; it does not belong in the palette');
   });
 
   // The two ids are DIFFERENT THINGS and conflating them silently breaks one of

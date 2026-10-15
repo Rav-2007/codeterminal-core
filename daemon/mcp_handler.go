@@ -573,16 +573,16 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 			"and each asks before it runs.", done, name, total, someNames(offered)), notes
 	}
 
+	// NOT "RAISE THE LIMIT" ANY MORE. The tools past the cap are not lost: each
+	// turn keeps the ones that fit the question best, and the model can look
+	// up the rest with find_tools (toolsearch.go). So the answer says that,
+	// and the setting is named only as the optional knob it now is.
 	limit := s.cfg.MCP.Budget.resolvedMaxAdvertisedTools()
-	reach := "none of them will reach the model"
-	if len(offered) > 0 {
-		reach = fmt.Sprintf("only %d of them will reach the model (%s)", len(offered), someNames(offered))
-	}
-	return fmt.Sprintf("%s %s. It started and offers %d tool(s), but %s: this daemon shows the model at most %d tools "+
-		"at a time, and %d of those places are taken by tools that come first. Left out: %s. "+
-		"To offer them, raise mcp.budget.max_advertised_tools in %s and restart the daemon -- each tool on the menu "+
-		"costs tokens on every request, which is why there is a limit.",
-		done, name, total, reach, limit, len(tools)-len(offered), someNames(leftOut), s.configPathOrDefault()), notes
+	return fmt.Sprintf("%s %s. It started and offers %d tool(s). The model is shown at most %d tools at a time, so "+
+		"each question gets the ones that fit it best and the model looks up the rest when a task needs them "+
+		"(%d are not on the default list: %s). Each asks before it runs. To show more at once, raise "+
+		"mcp.budget.max_advertised_tools in %s -- each tool on the list costs tokens on every request.",
+		done, name, total, limit, len(leftOut), someNames(leftOut), s.configPathOrDefault()), notes
 }
 
 // someNames lists names for a sentence, cutting a long list short.

@@ -509,7 +509,10 @@ func (s *Server) runAgentLoop(
 	if ledger != nil && ledger.menu != nil {
 		offer = ledger.menu
 	}
-	tools, excludedThirdParty, listErrs := s.advertisedToolSpecs(ctx, registry, offer)
+	// The request picks which tools make the menu when not all of them fit
+	// (mcp/relevance.go): the question and, for a short follow-up such as "yes,
+	// do that", the one before it.
+	tools, excludedThirdParty, listErrs := s.advertisedToolSpecsFor(ctx, registry, offer, menuQuery(messages))
 	for _, err := range listErrs {
 		s.logger.Printf("agent: %v", err)
 	}
@@ -537,26 +540,29 @@ func (s *Server) runAgentLoop(
 	}
 
 	// A TOOL THAT WAS DROPPED AND A TOOL THAT WAS NEVER OFFERED LOOK IDENTICAL
-	// from outside, and only one of them is the user's own configuration
-	// quietly not doing what they wrote. Registry.Advertised has always
-	// recorded what the cap left out; until now nothing in a live turn read it,
-	// so the report existed only in `mcp list`. Lowering the default to the
-	// widest measured menu (5) makes this reachable in ordinary use, so it has
-	// to be visible in ordinary use.
-	if dropped := registry.Dropped(); len(dropped) > 0 && onDegraded != nil {
-		s.logger.Printf("agent: max_advertised_tools (%d) left out %d tool(s): %s",
-			s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), len(dropped), strings.Join(dropped, ", "))
-		onDegraded(protocol.Degradation{
-			Component: protocol.DegradedToolMenuTruncated,
-			// NAMES, not just a count. A user told "3 tool(s) were not offered"
-			// cannot tell whether the one they need is among them, so the notice
-			// answered half the question it raised; `mcp list` has always named
-			// them, and this is the live path reaching the same bar.
-			Detail: fmt.Sprintf("%d configured tool(s) were not offered to the model this turn, "+
-				"because mcp.budget.max_advertised_tools is %d: %s. Every tool on the menu costs tokens on every request and a "+
-				"wider one made the model choose worse on a borderline request, so the limit is deliberate — raise it if you need these tools.",
-				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), strings.Join(dropped, ", ")),
+	// from outside. They no longer behave identically: what the cap left out
+	// can be found (toolsearch.go), so the model is offered find_tools and the
+	// dropped tools stay reachable for the whole turn.
+	//
+	// THE USER IS NOT TOLD ANY MORE, and that is the point. The notice this
+	// replaced named a config key and listed eighteen internal tool names on
+	// every turn -- the cap working as designed, reported as a fault. The
+	// decision is still recorded in full in the daemon log, which is where a
+	// developer looks for it.
+	var search *toolSearch
+	if dropped := registry.DroppedTools(); len(dropped) > 0 {
+		search = newToolSearch(dropped, func(t mcp.Tool) bool {
+			return offer.allowsTool(t) && !modeWithholds(mode, t) &&
+				!(modeWithholdsLaneB(mode) && t.Lane != protocol.LaneFirstParty)
 		})
+		reach := "none of them usable in this step"
+		if search != nil {
+			reach = "find_tools offered"
+			tools = append(tools, search.spec())
+		}
+		s.logger.Printf("agent: max_advertised_tools (%d) left out %d tool(s), %s: %s",
+			s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), len(dropped), reach,
+			strings.Join(registry.Dropped(), ", "))
 	}
 
 	// PRE-FLIGHT GROUNDING. A question whose answer changes over time gets one
@@ -830,6 +836,23 @@ func (s *Server) runAgentLoop(
 			if bud.taskClosed != nil && bud.taskClosed() {
 				turn.messages = append(turn.messages, toolResultMessage(call,
 					"Not run: the task is finished, and no more tools can be called."))
+				continue
+			}
+			// A LOOKUP IS ANSWERED HERE, not dispatched: it runs nothing, and
+			// what it changes is this loop's own menu (toolsearch.go).
+			if search != nil && isFindToolsCall(call.Function.Name) {
+				content, found, repeat := search.answer(call.Function.Arguments)
+				for _, t := range found {
+					tools = append(tools, toolSpecFor(t))
+				}
+				if repeat {
+					turn.repeats++
+				}
+				s.logger.Printf("agent: find_tools %s added %d tool(s)", call.Function.Arguments, len(found))
+				findToolsActivity(onActivity, call.ID, len(found))
+				turn.toolNames = append(turn.toolNames, findToolsQualified)
+				turn.toolBytes += len(content)
+				turn.messages = append(turn.messages, toolResultMessage(call, content))
 				continue
 			}
 			result, cancelled := s.dispatchToolCall(ctx, registry, turn, &bud, call, appr, onActivity, role)
@@ -1710,7 +1733,13 @@ func askApproval(ctx context.Context, appr approver, req protocol.ToolApprovalRe
 // configuration quietly not applying. It is nil for the unorchestrated agent,
 // which excludes nothing.
 func (s *Server) advertisedToolSpecs(ctx context.Context, registry *mcp.Registry, role *agentRole) (specs []toolSpec, excludedThirdParty []string, errs []error) {
-	tools, errs := registry.Advertised(ctx)
+	return s.advertisedToolSpecsFor(ctx, registry, role, "")
+}
+
+// advertisedToolSpecsFor is advertisedToolSpecs for one request: when the cap
+// bites, the tools kept are the ones that best match query (mcp/relevance.go).
+func (s *Server) advertisedToolSpecsFor(ctx context.Context, registry *mcp.Registry, role *agentRole, query string) (specs []toolSpec, excludedThirdParty []string, errs []error) {
+	tools, errs := registry.AdvertisedFor(ctx, query)
 	specs = make([]toolSpec, 0, len(tools))
 	for _, tool := range tools {
 		if !role.allowsTool(tool) {
@@ -1719,14 +1748,7 @@ func (s *Server) advertisedToolSpecs(ctx context.Context, registry *mcp.Registry
 			}
 			continue
 		}
-		specs = append(specs, toolSpec{
-			Type: "function",
-			Function: toolSpecFunction{
-				Name:        tool.QualifiedName(),
-				Description: tool.Description,
-				Parameters:  tool.Schema,
-			},
-		})
+		specs = append(specs, toolSpecFor(tool))
 	}
 	return specs, excludedThirdParty, errs
 }

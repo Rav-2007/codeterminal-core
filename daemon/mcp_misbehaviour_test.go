@@ -423,41 +423,11 @@ func TestALongTasksCapIsNeverBelowAnOrdinaryTurns(t *testing.T) {
 	}
 }
 
-// And when the cap bites, the user is told.
-//
-// A dropped tool and a tool the server never offered are indistinguishable from
-// outside -- both look like the model not using it. Registry.Advertised has
-// always recorded what it left out, but until now nothing in a live turn read
-// it: the report existed only in `mcp list`. Lowering the default makes this
-// reachable in ordinary use, so it has to be visible in ordinary use.
-//
-// Fails if the Dropped() notice is removed from runAgentLoop.
-func TestATrimmedToolMenuIsReportedToTheUser(t *testing.T) {
-	base, _, _ := agentUpstream(t, textSSE("done"))
-
-	// Built-ins on (4 tools) with a cap of 2, so two are certainly dropped.
-	s := loopServer(t, base, MCPConfig{
-		Enabled: true,
-		Budget:  MCPBudgetConfig{MaxAdvertisedTools: 2},
-	})
-
-	if _, _, err := runLoopWith(t, s, nil); err != nil {
-		t.Fatalf("runAgentLoop: %v", err)
-	}
-
-	var found *protocol.Degradation
-	for i := range lastDegradations {
-		if lastDegradations[i].Component == protocol.DegradedToolMenuTruncated {
-			found = &lastDegradations[i]
-		}
-	}
-	if found == nil {
-		t.Fatalf("the tool menu was trimmed and nothing said so; degradations were %+v", lastDegradations)
-	}
-	if !strings.Contains(found.Detail, "max_advertised_tools") {
-		t.Errorf("the notice does not name the setting that caused it: %q", found.Detail)
-	}
-}
+// WHEN THE CAP BITES, the dropped tools stay reachable through find_tools and
+// the user is no longer shown a notice about it: see toolsearch_test.go,
+// TestATrimmedToolMenuIsNotReportedToTheUser and
+// TestADroppedToolIsFoundAndThenCallable, which replaced the test that required
+// the notice (2026-10-15).
 
 // The notice does not fire when nothing was dropped. A degradation that is
 // always on is a degradation nobody reads.

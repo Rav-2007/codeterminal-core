@@ -43,6 +43,7 @@ import {
 } from './daemonClient';
 import { ChatHost, panelHost, viewHost } from './chatHost';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
+import { ChatLocation, chatElsewhereHtml, chatElsewhereOptions } from './chatElsewhere';
 import { activeWorkingFolder } from './workingFolder';
 import { ConnectOutcome, connectKey, hasConnectKey } from './connectBridge';
 import { ANY_KEY_CHOICE, modelChoices, providerChoices } from './connectFlow';
@@ -111,6 +112,16 @@ export const CHAT_VIEW_TYPE = 'mochiiiChat';
 // with this string.
 export const CHAT_VIEW_ID = 'mochiii.chatView';
 
+// The same chat's second sidebar home: a view in Mochiii's own ACTIVITY BAR
+// container, so Mochiii has an icon beside Explorer, Search and the other
+// agents, as Claude Code and Codex do (2026-10-15). CHAT_VIEW_ID stays in the
+// secondary side bar, beside the files. One conversation, one live host at a
+// time: see chatElsewhere.ts.
+export const CHAT_ACTIVITY_VIEW_ID = 'mochiii.chatViewActivity';
+
+/** Every contributed chat view id; package.json and extension.ts must agree. */
+export const CHAT_VIEW_IDS: readonly string[] = [CHAT_VIEW_ID, CHAT_ACTIVITY_VIEW_ID];
+
 // How long the panel waits for the daemon to answer when it opens. Mochiii
 // starts only when it is used (package.json activationEvents), so the command
 // that opened this panel is usually what started the daemon a moment ago --
@@ -122,6 +133,18 @@ const PREFLIGHT_RETRY_MS = 300;
 // VS Code restores: scripts on, and local files from media/ and nowhere else.
 function chatWebviewOptions(extensionUri: vscode.Uri): vscode.WebviewOptions {
   return { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')] };
+}
+
+// showElsewhere turns a chat view into the "open elsewhere" placeholder. The
+// view may already be gone (it was torn down for re-resolution), and then
+// there is nothing to show and nothing to do.
+function showElsewhere(webview: vscode.Webview, viewId: string, where: ChatLocation, busy: boolean): void {
+  try {
+    webview.options = chatElsewhereOptions();
+    webview.html = chatElsewhereHtml(viewId, where, busy);
+  } catch {
+    // Disposed webview: the view will be resolved afresh when shown again.
+  }
 }
 
 // turnsFromWire keeps only "user"/"assistant" roles, mirroring
@@ -158,6 +181,9 @@ export class ChatPanel {
   // See chatHost.ts for the four ways the two differ and why this is an
   // interface rather than two copies of this class.
   private readonly host: ChatHost;
+  // Which contributed view hosts it, when a view does: there are two
+  // (CHAT_VIEW_IDS), and the one the chat leaves must say where it went.
+  private viewId: string | undefined;
   private readonly disposables: vscode.Disposable[] = [];
   // Set while a prompt the webview marked as a retry ("Try again") is being
   // dispatched; startModelTurn reads it. See the retry note there.
@@ -296,15 +322,79 @@ export class ChatPanel {
   // The conversation survives that: it lives in the daemon, and runPreflight
   // hydrates the transcript from persisted_history exactly as it does for a
   // panel that has just opened.
-  static resolveSidebarView(view: vscode.WebviewView, extensionUri: vscode.Uri): void {
-    view.webview.options = chatWebviewOptions(extensionUri);
+  static resolveSidebarView(view: vscode.WebviewView, extensionUri: vscode.Uri, viewId: string = CHAT_VIEW_ID): void {
     // One chat at a time, wherever it lives. A sidebar view resolving while an
-    // editor tab is open takes over.
-    if (ChatPanel.current) {
-      ChatPanel.current.dispose();
-      ChatPanel.current = undefined;
-    }
+    // editor tab is open takes over. Released BEFORE this webview's options
+    // are set: when the chat was already in this very view, release must not
+    // leave its placeholder (and its script-less options) behind in it.
+    const where: ChatLocation = viewId === CHAT_ACTIVITY_VIEW_ID ? 'activity' : 'secondary';
+    ChatPanel.release(where, view.webview);
+    view.webview.options = chatWebviewOptions(extensionUri);
     ChatPanel.current = new ChatPanel(viewHost(view), extensionUri);
+    ChatPanel.current.viewId = viewId;
+  }
+
+  /**
+   * offerSidebarView is what a chat view does when it is resolved or shown
+   * and is not already the live host. It takes the chat when nothing else
+   * needs it -- no chat yet, or one in a host the user has left, with nothing
+   * running. Otherwise it says where the chat is and offers to move it: two
+   * side bars can be open at once, and taking the chat just because the
+   * other one was CLICKED would cut an answer, an approval or a review short.
+   */
+  static offerSidebarView(view: vscode.WebviewView, extensionUri: vscode.Uri, viewId: string): void {
+    const cur = ChatPanel.current;
+    if (cur && cur.host.webview === view.webview) {
+      return;
+    }
+    if (!cur || (!cur.host.visible && !cur.busy)) {
+      ChatPanel.resolveSidebarView(view, extensionUri, viewId);
+      return;
+    }
+    showElsewhere(view.webview, viewId, cur.location(), cur.busy);
+  }
+
+  /** The contributed view the chat is live in, or undefined (a tab, or none). */
+  static hostViewId(): string | undefined {
+    return ChatPanel.current?.host.kind === 'view' ? ChatPanel.current.viewId : undefined;
+  }
+
+  // release ends the live chat ahead of a new host, and leaves the view it was
+  // in saying where it went rather than holding a transcript nothing updates.
+  private static release(to: ChatLocation, taking?: vscode.Webview): void {
+    const prev = ChatPanel.current;
+    if (!prev) {
+      return;
+    }
+    const prevViewId = prev.host.kind === 'view' ? prev.viewId : undefined;
+    const prevWebview = prev.host.webview;
+    prev.dispose();
+    ChatPanel.current = undefined;
+    if (prevViewId && prevWebview !== taking) {
+      showElsewhere(prevWebview, prevViewId, to, false);
+    }
+  }
+
+  // location is where this chat is, for another host's placeholder.
+  private location(): ChatLocation {
+    if (this.host.kind === 'panel') {
+      return 'editor';
+    }
+    return this.viewId === CHAT_ACTIVITY_VIEW_ID ? 'activity' : 'secondary';
+  }
+
+  // busy is work a handover would cut: an answer streaming, a tool approval
+  // the daemon is holding open, a key being connected, or an edit review or
+  // auto-apply part-way through.
+  private get busy(): boolean {
+    return (
+      this.inFlight !== undefined ||
+      this.pendingApproval !== undefined ||
+      this.connectPending !== undefined ||
+      this.autoApplyRunInFlight ||
+      this.applyInFlight ||
+      this.currentIndex < this.pendingBlocks.length
+    );
   }
 
   /**
@@ -337,10 +427,7 @@ export class ChatPanel {
     // closed (an extension must not rearrange the user's layout); it is left
     // in place and re-adopts the chat when it next becomes visible, which
     // extension.ts's visibility handler does.
-    if (ChatPanel.current) {
-      ChatPanel.current.dispose();
-      ChatPanel.current = undefined;
-    }
+    ChatPanel.release('editor');
 
     const panel = vscode.window.createWebviewPanel(CHAT_VIEW_TYPE, 'Mochiii Chat', vscode.ViewColumn.Beside, {
       ...chatWebviewOptions(extensionUri),
@@ -398,6 +485,7 @@ export class ChatPanel {
       post: (m) => this.postSafe(m),
       clientName: () => currentPagesContext()?.clientName ?? 'vscode',
       provider: () => currentPagesContext()?.mcpServers,
+      reveal: () => this.host.reveal(),
     });
     setMcpPopupHost(this.mcpPopup);
     this.disposables.push({
@@ -433,7 +521,7 @@ export class ChatPanel {
     // The panel's own display settings follow the Settings UI live.
     vscode.workspace.onDidChangeConfiguration(
       (e) => {
-        if (e.affectsConfiguration('mochiii.toolActivity')) {
+        if (e.affectsConfiguration('mochiii.toolActivity') || e.affectsConfiguration('mochiii.developerDiagnostics')) {
           this.postUiSettings();
         }
       },
@@ -797,6 +885,7 @@ export class ChatPanel {
       type: 'uiSettings',
       toolActivity: cfg.get<string>('toolActivity') === 'expanded' ? 'expanded' : 'compact',
       defaultMode: cfg.get<string>('defaultMode') ?? 'auto',
+      developerDiagnostics: cfg.get<boolean>('developerDiagnostics') === true,
     });
   }
 

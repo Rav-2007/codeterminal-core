@@ -1136,14 +1136,14 @@ const (
 	// do something the user knows it can do.
 	DegradedMCPServer = "mcp_server"
 
-	// DegradedToolMenuTruncated: more tools were available this turn than
-	// max_advertised_tools allows, so some were not offered to the model.
+	// DegradedToolMenuTruncated: a pipeline step was not offered third-party
+	// tools, because a specialist step only uses this daemon's own confined
+	// ones.
 	//
-	// A degradation rather than a silent bound, because the two are
-	// indistinguishable from the outside: a tool that was dropped and a tool
-	// the server never offered both show up as the model not using it. The user
-	// configured that server on purpose and deserves to know which of the two
-	// happened.
+	// It used to be sent too whenever max_advertised_tools left tools off an
+	// ordinary turn's menu. Since 2026-10-15 those tools stay reachable (the
+	// model looks them up with find_tools, daemon/toolsearch.go), so that case
+	// is no longer a degradation: it is logged by the daemon, not shown.
 	DegradedToolMenuTruncated = "tool_menu_truncated"
 
 	// DegradedWorkspaceTooLarge: the workspace has exceeded the maximum file count

@@ -20,6 +20,8 @@ export interface McpPopupDeps {
   post(msg: Record<string, unknown>): void;
   clientName(): string;
   provider(): McpServersProvider | undefined;
+  /** Bring the chat that shows the pop-up into view, wherever it lives. */
+  reveal?(): void;
 }
 
 type Request = Omit<MCPRequest, 'protocol_version' | 'mcp'>;
@@ -152,6 +154,11 @@ export class McpPopupHost {
   private pending: Request | undefined;
 
   constructor(private readonly deps: McpPopupDeps) {}
+
+  /** reveal brings the chat this pop-up opens in into view. */
+  reveal(): void {
+    this.deps.reveal?.();
+  }
 
   /** openAdd shows the empty form. */
   openAdd(): void {

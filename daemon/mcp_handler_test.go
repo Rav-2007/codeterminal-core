@@ -464,8 +464,8 @@ func TestAnAddSaysHowManyToolsWillActuallyReachTheModel(t *testing.T) {
 	if !resp.Ok {
 		t.Fatalf("add: %s", resp.Error)
 	}
-	for _, want := range []string{"offers 4 tool(s), but only 1 of them will reach the model", "at most 1 tools", "Left out:",
-		"mcp.budget.max_advertised_tools in /opt/mochiii/models.agent.json", "costs tokens"} {
+	for _, want := range []string{"offers 4 tool(s)", "at most 1 tools at a time", "looks up the rest",
+		"not on the default list:", "mcp.budget.max_advertised_tools in /opt/mochiii/models.agent.json", "costs tokens"} {
 		if !strings.Contains(resp.Detail, want) {
 			t.Errorf("the answer does not say %q:\n%s", want, resp.Detail)
 		}
@@ -479,7 +479,7 @@ func TestAnAddSaysHowManyToolsWillActuallyReachTheModel(t *testing.T) {
 	full.cfg.MCP.Builtin.Disabled = false
 	full.cfg.MCP.Budget.MaxAdvertisedTools = 2
 	resp = full.mcpResult(context.Background(), req)
-	if !resp.Ok || !strings.Contains(resp.Detail, "none of them will reach the model") {
+	if !resp.Ok || !strings.Contains(resp.Detail, "4 are not on the default list") {
 		t.Errorf("a menu with no room left: ok=%v\n%s", resp.Ok, resp.Detail)
 	}
 	// And an added server never pushes the daemon's own tools off the menu.

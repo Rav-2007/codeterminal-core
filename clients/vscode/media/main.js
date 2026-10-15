@@ -733,7 +733,8 @@
     if (effortSupported) {
       effortBtn.removeAttribute('aria-disabled');
       effortBtn.setAttribute('aria-label', 'Thinking effort: ' + effortName + '. Click to change.');
-      effortBtn.title = 'Thinking effort: ' + effortName + '. Click to change (low / medium / high).';
+      // Two short lines: one long line was cut off at the side bar's edge.
+      effortBtn.title = 'Thinking effort: ' + effortName + '\nClick to change: Auto, Low, Medium, High';
       return;
     }
     const which = effortUnsupportedModel ? ' by ' + effortUnsupportedModel : ' by this model';
@@ -1900,11 +1901,16 @@
     for (const item of items) {
       const line = document.createElement('span');
       line.className = 'item';
-      let text = `⚠ degraded (${item.component}): ${item.detail}`;
+      // PLAIN WORDS BY DEFAULT. The component id ("tool_menu_truncated") is
+      // the daemon's name for a subsystem, not something a person asked
+      // about; it is shown only with mochiii.developerDiagnostics on, and the
+      // daemon log (Mochiii: Show Daemon Log) has the full record either way.
+      let detail = item.detail;
       if (item.component === 'workspace_too_large' && item.metadata && item.metadata.file_count) {
         const count = new Intl.NumberFormat().format(item.metadata.file_count);
-        text = `⚠ degraded (${item.component}): workspace is too large (> 10,000 files, exactly ${count}), semantic search is disabled`;
+        detail = `This folder is too large for semantic search (${count} files, the limit is 10,000), so Mochiii searches it by text only.`;
       }
+      const text = developerDiagnostics ? `⚠ [${item.component}] ${detail}` : `⚠ ${detail}`;
       line.textContent = text;
       degradedEl.appendChild(line);
 
@@ -2709,6 +2715,8 @@
   const WORK_GLYPHS = { run: '\u25cc', ok: '\u2713', fail: '\u2715', denied: '\u2298', step: '\u203a' };
   // compact: a block starts folded; expanded: it starts open (mochiii.toolActivity).
   let toolActivityMode = 'compact';
+  // mochiii.developerDiagnostics: notices carry the daemon's component id.
+  let developerDiagnostics = false;
   let defaultModeApplied = false;
   /** @type {HTMLDetailsElement | null} */
   let workBlockEl = null;
@@ -3609,6 +3617,7 @@
         break;
       case 'uiSettings':
         toolActivityMode = msg.toolActivity === 'expanded' ? 'expanded' : 'compact';
+        developerDiagnostics = msg.developerDiagnostics === true;
         // The mode a new chat starts in (mochiii.defaultMode), applied once,
         // when the panel opens: changing the setting later does not switch a
         // chat that is already going.

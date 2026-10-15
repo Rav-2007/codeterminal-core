@@ -5,7 +5,8 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 
-import { CHAT_VIEW_ID, CHAT_VIEW_TYPE, CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
+import { CHAT_VIEW_ID, CHAT_VIEW_IDS, CHAT_VIEW_TYPE, CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
+import { MOVE_CHAT_HERE_COMMAND } from './chatElsewhere';
 import { bundledDaemonDir, daemonBinaryName, resolveConfigPathSetting } from './daemonBinary';
 import { ConnectResponse, probeDaemon, resolvedWorkspaceRoot, sendConnect, setWorkspaceRoot } from './daemonClient';
 import { ensureModelAvailable } from './modelSetup';
@@ -272,45 +273,101 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // can be in the middle of a tool approval the daemon is HOLDING OPEN, an
   // answer still streaming, or an edit review one block in. Collapsing the
   // sidebar must not drop any of those.
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(
-      CHAT_VIEW_ID,
-      {
-        resolveWebviewView: (view: vscode.WebviewView) => {
-          if (!root) {
-            // No folder means no daemon to ground against. Say so IN the view:
-            // a notification is dismissed and forgotten, and an empty panel with
-            // no explanation is how 0.1.1 greeted people.
-            view.webview.options = { enableScripts: false };
-            view.webview.html = noWorkspaceHtml(NO_WORKSPACE);
-            return;
-          }
-          ChatPanel.resolveSidebarView(view, context.extensionUri);
+  //
+  // TWO SIDEBAR HOMES since 2026-10-15 (CHAT_VIEW_IDS): the secondary side bar
+  // above, and a container of Mochiii's own in the Activity Bar, so the
+  // product has an icon beside Explorer and the other agents the way Claude
+  // Code and Codex do. The chat is one conversation with one live host;
+  // whichever view is not hosting says where the chat is (chatElsewhere.ts).
+  const chatViews = new Map<string, vscode.WebviewView>();
+  // A move asked for before its view had ever been resolved: honoured when
+  // VS Code resolves it, which focusing the view makes it do.
+  let pendingMove: string | undefined;
+  const moveChatInto = (viewId: string): boolean => {
+    const view = chatViews.get(viewId);
+    if (!view) {
+      return false;
+    }
+    if (!ChatPanel.hostsWebview(view.webview)) {
+      ChatPanel.resolveSidebarView(view, context.extensionUri, viewId);
+    }
+    return true;
+  };
+  for (const viewId of CHAT_VIEW_IDS) {
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider(
+        viewId,
+        {
+          resolveWebviewView: (view: vscode.WebviewView) => {
+            if (!root) {
+              // No folder means no daemon to ground against. Say so IN the view:
+              // a notification is dismissed and forgotten, and an empty panel with
+              // no explanation is how 0.1.1 greeted people.
+              view.webview.options = { enableScripts: false };
+              view.webview.html = noWorkspaceHtml(NO_WORKSPACE);
+              return;
+            }
+            chatViews.set(viewId, view);
+            view.onDidDispose(
+              () => {
+                if (chatViews.get(viewId) === view) {
+                  chatViews.delete(viewId);
+                }
+              },
+              null,
+              context.subscriptions
+            );
+            // A fresh webview for the view that hosts the chat, or a move that
+            // was waiting for this view: take the chat. Anything else offers.
+            if (pendingMove === viewId || ChatPanel.hostViewId() === viewId) {
+              pendingMove = undefined;
+              ChatPanel.resolveSidebarView(view, context.extensionUri, viewId);
+            } else {
+              ChatPanel.offerSidebarView(view, context.extensionUri, viewId);
+            }
 
-          // THE SIDEBAR TAKES THE CHAT BACK when the user returns to it.
-          //
-          // "Open Chat in Editor" moves the chat to a tab, which leaves this
-          // view holding a webview nothing posts to any more. VS Code does not
-          // re-resolve an already-resolved view, so without this the sidebar
-          // would sit there frozen -- showing a transcript that had stopped
-          // updating, with a composer whose Send went nowhere.
-          //
-          // Registered on the extension's subscriptions rather than the chat's,
-          // deliberately: the ChatPanel this listener has to outlive is exactly
-          // the one that gets disposed when the tab takes over.
-          view.onDidChangeVisibility(
-            () => {
-              if (view.visible && !ChatPanel.hostsWebview(view.webview)) {
-                ChatPanel.resolveSidebarView(view, context.extensionUri);
-              }
-            },
-            null,
-            context.subscriptions
-          );
+            // THE SIDEBAR TAKES THE CHAT BACK when the user returns to it.
+            //
+            // "Open Chat in Editor" moves the chat to a tab, and the other side
+            // bar can take it too, which leaves this view holding a webview
+            // nothing posts to. VS Code does not re-resolve an already-resolved
+            // view, so without this the view would sit there frozen. It takes
+            // the chat back only when nothing needs it where it is
+            // (offerSidebarView); otherwise it says where the chat is.
+            //
+            // Registered on the extension's subscriptions rather than the chat's,
+            // deliberately: the ChatPanel this listener has to outlive is exactly
+            // the one that gets disposed when another host takes over.
+            view.onDidChangeVisibility(
+              () => {
+                if (view.visible && !ChatPanel.hostsWebview(view.webview)) {
+                  ChatPanel.offerSidebarView(view, context.extensionUri, viewId);
+                }
+              },
+              null,
+              context.subscriptions
+            );
+          },
         },
-      },
-      { webviewOptions: { retainContextWhenHidden: true } }
-    )
+        { webviewOptions: { retainContextWhenHidden: true } }
+      )
+    );
+  }
+
+  context.subscriptions.push(
+    // The placeholder's "Move the chat here", and openChat's way of bringing a
+    // chat out of an editor tab. Not in the palette: it needs a view id.
+    vscode.commands.registerCommand(MOVE_CHAT_HERE_COMMAND, async (viewId?: unknown) => {
+      if (!root) {
+        vscode.window.showInformationMessage(NO_WORKSPACE);
+        return;
+      }
+      const target = typeof viewId === 'string' && CHAT_VIEW_IDS.includes(viewId) ? viewId : CHAT_VIEW_ID;
+      if (!moveChatInto(target)) {
+        pendingMove = target;
+      }
+      await vscode.commands.executeCommand(`${target}.focus`).then(undefined, () => undefined);
+    })
   );
 
   context.subscriptions.push(
@@ -322,7 +379,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showInformationMessage(NO_WORKSPACE);
         return;
       }
-      void vscode.commands.executeCommand(`${CHAT_VIEW_ID}.focus`);
+      // Where the chat already is, if that is a side bar; otherwise into the
+      // default side bar, bringing it out of an editor tab as before.
+      const hosting = ChatPanel.hostViewId();
+      if (hosting) {
+        void vscode.commands.executeCommand(`${hosting}.focus`);
+      } else {
+        void vscode.commands.executeCommand(MOVE_CHAT_HERE_COMMAND, CHAT_VIEW_ID);
+      }
     })
   );
 
