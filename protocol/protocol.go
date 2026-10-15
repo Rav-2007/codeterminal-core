@@ -9,6 +9,7 @@ package protocol
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 )
@@ -261,6 +262,29 @@ const FeatureMCPEnv = "mcp_env"
 // value for that server only; add and update take EnvValues; MCPServerInfo
 // carries EnvStored.
 const FeatureMCPSecrets = "mcp_secrets"
+
+// FeatureMCPCheck: MCPRequest also takes MCPActionCheck (start one server, or
+// all, now, and say how each fared), MCPActionGet (one server in full) and
+// MCPActionAddJSON (add one server from another MCP client's JSON entry);
+// MCPServerInfo carries ToolCount, ToolsError, StatusLine and Warnings.
+const FeatureMCPCheck = "mcp_check"
+
+// FeatureMCPRemote: a server may be remote -- reached over HTTP at a URL rather
+// than started here. MCPRequest takes Transport, URL and Headers for add and
+// update, and set_env takes HeaderName; MCPServerInfo carries Transport, URL,
+// Headers and HeadersMissing; ToolApprovalRequest carries Remote.
+const FeatureMCPRemote = "mcp_remote"
+
+// FeatureMCPOAuth: a remote server can be signed in to in the browser
+// (MCPActionAuthStart, AuthWait, AuthComplete, AuthCancel, SignOut).
+// MCPServerInfo carries SignedIn; State may be MCPStateNeedsAuth.
+const FeatureMCPOAuth = "mcp_oauth"
+
+// FeatureMCPProject: a project may PROPOSE servers in its .mcp.json; each is
+// pending until the user approves it (MCPActionApprove, with the Digest the
+// warning showed, and the server's name typed) or rejects it. MCPServerInfo
+// carries Approval, Digest and ProjectFile, with Source MCPSourceProject.
+const FeatureMCPProject = "mcp_project"
 
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
@@ -869,6 +893,9 @@ type ToolApprovalRequest struct {
 	// (register item 32). It is now true exactly when approving this call
 	// starts Program.
 	LaunchesSubprocess bool `json:"launches_subprocess,omitempty"`
+	// Remote is the host a remote server's tool sends this call's arguments to
+	// (FeatureMCPRemote). Empty for anything that runs on this machine.
+	Remote string `json:"remote,omitempty"`
 	// Program names the program this call starts, or -- with
 	// LaunchesSubprocess false -- the one already running that it talks to.
 	// Empty when the call involves no such program, or the daemon predates the
@@ -1796,6 +1823,33 @@ type MCPRequest struct {
 	// `mcp add --env KEY=value` means (FeatureMCPSecrets). Secrets: stored
 	// only when the request is acknowledged, never echoed or logged.
 	EnvValues map[string]string `json:"env_values,omitempty"`
+
+	// ConnectTimeoutSeconds is check's longer wait for a server's first start
+	// (a launcher downloading its package), at most 120 (FeatureMCPCheck).
+	ConnectTimeoutSeconds int `json:"connect_timeout_seconds,omitempty"`
+	// JSON is add_json's server: one entry of another MCP client's
+	// "mcpServers" block, as {"command","args","env"} (FeatureMCPCheck).
+	JSON json.RawMessage `json:"json,omitempty"`
+
+	// A remote server (FeatureMCPRemote): Transport "http" (streamable HTTP)
+	// or "sse", URL its https endpoint, and Headers to send with every
+	// request. A header value with ${VAR} in it is kept as written; any other
+	// value is a secret, kept in the key file and never in the server list.
+	Transport string            `json:"transport,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	// HeaderName, with set_env and a server Name, sets that header's value
+	// (EnvValue) instead of a variable's.
+	HeaderName string `json:"header_name,omitempty"`
+
+	// AuthID names a sign-in auth_start began; CallbackURL is auth_complete's
+	// pasted address (a secret: it holds the one-time code).
+	AuthID      string `json:"auth_id,omitempty"`
+	CallbackURL string `json:"callback_url,omitempty"`
+
+	// Digest is approve's echo of the definition the warning described
+	// (MCPResponse.Digest): a definition changed in between is not approved.
+	Digest string `json:"digest,omitempty"`
 }
 
 // MCPCwdWorkspace is the one value MCPRequest.Cwd takes besides empty.
@@ -1823,6 +1877,30 @@ const (
 	MCPActionServers = "servers"
 	MCPActionTools   = "tools"
 	MCPActionSetEnv  = "set_env"
+	MCPActionCheck   = "check"
+	MCPActionGet     = "get"
+	MCPActionAddJSON = "add_json"
+
+	// Signing in to a remote server (FeatureMCPOAuth), one short request at a
+	// time: start (answers with the address to open), wait (repeated until
+	// done), complete (the address the browser ended on, pasted, when the
+	// browser cannot reach this daemon), cancel, and sign out.
+	MCPActionAuthStart    = "auth_start"
+	MCPActionAuthWait     = "auth_wait"
+	MCPActionAuthComplete = "auth_complete"
+	MCPActionAuthCancel   = "auth_cancel"
+	MCPActionSignOut      = "sign_out"
+
+	// A project's proposed server (FeatureMCPProject).
+	MCPActionApprove = "approve"
+	MCPActionReject  = "reject"
+)
+
+// The approvals a project's server can have (MCPServerInfo.Approval).
+const (
+	MCPApprovalPending  = "pending"
+	MCPApprovalApproved = "approved"
+	MCPApprovalRejected = "rejected"
 )
 
 // MCPServerInfo is one configured third-party server, in terms safe to print.
@@ -1856,18 +1934,60 @@ type MCPServerInfo struct {
 	// MCPStateFailed. StateDetail says why it failed, in words safe to print.
 	State       string `json:"state,omitempty"`
 	StateDetail string `json:"state_detail,omitempty"`
+
+	// ToolCount is how many tools the server offered the last time it was
+	// listed, with State running (FeatureMCPCheck). ToolsError says why a
+	// server that started could not list them (State MCPStateToolsFailed).
+	ToolCount  int    `json:"tool_count,omitempty"`
+	ToolsError string `json:"tools_error,omitempty"`
+	// ToolsListed says ToolCount is known: a server started but not yet asked
+	// for its tools has no count, which is not the same as none.
+	ToolsListed bool `json:"tools_listed,omitempty"`
+	// StatusLine is the one-line status every client shows, in the daemon's
+	// words: "✔ Connected (5 tools)", "✘ Failed to connect: ...",
+	// "! Needs a key: X", "⊘ Disabled", "○ Not started yet".
+	StatusLine string `json:"status_line,omitempty"`
+	// Warnings are problems with the server's definition that do not stop it
+	// (a ${VAR} with no value).
+	Warnings []string `json:"warnings,omitempty"`
+
+	// A remote server (FeatureMCPRemote): its Transport and URL (query values
+	// hidden), the header NAMES it sends, and those with no value stored yet.
+	Transport      string   `json:"transport,omitempty"`
+	URL            string   `json:"url,omitempty"`
+	Headers        []string `json:"headers,omitempty"`
+	HeadersMissing []string `json:"headers_missing,omitempty"`
+	// SignedIn: a sign-in token is stored for this remote server (FeatureMCPOAuth).
+	SignedIn bool `json:"signed_in,omitempty"`
+
+	// A server the project proposed in its .mcp.json (FeatureMCPProject): the
+	// user's decision on THIS definition, its digest, and the file.
+	Approval    string `json:"approval,omitempty"`
+	Digest      string `json:"digest,omitempty"`
+	ProjectFile string `json:"project_file,omitempty"`
 }
 
 // The states MCPServerInfo.State takes.
 const (
-	MCPStateRunning = "running"
-	MCPStateFailed  = "failed"
+	MCPStateRunning     = "running"
+	MCPStateFailed      = "failed"
+	MCPStateToolsFailed = "tools_failed"
+	// MCPStateNeedsAuth: a remote server answered that it needs a sign-in.
+	MCPStateNeedsAuth = "needs_auth"
+)
+
+// The states of a sign-in (MCPResponse.AuthState).
+const (
+	MCPAuthPending = "pending"
+	MCPAuthDone    = "done"
+	MCPAuthFailed  = "failed"
 )
 
 // Where a configured server came from.
 const (
-	MCPSourceConfig = "config"
-	MCPSourceUser   = "user"
+	MCPSourceConfig  = "config"
+	MCPSourceUser    = "user"
+	MCPSourceProject = "project"
 )
 
 // MCPResponse answers an MCPRequest.
@@ -1901,6 +2021,18 @@ type MCPResponse struct {
 	// Tools answers MCPActionTools: this daemon's own tools, each with the
 	// policy that applies. Additive (FeatureMCPTools).
 	Tools []MCPToolInfo `json:"tools,omitempty"`
+
+	// A sign-in (FeatureMCPOAuth): AuthID names it, AuthURL is the address to
+	// open in a browser, AuthState is MCPAuthPending, Done or Failed, and
+	// ExpiresInSeconds is how long it stays open.
+	AuthID           string `json:"auth_id,omitempty"`
+	AuthURL          string `json:"auth_url,omitempty"`
+	AuthState        string `json:"auth_state,omitempty"`
+	ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
+
+	// Digest is the definition a project server's approval warning describes;
+	// approve sends it back (FeatureMCPProject).
+	Digest string `json:"digest,omitempty"`
 }
 
 // MCPToolInfo is one tool and what it takes to run it, for a client that

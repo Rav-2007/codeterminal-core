@@ -23,6 +23,8 @@ import * as vscode from 'vscode';
 import {
   FEATURE_MCP_ENV,
   FEATURE_MCP_MANAGE,
+  FEATURE_MCP_CHECK,
+  FEATURE_MCP_OAUTH,
   FEATURE_MCP_SECRETS,
   MCP_CWD_WORKSPACE,
   MCP_SOURCE_CONFIG,
@@ -35,6 +37,20 @@ import {
 import { validEnvName, validServerName } from './mcpCatalog';
 import { ServerSpec, splitArgs, storeServer } from './mcpInstall';
 import { cachedMcpEnv, storeMcpEnv, storedMcpEnvNames } from './mcpSecrets';
+import { McpPopupHost, mcpPopupHost } from './mcpPopup';
+
+/**
+ * popup is the chat's MCP pop-up, shown: the way the MCP commands ask now,
+ * in place of input boxes at the top of the window. Undefined when there is no
+ * chat panel to show it in -- then the commands fall back to the input boxes.
+ */
+async function popup(): Promise<McpPopupHost | undefined> {
+  const host = mcpPopupHost();
+  if (host) {
+    await vscode.commands.executeCommand('mochiii.chatView.focus').then(undefined, () => undefined);
+  }
+  return host;
+}
 
 export const MCP_SERVERS_VIEW_ID = 'mochiii.mcpServers';
 
@@ -53,6 +69,10 @@ export interface McpServersState {
   setEnv?: boolean;
   /** Whether the daemon keeps keys in its own file (FEATURE_MCP_SECRETS). */
   secrets?: boolean;
+  /** Whether the daemon takes check, get and add_json (FEATURE_MCP_CHECK). */
+  check?: boolean;
+  /** Whether a remote server can be signed in to (FEATURE_MCP_OAUTH). */
+  oauth?: boolean;
   notes: string[];
   /** Set when the daemon could not be asked. */
   unreachable?: string;
@@ -100,10 +120,12 @@ export class McpServersProvider implements vscode.TreeDataProvider<McpNode> {
       const manage = features.includes(FEATURE_MCP_MANAGE);
       const setEnv = features.includes(FEATURE_MCP_ENV);
       const secrets = features.includes(FEATURE_MCP_SECRETS);
+      const check = features.includes(FEATURE_MCP_CHECK);
+      const oauth = features.includes(FEATURE_MCP_OAUTH);
       if (resp.error) {
-        this.state = { servers: [], agentMode: true, manage, setEnv, secrets, notes: [], unreachable: resp.error };
+        this.state = { servers: [], agentMode: true, manage, setEnv, secrets, check, oauth, notes: [], unreachable: resp.error };
       } else {
-        this.state = { servers: resp.servers ?? [], agentMode: resp.agent_mode, manage, setEnv, secrets, notes: resp.notes ?? [] };
+        this.state = { servers: resp.servers ?? [], agentMode: resp.agent_mode, manage, setEnv, secrets, check, oauth, notes: resp.notes ?? [] };
       }
       this.retries = 0;
     } catch (err) {
@@ -155,11 +177,21 @@ export class McpServersProvider implements vscode.TreeDataProvider<McpNode> {
     const s = node.server;
     const item = new vscode.TreeItem(s.name, vscode.TreeItemCollapsibleState.None);
     const fromConfig = s.source === MCP_SOURCE_CONFIG;
-    item.description = s.disabled ? 'paused' : serverStatus(s).short || (fromConfig ? 'from models.json' : s.program ?? '');
+    item.description = s.disabled
+      ? 'paused'
+      : s.status_line || serverStatus(s).short || (fromConfig ? 'from models.json' : s.program ?? '');
     item.iconPath = new vscode.ThemeIcon(
       s.disabled ? 'debug-pause' : s.state === MCP_STATE_FAILED ? 'error' : fromConfig ? 'settings-gear' : 'server-environment',
     );
-    item.contextValue = fromConfig ? 'mcpServer.config' : s.disabled ? 'mcpServer.user.disabled' : 'mcpServer.user.enabled';
+    item.contextValue = fromConfig
+      ? 'mcpServer.config'
+      : s.source === 'project'
+        ? s.approval === 'approved'
+          ? 'mcpServer.project.approved'
+          : 'mcpServer.project.pending'
+        : s.disabled
+          ? 'mcpServer.user.disabled'
+          : 'mcpServer.user.enabled';
     item.tooltip = serverTooltip(s);
     item.accessibilityInformation = {
       label: `MCP server ${s.name}${s.disabled ? ', disabled' : ''}${fromConfig ? ', defined in models.json' : ''}`,
@@ -603,6 +635,11 @@ export function registerMcpServers(
         void vscode.window.showInformationMessage(provider.current.noFolder);
         return;
       }
+      const host = await popup();
+      if (host) {
+        host.openAdd();
+        return;
+      }
       const spec = await askForServer();
       if (spec) {
         const done = await storeServer(clientName, spec, { action: 'add' });
@@ -615,6 +652,11 @@ export function registerMcpServers(
     vscode.commands.registerCommand('mochiii.mcp.edit', async (node?: McpNode | string) => {
       const server = serverOf(node);
       if (!server) {
+        return;
+      }
+      const host = await popup();
+      if (host) {
+        host.openEdit(server);
         return;
       }
       const spec = await askForServer(server);
@@ -632,9 +674,192 @@ export function registerMcpServers(
     ),
     vscode.commands.registerCommand('mochiii.mcp.setKey', async (node?: McpNode | string, envName?: string) => {
       const server = serverOf(node);
+      const reads = (server?.env ?? []).length + (server?.headers ?? []).length;
+      const host = server && reads > 0 && provider.current.setEnv ? await popup() : undefined;
+      if (server && host) {
+        host.openKey(server, typeof envName === 'string' ? envName : undefined);
+        return;
+      }
       if (server) {
         await setServerKey(context, clientName, provider, server, typeof envName === 'string' ? envName : undefined);
       }
+    }),
+    // SIGN IN TO A REMOTE SERVER. The daemon starts the sign-in and waits for
+    // the browser's return on 127.0.0.1; this opens the address, after saying
+    // whose sign-in page it is, and waits in short requests. In a remote
+    // window the browser cannot reach that address, so the address it ends
+    // on can be pasted instead.
+    vscode.commands.registerCommand('mochiii.mcp.signIn', async (node?: McpNode | string) => {
+      const server = serverOf(node);
+      if (!server || !server.url) {
+        return;
+      }
+      let begun;
+      try {
+        ({ resp: begun } = await sendMCP(clientName, { action: 'auth_start', name: server.name }));
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon: ${(err as Error).message}`);
+        return;
+      }
+      if (begun.error || !begun.auth_id) {
+        void vscode.window.showErrorMessage(begun.error ?? begun.detail ?? 'The sign-in did not start.');
+        await provider.refresh();
+        return;
+      }
+      if (begun.auth_state !== 'pending' || !begun.auth_url) {
+        void vscode.window.showInformationMessage(begun.detail ?? 'Signed in.');
+        await provider.refresh();
+        return;
+      }
+      const authId = begun.auth_id;
+      const host = (() => {
+        try {
+          return new URL(begun.auth_url!).host;
+        } catch {
+          return 'the server';
+        }
+      })();
+      const OPEN = 'Open sign-in page';
+      const PASTE = 'Paste the address it ended on…';
+      const remoteWindow = !!vscode.env.remoteName;
+      const pick = await vscode.window.showInformationMessage(
+        `Sign in to ${server.name}: this opens ${host}'s sign-in page in your browser.`,
+        { modal: true, detail: remoteWindow ? 'This window is remote: if the browser cannot come back to Mochiii, paste the address it ends on.' : undefined },
+        OPEN,
+        ...(remoteWindow ? [PASTE] : []),
+      );
+      if (!pick) {
+        void sendMCP(clientName, { action: 'auth_cancel', auth_id: authId }).catch(() => undefined);
+        return;
+      }
+      if (pick === OPEN) {
+        await vscode.env.openExternal(vscode.Uri.parse(begun.auth_url, true));
+      }
+      const finish = async (): Promise<string | undefined> => {
+        if (pick === PASTE) {
+          await vscode.env.openExternal(vscode.Uri.parse(begun.auth_url!, true));
+          const landed = await vscode.window.showInputBox({
+            title: `Finish signing in to ${server.name}`,
+            prompt: 'Paste the whole address from the browser after signing in (it starts http://127.0.0.1).',
+            password: true,
+            ignoreFocusOut: true,
+          });
+          if (!landed) {
+            return undefined;
+          }
+          const { resp } = await sendMCP(clientName, { action: 'auth_complete', auth_id: authId, callback_url: landed });
+          return resp.error ?? (resp.auth_state === 'done' ? '' : resp.detail ?? 'The sign-in did not finish.');
+        }
+        return vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Waiting for you to sign in to ${server.name} in your browser…`,
+            cancellable: true,
+          },
+          async (_p, token) => {
+            const deadline = Date.now() + (begun.expires_in_seconds ?? 300) * 1000;
+            while (!token.isCancellationRequested && Date.now() < deadline) {
+              const { resp } = await sendMCP(clientName, { action: 'auth_wait', auth_id: authId });
+              if (resp.auth_state === 'done') {
+                return '';
+              }
+              if (resp.auth_state !== 'pending') {
+                return resp.error ?? resp.detail ?? 'The sign-in failed.';
+              }
+            }
+            return undefined;
+          },
+        );
+      };
+      try {
+        const failure = await finish();
+        if (failure === undefined) {
+          void sendMCP(clientName, { action: 'auth_cancel', auth_id: authId }).catch(() => undefined);
+          void vscode.window.showInformationMessage(`Not signed in to ${server.name}; nothing was stored.`);
+        } else if (failure) {
+          void vscode.window.showErrorMessage(failure);
+        } else {
+          void vscode.window.showInformationMessage(`Signed in to ${server.name}. Its tools are available from your next question.`);
+        }
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon: ${(err as Error).message}`);
+      }
+      await provider.refresh();
+    }),
+    vscode.commands.registerCommand('mochiii.mcp.signOut', async (node?: McpNode | string) => {
+      const server = serverOf(node);
+      if (!server) {
+        return;
+      }
+      try {
+        const { resp } = await sendMCP(clientName, { action: 'sign_out', name: server.name });
+        if (resp.error) {
+          void vscode.window.showErrorMessage(resp.error);
+        } else if (resp.detail) {
+          void vscode.window.showInformationMessage(resp.detail);
+        }
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon: ${(err as Error).message}`);
+      }
+      await provider.refresh();
+    }),
+    // A SERVER THE PROJECT PROPOSES. Approve shows the daemon's warning in the
+    // pop-up and waits for the name typed; never in an untrusted workspace,
+    // where VS Code itself says the folder's contents are not to be acted on.
+    vscode.commands.registerCommand('mochiii.mcp.approve', async (node?: McpNode | string) => {
+      const server = serverOf(node);
+      if (!server || server.approval === undefined) {
+        return;
+      }
+      if (!vscode.workspace.isTrusted) {
+        void vscode.window.showWarningMessage(
+          `This folder is not trusted, so a server it proposes cannot be approved. Trust the folder first if you mean to run ${server.name}.`,
+        );
+        return;
+      }
+      const host = await popup();
+      if (host) {
+        await host.openApprove(server);
+        return;
+      }
+      void vscode.window.showInformationMessage('Open the Mochiii chat to approve a server the project proposes.');
+    }),
+    vscode.commands.registerCommand('mochiii.mcp.reject', async (node?: McpNode | string) => {
+      const server = serverOf(node);
+      if (!server) {
+        return;
+      }
+      try {
+        const { resp } = await sendMCP(clientName, { action: 'reject', name: server.name });
+        void (resp.error ? vscode.window.showErrorMessage(resp.error) : vscode.window.showInformationMessage(resp.detail ?? 'Rejected.'));
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon: ${(err as Error).message}`);
+      }
+      await provider.refresh();
+    }),
+    // Start one server now and say how it fared, as `claude mcp list` does.
+    vscode.commands.registerCommand('mochiii.mcp.check', async (node?: McpNode | string) => {
+      const server = serverOf(node);
+      if (!server) {
+        return;
+      }
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Starting ${server.name} to see whether it works…` },
+        async () => {
+          try {
+            const { resp } = await sendMCP(clientName, { action: 'check', name: server.name });
+            const text = resp.error ?? [resp.detail ?? '', ...(resp.notes ?? [])].filter(Boolean).join(' ');
+            if (resp.error || (resp.servers ?? []).some((s) => s.name === server.name && s.state === MCP_STATE_FAILED)) {
+              void vscode.window.showWarningMessage(text);
+            } else {
+              void vscode.window.showInformationMessage(text);
+            }
+          } catch (err) {
+            void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon: ${(err as Error).message}`);
+          }
+        },
+      );
+      await provider.refresh();
     }),
     vscode.commands.registerCommand('mochiii.mcp.enable', (node?: McpNode | string) => toggle(node, 'enable')),
     vscode.commands.registerCommand('mochiii.mcp.disable', (node?: McpNode | string) => toggle(node, 'disable')),

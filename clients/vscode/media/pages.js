@@ -220,6 +220,34 @@
       return b;
     }
 
+    // A SERVER'S BADGE AND LINES, from the daemon's status line when it sends
+    // one ("✔ Connected (5 tools)", "✘ Failed to connect: …", "! Needs a key:
+    // X") -- the words `claude mcp list` uses -- and from the older fields when
+    // it does not.
+    /** @param {any} s @param {any} status @param {boolean} own */
+    function mcpLook(s, status, own) {
+      const line = String(s.statusLine || '');
+      const rest = line.replace(/^\S+\s+/, '');
+      if (s.disabled) return { badge: 'Paused', tone: 'off', title: 'Paused: its tools are not offered.' };
+      if (line.startsWith('✘')) return { badge: 'Failed', tone: 'warn', problem: rest, title: rest };
+      if (s.approval === 'pending') return { badge: 'Pending approval', tone: 'warn', problem: 'Proposed by this project’s .mcp.json. It does not run until you approve it.', title: 'Proposed by this project' };
+      if (s.approval === 'rejected') return { badge: 'Rejected', tone: 'off', title: 'You rejected it; it does not run.' };
+      if (line.startsWith('! Needs authentication')) return { badge: 'Sign in', tone: 'warn', problem: 'It needs you to sign in: use Sign in.', title: rest };
+      if (line.startsWith('!') && status.needsKey) return { badge: 'Needs key', tone: 'warn', problem: status.detail || rest, title: rest };
+      if (line.startsWith('!')) return { badge: 'Tools failed', tone: 'warn', problem: rest, title: rest };
+      if (line.startsWith('✔')) {
+        const m = /\((\d+) tools?\)/.exec(line);
+        return { badge: 'Connected', tone: 'on', sub: m ? m[1] + (m[1] === '1' ? ' tool' : ' tools') : '', title: rest };
+      }
+      if (line.startsWith('○')) {
+        return { badge: own ? 'On' : 'From config', tone: 'on', title: 'Not started yet: it starts with the next question in agent mode. Check starts it now.' };
+      }
+      // An older daemon: what serverStatus could tell.
+      const failed = /^(failed|needs) /.test(status.short + ' ');
+      const badge = status.needsKey ? 'Needs key' : status.short === 'failed to start' ? 'Failed' : status.short === 'running' ? 'Running' : own ? 'On' : 'From config';
+      return { badge, tone: failed || status.needsKey ? 'warn' : 'on', problem: failed || status.needsKey ? status.detail : '', title: status.detail };
+    }
+
     /** @param {any} msg */
     function renderMcp(msg) {
       const list = document.getElementById('mcpInstalledList');
@@ -231,7 +259,9 @@
       // command, whether it is on, a switch to pause it, and edit and remove.
       // A server from the config file is shown, not changed, here.
       for (const s of msg.servers || []) {
-        const own = s.source !== 'config';
+        // Only a server you added is yours to change, pause or remove: one from
+        // the config file or the project's .mcp.json is changed there.
+        const own = s.source !== 'config' && s.source !== 'project';
         const row = el('div', 'row mcp-row');
         const mono = el('span', 'mcp-mono', String(s.name || '?').charAt(0).toUpperCase());
         mono.setAttribute('aria-hidden', 'true');
@@ -244,29 +274,54 @@
         // WHETHER IT REALLY STARTS. "Active" used to mean only "not paused", and
         // a server with no key showed it while exiting on every start.
         const status = s.status || { short: '', detail: '', needsKey: false };
-        const failed = !s.disabled && /^(failed|needs) /.test(status.short + ' ');
-        if (!s.disabled && status.detail && (failed || status.needsKey)) {
-          text.append(el('div', 'row-sub mcp-problem', status.detail));
-        }
-        const state = s.disabled
-          ? 'Paused'
-          : status.needsKey
-            ? 'Needs key'
-            : status.short === 'failed to start'
-              ? 'Failed'
-              : status.short === 'running'
-                ? 'Running'
-                : !own
-                  ? 'From config'
-                  : 'On';
-        const badge = el('span', 'tag ' + (s.disabled ? 'off' : failed || status.needsKey ? 'warn' : 'on'), state);
-        if (status.detail) badge.title = status.detail;
+        const look = mcpLook(s, status, own);
+        if (look.problem) text.append(el('div', 'row-sub mcp-problem', look.problem));
+        if (look.sub) text.append(el('div', 'row-sub', look.sub));
+        for (const w of s.warnings || []) text.append(el('div', 'row-sub mcp-problem', w));
+        const badge = el('span', 'tag ' + look.tone, look.badge);
+        if (look.title) badge.title = look.title;
         row.append(mono, text, badge);
-        if (!own && s.canSetKey) {
+        /** @param {HTMLElement} acts */
+        const addCheck = (acts) => {
+          if (s.canSignIn) {
+            const auth = s.signedIn
+              ? act('Sign out', () => vscode.postMessage({ type: 'mcp:row', action: 'signOut', name: s.name }))
+              : act('Sign in…', () => vscode.postMessage({ type: 'mcp:row', action: 'signIn', name: s.name }), 'primary');
+            auth.setAttribute('aria-label', (s.signedIn ? 'Sign out of ' : 'Sign in to ') + s.name);
+            acts.append(auth);
+          }
+          if (!s.canCheck) return;
+          const check = act('Check', () => vscode.postMessage({ type: 'mcp:row', action: 'check', name: s.name }));
+          check.setAttribute('aria-label', 'Start ' + s.name + ' now and see whether it works');
+          check.title = 'Start it now and see whether it works';
+          acts.append(check);
+        };
+        if (s.approval === 'pending' || s.approval === 'rejected') {
           const acts = el('div', 'mcp-acts');
-          const key = act('Set key…', () => vscode.postMessage({ type: 'mcp:row', action: 'setKey', name: s.name }));
-          key.setAttribute('aria-label', 'Set a key for ' + s.name);
-          acts.append(key);
+          if (s.canApprove) {
+            const ok = act('Approve…', () => vscode.postMessage({ type: 'mcp:row', action: 'approve', name: s.name }), 'primary');
+            ok.setAttribute('aria-label', 'Approve ' + s.name + ', which this project proposes');
+            acts.append(ok);
+          } else {
+            acts.append(el('span', 'row-sub', 'Trust this folder to approve it'));
+          }
+          if (s.approval === 'pending') {
+            const no = act('Reject', () => vscode.postMessage({ type: 'mcp:row', action: 'reject', name: s.name }), 'danger');
+            no.setAttribute('aria-label', 'Reject ' + s.name);
+            acts.append(no);
+          }
+          row.append(acts);
+          list.append(row);
+          continue;
+        }
+        if (!own && (s.canSetKey || s.canCheck || s.canSignIn)) {
+          const acts = el('div', 'mcp-acts');
+          addCheck(acts);
+          if (s.canSetKey) {
+            const key = act('Set key…', () => vscode.postMessage({ type: 'mcp:row', action: 'setKey', name: s.name }));
+            key.setAttribute('aria-label', 'Set a key for ' + s.name);
+            acts.append(key);
+          }
           row.append(acts);
         }
         if (own) {
@@ -283,6 +338,7 @@
           remove.setAttribute('aria-label', 'Remove ' + s.name);
           const acts = el('div', 'mcp-acts');
           acts.append(sw);
+          addCheck(acts);
           if (s.canSetKey) {
             const key = act('Set key…', () => vscode.postMessage({ type: 'mcp:row', action: 'setKey', name: s.name }), status.needsKey ? 'primary' : '');
             key.setAttribute('aria-label', 'Set a key for ' + s.name);

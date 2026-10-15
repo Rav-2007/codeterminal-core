@@ -201,6 +201,9 @@ func (s *Server) envMissing(server string, env []string) []string {
 // mcpSetEnv answers MCPActionSetEnv. With a server name the value is that
 // server's own; without one it is for every server that reads the variable.
 func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
+	if strings.TrimSpace(req.HeaderName) != "" {
+		return s.mcpSetHeader(req)
+	}
 	name := strings.TrimSpace(req.EnvName)
 	if err := validMCPEnvName(name); err != nil {
 		return protocol.MCPResponse{Error: err.Error()}
@@ -216,7 +219,7 @@ func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
 		if !ok {
 			return protocol.MCPResponse{Error: fmt.Sprintf("no server named %s is configured", server)}
 		}
-		if !slices.Contains(srv.Env, name) {
+		if !slices.Contains(srv.Env, name) && !slices.Contains(serverTemplateVars(srv), name) {
 			return protocol.MCPResponse{Error: fmt.Sprintf("%s does not read %s; add the variable's name to it first "+
 				"(Change, step 3)", server, name)}
 		}
@@ -260,8 +263,15 @@ func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
 // required" instead of "Active" for a server that has never once run.
 
 type mcpServerState struct {
-	state  string // protocol.MCPStateRunning or MCPStateFailed
+	state  string // protocol.MCPStateRunning, MCPStateFailed or MCPStateToolsFailed
 	detail string
+	// tools is how many tools it offered when last listed; toolsErr why the
+	// listing failed.
+	tools    int
+	toolsErr string
+	// counted is whether tools is known: a server started but not yet asked
+	// for its tools has no count, which is not the same as none.
+	counted bool
 }
 
 type mcpStateBook struct {
@@ -291,7 +301,16 @@ func (b *mcpStateBook) started(name string, err error) {
 		b.states = map[string]mcpServerState{}
 	}
 	if err == nil {
-		b.states[name] = mcpServerState{state: protocol.MCPStateRunning}
+		// A restart keeps the count it had: the same program, asked again at
+		// the next listing.
+		prev := b.states[name]
+		b.states[name] = mcpServerState{state: protocol.MCPStateRunning, tools: prev.tools, counted: prev.counted}
+		return
+	}
+	// A remote server that wants a sign-in is its own state: the remedy is a
+	// button, not a fix to its command.
+	if strings.Contains(err.Error(), errNeedsSignIn.Error()) {
+		b.states[name] = mcpServerState{state: protocol.MCPStateNeedsAuth, detail: "it needs you to sign in"}
 		return
 	}
 	detail := b.lastLine[name]
@@ -315,6 +334,24 @@ func (b *mcpStateBook) forget(name string) {
 	defer b.mu.Unlock()
 	delete(b.states, name)
 	delete(b.lastLine, name)
+}
+
+// listed records what each started server answered when its tools were listed.
+func (b *mcpStateBook) listed(outcomes map[string]mcp.ListOutcome) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for name, o := range outcomes {
+		st, ok := b.states[name]
+		if !ok || st.state == protocol.MCPStateFailed {
+			continue
+		}
+		if o.Err != nil {
+			st.state, st.toolsErr, st.tools, st.counted = protocol.MCPStateToolsFailed, truncateForClient(o.Err.Error(), 240), 0, false
+		} else {
+			st.state, st.toolsErr, st.tools, st.counted = protocol.MCPStateRunning, "", o.Tools, true
+		}
+		b.states[name] = st
+	}
 }
 
 func (b *mcpStateBook) get(name string) mcpServerState {

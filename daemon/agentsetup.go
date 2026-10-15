@@ -67,18 +67,32 @@ func agentSetup(version, model, base, workspace string, servers []protocol.MCPSe
 	for _, s := range servers {
 		fmt.Fprintf(&b, "\n  - %s: ", s.Name)
 		switch {
+		case s.Approval == protocol.MCPApprovalPending:
+			b.WriteString("PROPOSED by this project's .mcp.json and not approved, so it is not started. Only the " +
+				"user can approve it (Approve on it in Customize > MCP, or `mcp approve`); you cannot.")
+		case s.Approval == protocol.MCPApprovalRejected:
+			b.WriteString("proposed by this project and rejected by the user, so it is not started.")
 		case s.Disabled:
 			b.WriteString("paused by the user, so its tools are not offered.")
 		case withheld:
 			b.WriteString("not started in this mode, so its tools are not offered this turn.")
+		case s.State == protocol.MCPStateNeedsAuth:
+			b.WriteString("NEEDS THE USER TO SIGN IN, so none of its tools are available. Only the user can: with " +
+				"Sign in on the server in Customize > MCP, which opens their browser. Tell them so.")
 		case s.State == protocol.MCPStateFailed:
 			fmt.Fprintf(&b, "FAILED TO START this turn, so none of its tools are available. It said: %q.", s.StateDetail)
 			if len(s.EnvMissing) > 0 {
 				fmt.Fprintf(&b, " It has no value for %s: the user sets it with Set key on the server in "+
 					"Customize > MCP.", strings.Join(s.EnvMissing, ", "))
 			}
+		case len(s.HeadersMissing) > 0 && s.State != protocol.MCPStateRunning:
+			fmt.Fprintf(&b, "has no value for its %s header, so it will likely refuse every call; the user sets it "+
+				"with Set key on the server in Customize > MCP.", strings.Join(s.HeadersMissing, ", "))
 		case len(tools[s.Name]) > 0:
 			names := tools[s.Name]
+			if s.URL != "" {
+				fmt.Fprintf(&b, "a remote server at %s (a call SENDS its arguments there); ", remoteHost(s.URL))
+			}
 			more := ""
 			if len(names) > maxSetupToolsPerServer {
 				more = fmt.Sprintf(" and %d more", len(names)-maxSetupToolsPerServer)
@@ -97,11 +111,12 @@ func agentSetup(version, model, base, workspace string, servers []protocol.MCPSe
 func (s *Server) withAgentSetup(ctx context.Context, registry *mcp.Registry, mode, model string, messages []chatMessage) []chatMessage {
 	cfg, _ := s.agentConfig()
 	tools := map[string][]string{}
-	if offered, _ := registry.Advertised(ctx); offered != nil {
-		for _, t := range offered {
-			if t.Server != mcp.BuiltinServerName {
-				tools[t.Server] = append(tools[t.Server], t.Name)
-			}
+	offered, _ := registry.Advertised(ctx)
+	// The listing is also each server's health: how many tools it offered.
+	s.mcpStates.listed(registry.Listed())
+	for _, t := range offered {
+		if t.Server != mcp.BuiltinServerName {
+			tools[t.Server] = append(tools[t.Server], t.Name)
 		}
 	}
 	_, base := s.credentials()

@@ -1070,6 +1070,125 @@ Set key in VS Code — and the daemon keeps it in `~/.mochiii/mcp-secrets.json`
   stdin with echo off; errors name the variable and, for an invisible pasted
   character, its code point — never the value.
 
+## Lane B over the network: remote servers (2026-10-14)
+
+A server may be reached at a URL instead of started here (`daemon/mcp/remoteclient.go`):
+streamable HTTP, or the older SSE. It is still Lane B — the remote end is a
+program this project did not write — so its tools are framed exactly as a
+subprocess's (`daemon/mcp/session.go`: `Confined:false`, third party, output in
+`<lane_b_output>`, every call asked, withheld in plan, spec and check modes).
+What differs is where the arguments go, and that is said:
+
+- **Each call is network egress.** A remote tool is `ReachesNetwork`, so the
+  approval prompt says the arguments LEAVE THE MACHINE and names the host
+  (`ToolApprovalRequest.Remote`), and "yes for this turn" covers those exact
+  arguments only, as for `web_search` (`grantKey`).
+- **https only**, except http to this machine; a URL carrying a user name or
+  password, or a `${VAR}`, is refused — a token goes in a header.
+- **The token stays a key.** A header value is a `${VAR}` template or `""`, the
+  value kept for that server in `mcp-secrets.json` (above), never in the server
+  list; it joins the scrubber, and so does the token inside `Bearer <token>`.
+- **The HTTP client is ours.** Headers are added only to requests for the
+  server's own origin; a request or redirect to another origin, or from https
+  to http, is refused (so a token never follows a redirect); one message is
+  bounded like a subprocess's line; TLS and header waits are bounded; no
+  standalone event stream is held open.
+
+### Signing in to a remote server (2026-10-14)
+
+A remote server that answers 401 can be signed in to in the browser
+(`daemon/mcpoauth.go`): the OAuth authorization-code flow with PKCE, dynamic
+client registration and the state and issuer checks done by the go-sdk.
+
+- **The daemon never opens anything.** It listens for the browser's return on
+  127.0.0.1, a random port and an unguessable path, for five minutes; the
+  CLIENT opens the address, after saying whose sign-in page it is. Only the
+  first request on that path is taken, and the page it answers with repeats
+  nothing it was sent. A pasted address (a remote window, ssh) is taken only if
+  it is on the same path.
+- **The sign-in page must be https** (http only on this machine), and every
+  sign-in request goes through a bounded client that refuses a redirect off
+  https.
+- **A turn never signs in.** A turn's connection uses the stored token,
+  refreshing it when expired; a 401 then is reported as "needs a sign-in" at
+  once, and the model is told only the user can do it.
+- **Tokens are keys**: kept in `mcp-secrets.json` for that server, bound to the
+  URL they were issued for, re-read before a refresh (another daemon may have
+  refreshed first), scrubbed (the access and refresh tokens and the client
+  secret — not the URL or the word Bearer), and deleted on sign-out or remove.
+
+## A project may propose a server, never grant one (2026-10-14)
+
+Until this date a workspace could not name an MCP server at all: cloning a
+repository must not be enough to have its program started (the hijack confirmed
+2026-08-08). A project's `.mcp.json` — Claude Code's format, so a team can share
+the servers a repository is meant to be worked with — is now read
+(`daemon/mcpproject.go`), and that property holds:
+
+- **Proposed is pending, and pending never runs.** Not by a turn, a list or a
+  check. The user approves with the same warning and typed name as any add.
+- **The grant lives outside the project**: `~/.mochiii/mcp-approvals.json`,
+  which no workspace can write and the agent is refused. An approvals file the
+  repository ships, at its root or in its `.mochiii/`, is not read.
+- **It is bound to a digest** of the project folder, the name and every part of
+  the definition. One changed argument — a pull, a hand edit, the agent's own
+  edit — and the server is pending again. An approval whose echoed digest is not
+  the definition's current one is refused.
+- **A project sets no policy**: every one of its tools asks.
+- **A project carries no secret**: a plain value that looks like a key, sits
+  under a key-like name, or is a `Bearer` header refuses that server; a key is
+  written `${NAME}` and given with Set key into the user's own key file.
+- `.mcp.json` must be a regular file (a link is not followed) of at most 256 KiB;
+  a name the user already uses keeps the user's server. VS Code offers Approve
+  only in a trusted folder.
+
+## Deleting and moving files (2026-10-14)
+
+`delete_path` and `move_path` (`daemon/fileops.go`) change the user's real files
+the moment a call is allowed, so they are not proposals — a deletion has no diff
+to review — but asked-about actions, like a command:
+
+- **Every call asks**, whatever `mcp.builtin.tools` says (`alwaysAskTools`), and
+  the question names the path. A "yes for this turn" covers that exact path only
+  (`grantKey` binds a destructive tool's grant to its arguments).
+- **Only where an edit may write**, by the same code (`editapply.ResolveSafePath`,
+  `OutsideWriteRefusal`): the project, or the home folder outside hidden files,
+  `~/bin`, `~/Library`, `~/AppData` and `.desktop` files. Never a protected
+  folder (`.git`, `.mochiii`, …) or a secret-named file — named directly or held
+  inside a folder (a `.git` *file* included) — never the project or home itself,
+  and a link is judged by where it leads.
+- **Nothing is destroyed.** A delete is a rename into `.mochiii/trash` (or
+  `~/.mochiii/trash`), which the agent cannot read or write; `restore_deleted`
+  or `mochiii-daemon trash restore <id>` puts it back, never over a path that
+  exists again. Entries older than 30 days are cleared. A delete that cannot be a
+  rename (another file system) is refused rather than copied.
+- **A move never overwrites.**
+- Withheld in plan, spec and check modes. The turn's working copy follows the
+  change, so later reads see it and an edit to a moved file is offered at its
+  new path.
+
+## A real terminal command (2026-10-14)
+
+`run_command` (`daemon/runcommand.go`) is what the user asked for beyond
+`sandbox_exec`'s four programs: a command through their own shell, in their
+**real** project, with their full access and network — installing packages,
+running scripts, git. It is not confined and is never described as confined.
+What protects the user is the question, so:
+
+- **Every call asks**, whatever `mcp.builtin.tools` says, and the prompt shows the
+  exact command as "Run in your terminal: …", with NOT SANDBOXED and RUNS IN YOUR
+  REAL PROJECT (`InPlace`). A "yes for this turn" covers that exact command only.
+- **This product's keys are not in its environment** (the model and proxy keys,
+  every `MOCHIII_*`); MCP servers' keys were never there.
+- **Nothing can be typed into it**: its input is empty, so a prompt reads
+  end-of-file rather than hanging the turn, and sudo cannot ask for a password.
+- **Bounded**: a time limit (5 minutes by default, 30 at most, never past the
+  turn's own deadline); the whole process group is killed when it ends; output is
+  kept to its last 1 MiB, then digested and scrubbed like every tool result.
+- **Where**: the project root, or a folder in it judged by the edit pipeline's
+  rules (never `.git` or outside the project).
+- Withheld in plan, spec and check modes and in long tasks, which run unattended.
+
 ## Tool output is egress, and is treated as egress
 
 Whatever a tool returns goes to the model, which means it leaves the machine. It

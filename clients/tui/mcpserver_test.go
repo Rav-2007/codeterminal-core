@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"mochiii/protocol"
@@ -372,5 +373,94 @@ func TestDisableAndEnableAreOneRequestEach(t *testing.T) {
 		if last := lastTurn(t, m); !strings.Contains(last, "takes the name of one server") {
 			t.Errorf("/mcp-server %s with no name did not explain itself:\n%s", action, last)
 		}
+	}
+}
+
+// A KEY IS TYPED HIDDEN AND GOES TO THE DAEMON ONLY. /mcp-server key opens a
+// prompt with echo off; the line typed is sent as set_env and appears nowhere:
+// not in the transcript, not in the up-arrow recall, not in the box.
+//
+// Neuter check: drop the EchoPassword line -- the first assertion fails.
+func TestAServerKeyIsTypedHiddenAndKeptNowhere(t *testing.T) {
+	daemon := mcpDaemon(t)
+	const secret = "pplx-hidden-7c2e9a"
+	m := runSlash(t, newTestModel(), "/mcp-server key perplexity PERPLEXITY_API_KEY")
+	if m.input.EchoMode != textinput.EchoPassword || m.pendingMCPAdd == nil {
+		t.Fatalf("the prompt is not hidden (echo %v) or not waiting", m.input.EchoMode)
+	}
+	if n := len(mcpRequests(t, daemon)); n != 0 {
+		t.Fatalf("%d request(s) before the value was typed", n)
+	}
+	m = runSlash(t, m, secret)
+	reqs := mcpRequests(t, daemon)
+	if len(reqs) != 1 || reqs[0].Action != protocol.MCPActionSetEnv || reqs[0].Name != "perplexity" ||
+		reqs[0].EnvName != "PERPLEXITY_API_KEY" || reqs[0].EnvValue != secret {
+		t.Fatalf("sent %+v", reqs)
+	}
+	if m.input.EchoMode != textinput.EchoNormal || m.input.Value() != "" || m.pendingMCPAdd != nil {
+		t.Error("the prompt did not go back to normal and empty")
+	}
+	for _, tn := range m.turns {
+		if strings.Contains(tn.text, secret) {
+			t.Fatalf("the value is in the transcript: %q", tn.text)
+		}
+	}
+	for _, h := range m.promptHistory {
+		if strings.Contains(h, secret) {
+			t.Fatal("the value is in the up-arrow recall")
+		}
+	}
+}
+
+func TestCheckAndGetAreOneRequestEach(t *testing.T) {
+	daemon := mcpDaemon(t)
+	m := runSlash(t, newTestModel(), "/mcp-server check perplexity --timeout 90")
+	_ = runSlash(t, m, "/mcp-server get perplexity")
+	reqs := mcpRequests(t, daemon)
+	if len(reqs) != 2 || reqs[0].Action != protocol.MCPActionCheck || reqs[0].ConnectTimeoutSeconds != 90 ||
+		reqs[1].Action != protocol.MCPActionGet || reqs[1].Name != "perplexity" {
+		t.Fatalf("sent %+v", reqs)
+	}
+}
+
+// A sign-in shows the address and waits, one request at a time, until it ends.
+func TestSignInShowsTheAddressThenWaits(t *testing.T) {
+	waits := 0
+	daemon := startRequestRecorder(t, []string{protocol.FeatureMCPAdmin}, func(raw json.RawMessage) any {
+		var req protocol.MCPRequest
+		_ = json.Unmarshal(raw, &req)
+		switch req.Action {
+		case protocol.MCPActionAuthStart:
+			return protocol.MCPResponse{Ok: true, AuthID: "a1", AuthURL: "https://auth.example/authorize?x=1", AuthState: protocol.MCPAuthPending}
+		case protocol.MCPActionAuthWait:
+			waits++
+			if waits < 2 {
+				return protocol.MCPResponse{Ok: true, AuthID: "a1", AuthState: protocol.MCPAuthPending}
+			}
+			return protocol.MCPResponse{Ok: true, AuthID: "a1", AuthState: protocol.MCPAuthDone, Detail: "Signed in to notion."}
+		}
+		return protocol.MCPResponse{Ok: true}
+	})
+	m := typeText(newTestModel(), "/mcp-server sign-in notion")
+	m, cmd := pressEnter(m)
+	for i := 0; i < 4 && cmd != nil; i++ {
+		answer, ok := findMsgWithin[mcpResultMsg](cmd, 3e9)
+		if !ok {
+			break
+		}
+		var next tea.Model
+		next, cmd = m.Update(answer)
+		m = next.(chatModel)
+	}
+	all := ""
+	for _, tn := range m.turns {
+		all += tn.text + "\n"
+	}
+	if !strings.Contains(all, "https://auth.example/authorize?x=1") || !strings.Contains(all, "Signed in to notion.") {
+		t.Errorf("the transcript:\n%s", all)
+	}
+	reqs := mcpRequests(t, daemon)
+	if len(reqs) != 3 || reqs[0].Action != protocol.MCPActionAuthStart || reqs[2].Action != protocol.MCPActionAuthWait {
+		t.Errorf("sent %+v", reqs)
 	}
 }

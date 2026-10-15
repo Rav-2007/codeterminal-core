@@ -476,6 +476,8 @@ export interface ToolApprovalRequest {
   lane: string;
   confined: boolean;
   reaches_network?: boolean;
+  /** The host a remote MCP server's call sends its arguments to (FEATURE_MCP_REMOTE). */
+  remote?: string;
   // launches_subprocess describes THIS CALL, not the tool: true only when
   // approving it starts `program`. It used to be the tool's static flag, so
   // every prompt after the first said a language server was being started when
@@ -1672,7 +1674,33 @@ export interface MCPServerInfo {
   state?: string;
   /** Why it failed, in the server's own words where it gave any. */
   state_detail?: string;
+  /** Tools it offered when last listed (FEATURE_MCP_CHECK). */
+  tool_count?: number;
+  /** Why a started server's tools could not be listed. */
+  tools_error?: string;
+  /** The daemon's one-line status: "✔ Connected (5 tools)", "✘ Failed to connect: …". */
+  status_line?: string;
+  /** Problems that do not stop it, such as a ${VAR} with no value. */
+  warnings?: string[];
+  /** Whether tool_count is known (a started server not yet listed has none). */
+  tools_listed?: boolean;
+  /** A remote server (FEATURE_MCP_REMOTE): 'http' or 'sse', its URL (query values hidden), header names. */
+  transport?: string;
+  url?: string;
+  headers?: string[];
+  /** Headers kept as keys with no value stored yet. */
+  headers_missing?: string[];
+  /** A sign-in token is stored for this remote server (FEATURE_MCP_OAUTH). */
+  signed_in?: boolean;
+  /** A server the project's .mcp.json proposes (FEATURE_MCP_PROJECT): 'pending' | 'approved' | 'rejected'. */
+  approval?: string;
+  digest?: string;
+  project_file?: string;
 }
+
+export const MCP_STATE_NEEDS_AUTH = 'needs_auth';
+/** protocol.FeatureMCPOAuth: sign in to a remote server in the browser. */
+export const FEATURE_MCP_OAUTH = 'mcp_oauth';
 
 export const MCP_STATE_RUNNING = 'running';
 export const MCP_STATE_FAILED = 'failed';
@@ -1688,9 +1716,32 @@ export const FEATURE_MCP_MANAGE = 'mcp_manage';
 export const FEATURE_MCP_ENV = 'mcp_env';
 /** protocol.FeatureMCPSecrets: the daemon keeps server keys in ~/.mochiii/mcp-secrets.json itself. */
 export const FEATURE_MCP_SECRETS = 'mcp_secrets';
+/** protocol.FeatureMCPCheck: check, get and add_json, and status lines with tool counts. */
+export const FEATURE_MCP_CHECK = 'mcp_check';
+/** protocol.FeatureMCPRemote: servers reached at a URL, with headers. */
+export const FEATURE_MCP_REMOTE = 'mcp_remote';
 
 /** servers lists the configured servers WITHOUT starting any; list starts them all to ask for their tools. */
-export type MCPAction = 'list' | 'servers' | 'tools' | 'add' | 'update' | 'remove' | 'enable' | 'disable' | 'set_env';
+export type MCPAction =
+  | 'list'
+  | 'servers'
+  | 'tools'
+  | 'add'
+  | 'update'
+  | 'remove'
+  | 'enable'
+  | 'disable'
+  | 'set_env'
+  | 'check'
+  | 'get'
+  | 'add_json'
+  | 'auth_start'
+  | 'auth_wait'
+  | 'auth_complete'
+  | 'auth_cancel'
+  | 'sign_out'
+  | 'approve'
+  | 'reject';
 
 /** protocol.MCPRequest. */
 export interface MCPRequest {
@@ -1710,6 +1761,21 @@ export interface MCPRequest {
   env_value?: string;
   /** add/update: values for names in env, for this server only (FEATURE_MCP_SECRETS). Secrets. */
   env_values?: Record<string, string>;
+  /** check: a longer wait for a first start, at most 120 seconds. */
+  connect_timeout_seconds?: number;
+  /** add_json: one server's entry from another MCP client, as an object. */
+  json?: unknown;
+  /** A remote server: 'http' or 'sse', its URL, and headers (a plain value is kept as a key). */
+  transport?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  /** set_env: a remote server's header to set, instead of a variable. */
+  header_name?: string;
+  /** auth_wait / auth_complete / auth_cancel: the sign-in; auth_complete's pasted address. */
+  auth_id?: string;
+  callback_url?: string;
+  /** approve: the digest of the definition the warning described. */
+  digest?: string;
 }
 
 /** protocol.MCPResponse. */
@@ -1726,6 +1792,13 @@ export interface MCPResponse {
   error?: string;
   /** tools answers the 'tools' action: this daemon's own tools (FEATURE_MCP_TOOLS). */
   tools?: MCPToolInfo[];
+  /** A sign-in (FEATURE_MCP_OAUTH): its id, the address to open, 'pending' | 'done' | 'failed'. */
+  auth_id?: string;
+  auth_url?: string;
+  auth_state?: string;
+  expires_in_seconds?: number;
+  /** approve's first answer: the definition the warning describes. */
+  digest?: string;
 }
 
 /** protocol.MCPToolInfo: one tool and what it takes to run it. */

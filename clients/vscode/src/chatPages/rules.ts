@@ -86,6 +86,11 @@ export const MCP_ROW_COMMANDS: Record<string, string> = {
   edit: 'mochiii.mcp.edit',
   remove: 'mochiii.mcp.remove',
   setKey: 'mochiii.mcp.setKey',
+  check: 'mochiii.mcp.check',
+  signIn: 'mochiii.mcp.signIn',
+  signOut: 'mochiii.mcp.signOut',
+  approve: 'mochiii.mcp.approve',
+  reject: 'mochiii.mcp.reject',
 };
 
 

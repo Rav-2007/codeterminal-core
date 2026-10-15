@@ -35,6 +35,8 @@ import (
 //     is refused: outside reads (outsideread.go) and edits (editapply's
 //     ProtectedDirNames) both turn `.mochiii` away, and a sandboxed command
 //     can neither write outside its working copy nor open the daemon's socket.
+//     A project's .mcp.json may PROPOSE a server, and it runs only once the
+//     user approves that exact definition here (mcpproject.go).
 //
 // WHY IT IS READ AT EVERY AGENT TURN, NOT AT STARTUP. So that adding a server
 // takes effect at the next question. The file is a few hundred bytes; reading
@@ -154,8 +156,10 @@ func validateUserServer(name string, srv MCPServerConfig) error {
 	if err := validateServerBlock(srv); err != nil {
 		return err
 	}
-	if err := validateUserCommand(srv.Command); err != nil {
-		return err
+	if !srv.remote() {
+		if err := validateUserCommand(srv.Command); err != nil {
+			return err
+		}
 	}
 	if err := mcp.ValidateEnvAllowList(srv.Env); err != nil {
 		return err
@@ -233,7 +237,24 @@ func (s *Server) agentConfig() (cfg *Config, problems []string) {
 	if p := s.mcpSecrets.problem(); p != "" {
 		problems = append(problems, p)
 	}
-	if s.cfg == nil || strings.TrimSpace(s.userServersPath) == "" {
+	if s.cfg == nil {
+		return s.cfg, problems
+	}
+	// The project's proposed servers (mcpproject.go) join after the user's
+	// and the config file's, which win a name all of them use.
+	defer func() {
+		if cfg == nil {
+			return
+		}
+		merged, more := s.withProjectServers(cfg.MCP.Servers)
+		problems = append(problems, more...)
+		if len(merged) != len(cfg.MCP.Servers) {
+			out := *cfg
+			out.MCP.Servers = merged
+			cfg = &out
+		}
+	}()
+	if strings.TrimSpace(s.userServersPath) == "" {
 		return s.cfg, problems
 	}
 	user, userProblems, err := loadUserMCPServers(s.userServersPath)

@@ -49,7 +49,14 @@ func (p configPolicy) PolicyFor(server, tool string) mcp.Policy {
 		if p.cfg.MCP.Builtin.Disabled {
 			return mcp.PolicyDeny
 		}
-		return toRegistryPolicy(p.cfg.MCP.Builtin.policyFor(tool))
+		policy := toRegistryPolicy(p.cfg.MCP.Builtin.policyFor(tool))
+		// THESE ALWAYS ASK, whatever the config says: each changes the user's
+		// real files, or runs a command with their full access, the moment it
+		// is allowed (fileops.go, runcommand.go).
+		if policy == mcp.PolicyAllow && alwaysAskTools[tool] {
+			return mcp.PolicyAsk
+		}
+		return policy
 	}
 
 	srv, ok := p.cfg.MCP.Servers[server]
@@ -118,7 +125,7 @@ func laneBLaunchConfig(name string, srv MCPServerConfig, cfg *Config, dir string
 		// The one budget field that bounds ALLOCATION rather than egress: what
 		// this daemon will hold on behalf of somebody else's process.
 		MaxMessageBytes: cfg.MCP.Budget.resolvedMaxMessageBytes(),
-		ConnectTimeout:  cfg.MCP.Budget.resolvedConnectTimeout(),
+		ConnectTimeout:  srv.connectTimeout(cfg.MCP.Budget),
 	}
 }
 
@@ -158,6 +165,12 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 	for _, problem := range problems {
 		logger.Printf("mcp: %s", problem)
 	}
+	return s.buildRegistryFrom(ctx, cfg, logger, proposals, mode)
+}
+
+// buildRegistryFrom is buildRegistry for a config the caller chose: a check of
+// one server builds the built-ins and that server only (mcpcheck.go).
+func (s *Server) buildRegistryFrom(ctx context.Context, cfg *Config, logger *log.Logger, proposals *proposalSink, mode string) (*mcp.Registry, []error) {
 	registry := s.builtinRegistry(cfg, logger, proposals, mode)
 
 	// LANE B IS WITHHELD ENTIRELY IN PLAN MODE, and this is the half of the
@@ -205,7 +218,7 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 	// many servers the user happens to have.
 	type connectResult struct {
 		name   string
-		client *mcp.StdioClient
+		client mcp.Client
 		err    error
 	}
 
@@ -236,6 +249,19 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 			// decision, with the honest unknown attached: nobody has
 			// established whether any input actually panics the SDK.
 			defer recoverLaneBConnect(name, logger.Printf)
+			if srv.remote() {
+				// Reached at its URL, not started here (mcp/remoteclient.go).
+				s.mcpStates.beforeStart(name)
+				client, err := s.connectRemote(ctx, name, srv, cfg, logger)
+				var c mcp.Client
+				if err == nil {
+					c = client
+				}
+				mu.Lock()
+				results = append(results, connectResult{name: name, client: c, err: err})
+				mu.Unlock()
+				return
+			}
 			// In a folder of its own, or not at all (mcpstartdir.go).
 			var client *mcp.StdioClient
 			dir, err := s.serverStartDir(name, srv)
@@ -248,12 +274,17 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 				stderr := serverStderr(name, logger)
 				stderr.onLine = func(line string) { s.mcpStates.noteLine(name, line) }
 				lc := laneBLaunchConfig(name, srv, cfg, dir, stderr, logger.Printf)
-				// A key the user gave for one of the server's variables (mcpenv.go).
-				lc.EnvValues = s.mcpEnvValueFor(name)
+				// Its ${VAR}s filled in, and the keys the user gave for its
+				// variables (mcpexpand.go, mcpenv.go).
+				lc.Args, lc.EnvAllow, lc.EnvValues = s.expandedLaunch(name, srv)
 				client, err = mcp.Connect(ctx, lc)
 			}
+			var c mcp.Client
+			if err == nil {
+				c = client
+			}
 			mu.Lock()
-			results = append(results, connectResult{name: name, client: client, err: err})
+			results = append(results, connectResult{name: name, client: c, err: err})
 			mu.Unlock()
 		}(name, srv)
 	}

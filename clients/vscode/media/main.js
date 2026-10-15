@@ -2487,6 +2487,11 @@
     const risks = [];
     if (req.reaches_network) {
       risks.push('LEAVES YOUR MACHINE: sent to a third party over the internet');
+      // A remote MCP server's call (FEATURE_MCP_REMOTE): where, by name. Kept
+      // word for word with the TUI's renderApprovalPanel.
+      if (req.remote) {
+        risks.push('SENT TO ' + req.remote + ', the remote MCP server you added: what it does with this is up to its operator');
+      }
       // Why this one is asked about when the tool is allowed. Kept word for
       // word with the TUI's egressAddressRisk / egressQueryRisk.
       if (req.egress_review === 'address') {
@@ -2581,6 +2586,21 @@
     }
     const only = (k) =>
       Object.keys(args).length === 1 && typeof args[k] === 'string' ? args[k] : '';
+    // Deleting and moving files (daemon/fileops.go): said as what happens.
+    // Kept word for word with the TUI's approvalQuestion.
+    // Not "Run command:" -- that is sandbox_exec's, in a private copy. This one
+    // runs in the real project, as the user's terminal would.
+    if (req.server === 'builtin' && req.tool === 'run_command' && typeof args.command === 'string') {
+      const where = typeof args.cwd === 'string' && args.cwd ? ' (in ' + args.cwd + ')' : '';
+      return 'Run in your terminal' + where + ': ' + args.command + ' ?';
+    }
+    if (req.server === 'builtin' && req.tool === 'delete_path' && only('path')) {
+      return 'Delete ' + only('path') + " (moved to Mochiii's trash, where it can be restored) ?";
+    }
+    if (req.server === 'builtin' && req.tool === 'move_path' && Object.keys(args).length === 2 &&
+        typeof args.from === 'string' && typeof args.to === 'string') {
+      return 'Move ' + args.from + ' to ' + args.to + ' ?';
+    }
     if (req.outside_path) {
       return 'Read outside this project: ' + req.outside_path + ' ?';
     }
@@ -2678,6 +2698,10 @@
     sandbox_exec: 'Ran a command in the sandbox',
     web_fetch: 'Fetched a web page',
     web_search: 'Searched the web',
+    run_command: 'Ran a command in your terminal',
+    delete_path: 'Deleted a file',
+    move_path: 'Moved a file',
+    restore_deleted: 'Restored a deleted file',
   };
   const WORK_STATE_WORDS = { run: 'running', ok: 'done', fail: 'failed', denied: 'not run', step: '' };
   // The badge each row carries (Stage 9, the mockup's "Tool Execution" card).
@@ -3408,9 +3432,23 @@
       })
     : null;
 
+  const mcpPopup = window.MochiiiMcpPopup
+    ? window.MochiiiMcpPopup.init(vscode, {
+        closePopups: () => {
+          setHistoryOpen(false);
+          setModelPopupOpen(false);
+          setModesPopupOpen(false);
+          setContextPopupOpen(false);
+        },
+      })
+    : null;
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (connectPopup && connectPopup.handle(msg)) {
+      return;
+    }
+    if (mcpPopup && mcpPopup.handle(msg)) {
       return;
     }
     if (pages && pages.handle(msg)) {

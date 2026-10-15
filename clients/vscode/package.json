@@ -186,6 +186,36 @@
         "icon": "$(edit)"
       },
       {
+        "command": "mochiii.mcp.approve",
+        "title": "Approve MCP Server the Project Proposes…",
+        "category": "Mochiii",
+        "icon": "$(check)"
+      },
+      {
+        "command": "mochiii.mcp.reject",
+        "title": "Reject MCP Server the Project Proposes",
+        "category": "Mochiii",
+        "icon": "$(close)"
+      },
+      {
+        "command": "mochiii.mcp.signIn",
+        "title": "Sign In to MCP Server…",
+        "category": "Mochiii",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "mochiii.mcp.signOut",
+        "title": "Sign Out of MCP Server",
+        "category": "Mochiii",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "mochiii.mcp.check",
+        "title": "Check MCP Server",
+        "category": "Mochiii",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "mochiii.mcp.setKey",
         "title": "Set Key for MCP Server…",
         "category": "Mochiii",
@@ -283,7 +313,32 @@
           "group": "inline@1"
         },
         {
+          "command": "mochiii.mcp.check",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
+          "group": "inline@0"
+        },
+        {
           "command": "mochiii.mcp.setKey",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
+          "group": "1_change@0"
+        },
+        {
+          "command": "mochiii.mcp.signIn",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
+          "group": "1_change@0"
+        },
+        {
+          "command": "mochiii.mcp.approve",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.project.pending && isWorkspaceTrusted",
+          "group": "inline@1"
+        },
+        {
+          "command": "mochiii.mcp.reject",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.project.pending",
+          "group": "1_change@3"
+        },
+        {
+          "command": "mochiii.mcp.signOut",
           "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
           "group": "1_change@0"
         },
@@ -309,6 +364,26 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "mochiii.mcp.approve",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.reject",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.signIn",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.signOut",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.check",
+          "when": "false"
+        },
         {
           "command": "mochiii.mcp.setKey",
           "when": "false"

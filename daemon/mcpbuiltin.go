@@ -636,6 +636,7 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 			})
 	}
 
+	tools = append(append(tools, s.fileOpTools(proposals, mode)...), s.runCommandTools(mode)...) // fileops.go, runcommand.go
 	// PLAN MODE DROPS EVERY TOOL THAT EXECUTES CODE OR REACHES THE NETWORK.
 	//
 	// This used to be one line above -- `if mode != "plan"` removing

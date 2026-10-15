@@ -171,6 +171,10 @@ func TestEveryBuiltinToolIsSortedOnPurpose(t *testing.T) {
 		"finish_task": true, "checkpoint": true,
 		// Changes many files, or runs a model of its own.
 		"rename_symbol": true, "investigate": true,
+		// Actions the user agreed to one at a time: a failure is news.
+		"delete_path": true, "move_path": true, "restore_deleted": true,
+		// A command: its failure is news.
+		"run_command": true,
 	}
 	s := builtinTestServer(t)
 	for _, mode := range []string{"", modePlan, modeSpec, modeBuild, modeCheck, modeDebug} {

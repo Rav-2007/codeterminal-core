@@ -31,6 +31,11 @@ export function setPagesContext(ctx: PagesContext): void {
   pagesContext = ctx;
 }
 
+/** currentPagesContext is what setPagesContext was given, for the MCP pop-up. */
+export function currentPagesContext(): PagesContext | undefined {
+  return pagesContext;
+}
+
 /** What the pages need from the one chat panel they live in. */
 export interface PagesPanel {
   post(msg: Record<string, unknown>): void;
@@ -310,7 +315,18 @@ export class ChatPagesHost implements vscode.Disposable {
         env: s.env ?? [],
         // Whether it really starts, not only whether it is switched on.
         status: serverStatus(s),
-        canSetKey: !!st.setEnv && (s.env ?? []).length > 0,
+        // The daemon's own line ("✔ Connected (5 tools)"), when it says one.
+        statusLine: s.status_line ?? '',
+        warnings: s.warnings ?? [],
+        canSetKey: !!st.setEnv && (s.env ?? []).length + (s.headers ?? []).length > 0,
+        canCheck: !!st.check && !s.disabled,
+        // A remote server can be signed in to, or out of (FEATURE_MCP_OAUTH).
+        canSignIn: !!st.oauth && !!s.url && !s.disabled,
+        signedIn: !!s.signed_in,
+        // A server the project proposes: its approval, and whether this
+        // folder is trusted enough to approve one at all.
+        approval: s.approval ?? '',
+        canApprove: vscode.workspace.isTrusted,
       })),
       agentMode: st.agentMode,
       notice: st.noFolder || st.unreachable || (st.servers.length > 0 && !st.agentMode ? 'Agent mode is off in the config the daemon loaded, so no server is started.' : ''),

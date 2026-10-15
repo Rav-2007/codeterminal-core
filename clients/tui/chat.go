@@ -2784,6 +2784,9 @@ func approvalRisks(req protocol.ToolApprovalRequest) []string {
 	switch {
 	case req.ReachesNetwork:
 		risks = append(risks, "LEAVES YOUR MACHINE: sent to a third party over the internet")
+		if req.Remote != "" {
+			risks = append(risks, "SENT TO "+sanitizeText(req.Remote)+", the remote MCP server you added: what it does with this is up to its operator")
+		}
 		// WHY THIS ONE IS ASKED ABOUT when the tool is allowed (the daemon's
 		// webegress.go). Said in this client's own words, like the line above:
 		// it is the reason to read the address or the query before saying yes.
@@ -2832,6 +2835,38 @@ func approvalQuestion(req protocol.ToolApprovalRequest) string {
 		}
 		v, _ := args[k].(string)
 		return sanitizeText(v)
+	}
+	// Deleting and moving files (daemon/fileops.go): said as what happens.
+	if req.Server == "builtin" {
+		two := func(a, b string) (string, string) {
+			if len(args) != 2 {
+				return "", ""
+			}
+			x, _ := args[a].(string)
+			y, _ := args[b].(string)
+			return sanitizeText(x), sanitizeText(y)
+		}
+		switch req.Tool {
+		case "run_command":
+			// Not "Run command:" -- that is sandbox_exec's, in a private copy.
+			// This one runs in the user's real project, as their terminal would.
+			cmd, _ := args["command"].(string)
+			if cmd != "" {
+				where := ""
+				if cwd, _ := args["cwd"].(string); cwd != "" {
+					where = " (in " + sanitizeText(cwd) + ")"
+				}
+				return "Run in your terminal" + where + ": " + sanitizeText(cmd) + " ?"
+			}
+		case "delete_path":
+			if p := str("path"); p != "" {
+				return "Delete " + p + " (moved to Mochiii's trash, where it can be restored) ?"
+			}
+		case "move_path":
+			if from, to := two("from", "to"); from != "" && to != "" {
+				return "Move " + from + " to " + to + " ?"
+			}
+		}
 	}
 	switch {
 	case req.OutsidePath != "":

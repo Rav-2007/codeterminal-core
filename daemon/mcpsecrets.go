@@ -57,6 +57,9 @@ type mcpSecretsFile struct {
 // mcpServerSecrets is one server's own values.
 type mcpServerSecrets struct {
 	Env map[string]string `json:"env,omitempty"`
+	// Headers are a remote server's header values (a token): what its block's
+	// "headers" leaves as "".
+	Headers map[string]string `json:"headers,omitempty"`
 	// Kept as written, so a daemon that does not know a field yet (a remote
 	// server's headers, its sign-in) never drops what a newer one stored.
 	Extra map[string]json.RawMessage `json:"-"`
@@ -69,6 +72,9 @@ func (m mcpServerSecrets) MarshalJSON() ([]byte, error) {
 	}
 	if len(m.Env) > 0 {
 		out["env"] = m.Env
+	}
+	if len(m.Headers) > 0 {
+		out["headers"] = m.Headers
 	}
 	return json.Marshal(out)
 }
@@ -84,13 +90,21 @@ func (m *mcpServerSecrets) UnmarshalJSON(data []byte) error {
 		}
 		delete(raw, "env")
 	}
+	if h, ok := raw["headers"]; ok {
+		if err := json.Unmarshal(h, &m.Headers); err != nil {
+			return fmt.Errorf("headers: %w", err)
+		}
+		delete(raw, "headers")
+	}
 	if len(raw) > 0 {
 		m.Extra = raw
 	}
 	return nil
 }
 
-func (m mcpServerSecrets) empty() bool { return len(m.Env) == 0 && len(m.Extra) == 0 }
+func (m mcpServerSecrets) empty() bool {
+	return len(m.Env) == 0 && len(m.Headers) == 0 && len(m.Extra) == 0
+}
 
 // mcpSecretStore reads and writes the file. A nil store holds nothing and
 // stores nothing: a Server built in a test never reaches the developer's home.
@@ -251,39 +265,72 @@ func (st *mcpSecretStore) values() []string {
 		for _, v := range srv.Env {
 			out = append(out, v)
 		}
+		for _, v := range srv.Headers {
+			out = append(out, v)
+			// "Bearer <token>": the token alone is the credential, and it is
+			// what a server would echo back.
+			if _, tok, ok := strings.Cut(v, " "); ok && len(tok) >= 8 {
+				out = append(out, tok)
+			}
+		}
 		out = append(out, rawSecretStrings(srv.Extra)...)
 	}
 	return out
 }
 
-// rawSecretStrings is every string inside fields this daemon does not read
-// yet: a newer daemon's header or token is a credential to this one too.
+// rawSecretStrings is the credentials inside fields this daemon reads as
+// opaque (a sign-in, a newer daemon's field): every value under an "env" or
+// "headers" object, and any string whose field is named like a secret
+// (access_token, refresh_token, client_secret, api_key, password).
+//
+// NOT EVERY STRING. A sign-in also holds its endpoint, its token type
+// ("Bearer") and its client id; scrubbing those would cut a URL or the word
+// Bearer out of everything the model is shown.
 func rawSecretStrings(extra map[string]json.RawMessage) []string {
 	var out []string
-	var walk func(any)
-	walk = func(v any) {
+	add := func(s string) {
+		if len(strings.TrimSpace(s)) >= 8 {
+			out = append(out, s)
+		}
+	}
+	var walk func(v any, secret bool)
+	walk = func(v any, secret bool) {
 		switch t := v.(type) {
 		case string:
-			if strings.TrimSpace(t) != "" {
-				out = append(out, t)
+			if secret {
+				add(t)
 			}
 		case map[string]any:
-			for _, x := range t {
-				walk(x)
+			for k, x := range t {
+				walk(x, secret || k == "env" || k == "headers" || secretFieldName(k))
 			}
 		case []any:
 			for _, x := range t {
-				walk(x)
+				walk(x, secret)
 			}
 		}
 	}
-	for _, raw := range extra {
+	for k, raw := range extra {
 		var v any
 		if json.Unmarshal(raw, &v) == nil {
-			walk(v)
+			walk(v, secretFieldName(k))
 		}
 	}
 	return out
+}
+
+// secretFieldName reports whether a field's name says it holds a credential.
+func secretFieldName(name string) bool {
+	n := strings.ToLower(name)
+	if n == "token_type" || n == "token_url" || strings.HasSuffix(n, "_url") {
+		return false
+	}
+	for _, w := range []string{"token", "secret", "password", "api_key", "apikey"} {
+		if strings.Contains(n, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // storedNames is the variable names server would be given a stored value for.
@@ -326,6 +373,11 @@ func (st *mcpSecretStore) update(change func(*mcpSecretsFile)) error {
 		for k, v := range srv.Env {
 			if v == "" {
 				delete(srv.Env, k)
+			}
+		}
+		for k, v := range srv.Headers {
+			if v == "" {
+				delete(srv.Headers, k)
 			}
 		}
 		if srv.empty() {
@@ -410,4 +462,30 @@ func (st *mcpSecretStore) forgetServer(server string) error {
 		return nil
 	}
 	return st.update(func(f *mcpSecretsFile) { delete(f.Servers, server) })
+}
+
+// header is a remote server's stored value for a header.
+func (st *mcpSecretStore) header(server, name string) (string, bool) {
+	if st == nil {
+		return "", false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	v, ok := st.data.Servers[server].Headers[name]
+	return v, ok && v != ""
+}
+
+// setHeader stores (or, for "", forgets) a remote server's header value.
+func (st *mcpSecretStore) setHeader(server, name, value string) error {
+	return st.update(func(f *mcpSecretsFile) {
+		if f.Servers == nil {
+			f.Servers = map[string]mcpServerSecrets{}
+		}
+		srv := f.Servers[server]
+		if srv.Headers == nil {
+			srv.Headers = map[string]string{}
+		}
+		srv.Headers[name] = value
+		f.Servers[server] = srv
+	})
 }

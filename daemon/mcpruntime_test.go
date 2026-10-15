@@ -315,7 +315,12 @@ func TestBuiltinsAreConfinedAndReadOnly(t *testing.T) {
 		// pair was found doing exactly that with neither flag set: they read as
 		// harmless by every clause here, and the honest answer to "what does this
 		// start" was not among them either.
-		if tool.ReachesNetwork || tool.LaunchesSubprocess {
+		if tool.Name == runCommandToolName {
+			// The real terminal: unconfined BY DESIGN, and it must never say otherwise.
+			if tool.Confined {
+				t.Errorf("run_command reports itself confined; it runs in the real project with the user's full access")
+			}
+		} else if tool.ReachesNetwork || tool.LaunchesSubprocess {
 			if tool.Confined {
 				t.Errorf("built-in %q reaches the network or starts a subprocess and still reports "+
 					"itself confined; the approval prompt would tell the user this is governed by the "+
@@ -332,6 +337,18 @@ func TestBuiltinsAreConfinedAndReadOnly(t *testing.T) {
 		}
 		// v1's built-ins are all reads, with the exception of sandbox_exec which
 		// is allowed to run tests and compilations that may write build artifacts.
+		//
+		// AND, SINCE 2026-10-14, THE FILE OPERATIONS THE USER ASKED FOR. A deletion
+		// has no diff to review, so delete_path, move_path and restore_deleted
+		// are actions instead -- and an action that changes real files is only
+		// allowed here if it asks on every call whatever the config says and is
+		// marked destructive, which this checks rather than assumes.
+		if alwaysAskTools[tool.Name] {
+			if !tool.Destructive && !tool.ExecutesCode {
+				t.Errorf("built-in %q changes files but is not marked destructive", tool.Name)
+			}
+			continue
+		}
 		if !tool.ReadOnlyHint && tool.Name != "sandbox_exec" {
 			t.Errorf("built-in %q is not read-only. Lane A tools must not mutate the filesystem: "+
 				"a write tool belongs in the existing edit-proposal flow, where the user sees a diff", tool.Name)

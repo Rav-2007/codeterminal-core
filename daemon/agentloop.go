@@ -160,7 +160,8 @@ func repeatableLaunchGrantKey(qualified, key string) string {
 // for queries they never saw -- written after the model had read their files.
 // What leaves is the arguments, so the arguments are what a grant is for.
 func grantKey(spec mcp.Tool, qualified, arguments string) string {
-	if !spec.ExecutesCode && !spec.ReachesNetwork {
+	// A destructive call too: "yes" to deleting one file is not yes to another.
+	if !spec.ExecutesCode && !spec.ReachesNetwork && !spec.Destructive {
 		return qualified
 	}
 	return qualified + "\x00" + argumentsDigest(arguments)
@@ -1585,6 +1586,7 @@ func (s *Server) resolveExecutable(
 		// the prompt must not say it is.
 		Confined:       spec.Confined && outside == "",
 		ReachesNetwork: spec.ReachesNetwork,
+		Remote:         spec.Remote,
 		// The third capability question. It drove the Confined stamp and
 		// plan-mode denial from the day it was added and reached no client, so
 		// the prompt could say "not sandboxed" about a go-to-definition call
