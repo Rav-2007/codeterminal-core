@@ -314,6 +314,8 @@ var notYetPortedToTUI = map[string]string{
 	"cost":   "the last turn's bill on its own. The TUI's /usage reports the session, which covers the same figures over a wider window",
 	"status": "workspace, model, tools, key and daemon in one answer; the terminal spreads these across /context, /account and /mcp-server",
 	"doctor": "checks the things that commonly stop a first run working; written for the install the extension has and the terminal does not",
+	"mcp": "opens a dialog of every MCP server by source, with its state and Authenticate, Set key and Check connection " +
+		"(2026-10-15); the terminal manages its servers with /mcp-server and has no such dialog yet",
 }
 
 // notYetPorted are commands the VS Code client WILL have and does not yet --
