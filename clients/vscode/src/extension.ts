@@ -25,7 +25,7 @@ import { cachedMcpEnv, loadMcpEnv } from './mcpSecrets';
 import { useSpecStore } from './specWorkflow';
 import { McpServersProvider, registerMcpServers } from './mcpServersView';
 import { McpMarketplace, handleMarketplaceUri } from './mcpMarketplace';
-import { WORKING_FOLDER_KEY, chooseWorkingFolder, setActiveWorkingFolder } from './workingFolder';
+import { FOLDERS_NOTED_KEY, WORKING_FOLDER_KEY, chooseWorkingFolder, otherFoldersNotice, setActiveWorkingFolder } from './workingFolder';
 import { setPagesContext } from './chatPages/pagesHost';
 
 let supervisor: DaemonSupervisor | undefined;
@@ -82,6 +82,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (working.warning) {
     void vscode.window.showWarningMessage(working.warning);
   }
+  // The other folders open in this window, said once each (workingFolder.ts).
+  const sayOtherFolders = (): void => {
+    const now = (vscode.workspace.workspaceFolders ?? []).map((f) => ({ name: f.name, fsPath: f.uri.fsPath }));
+    const notice = otherFoldersNotice(now, workspacePath, context.workspaceState.get<string[]>(FOLDERS_NOTED_KEY) ?? []);
+    if (!notice.message) {
+      return;
+    }
+    void context.workspaceState.update(FOLDERS_NOTED_KEY, notice.noted);
+    const choose = 'Choose Folder';
+    void vscode.window.showInformationMessage(notice.message, choose).then((a) => {
+      if (a === choose) {
+        void vscode.commands.executeCommand('mochiii.chooseWorkingFolder');
+      }
+    });
+  };
+  sayOtherFolders();
 
   // BEFORE anything connects, including the supervisor's first probe. The
   // daemon publishes its lockfile under a name derived from this workspace, so
@@ -457,19 +473,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // A folder added to the window is not one Mochiii can reach until it is
     // chosen: say so when it happens, instead of letting a tool fail on it.
     vscode.workspace.onDidChangeWorkspaceFolders((e) => {
-      const folders = vscode.workspace.workspaceFolders ?? [];
-      if (e.added.length === 0 || folders.length < 2 || !workspacePath) {
-        return;
+      if (e.added.length > 0) {
+        sayOtherFolders();
       }
-      const current = folders.find((f) => f.uri.fsPath === workspacePath)?.name ?? workspacePath;
-      const choose = 'Choose Folder';
-      void vscode.window
-        .showInformationMessage(`Mochiii works in one folder: ${current}. ${e.added.map((f) => f.name).join(', ')} is not part of it.`, choose)
-        .then((a) => {
-          if (a === choose) {
-            void vscode.commands.executeCommand('mochiii.chooseWorkingFolder');
-          }
-        });
     }),
     vscode.commands.registerCommand('mochiii.restartDaemon', async () => {
       if (!supervisor) {

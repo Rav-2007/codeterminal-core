@@ -64,7 +64,16 @@ export interface EditorContext {
   openTabs: string[];
   /** True when openTabs was cut at maxTabs. */
   tabsClipped: boolean;
+  /**
+   * The OTHER folders open in this window, which Mochiii does not work in, and
+   * the name of the one it does. Absent with a single folder.
+   */
+  otherFolders?: { name: string; path: string }[];
+  workingFolder?: string;
 }
+
+/** Most other folders named; a window with more is unusual and the rest are said to exist. */
+export const maxOtherFolders = 10;
 
 /**
  * relativeToWorkspace returns uri's path relative to root, or '' when the file
@@ -157,6 +166,23 @@ export function collectEditorContext(root: string): EditorContext {
 
   const ctx: EditorContext = { ...empty };
 
+  // THE OTHER FOLDERS OPEN IN THIS WINDOW (2026-10-15). The daemon works in
+  // one folder (workingFolder.ts), and nothing told the model the window had
+  // more: asked "can you see the folder in the explorer" with new_file open
+  // beside the working folder, it listed its own folder and said there were
+  // "no other files or folders" -- true of where it looked, wrong as an
+  // answer. Named here, with where they are, so it can say so -- and look in
+  // one by its absolute path, which the user approves.
+  const others = (vscode.workspace.workspaceFolders ?? []).filter(
+    (f) => f.uri.scheme === 'file' && path.resolve(f.uri.fsPath) !== path.resolve(root)
+  );
+  if (others.length > 0) {
+    ctx.workingFolder =
+      (vscode.workspace.workspaceFolders ?? []).find((f) => path.resolve(f.uri.fsPath) === path.resolve(root))?.name ??
+      path.basename(root);
+    ctx.otherFolders = others.map((f) => ({ name: f.name, path: f.uri.fsPath }));
+  }
+
   const editor = vscode.window.activeTextEditor;
   if (editor) {
     const rel = relativeToWorkspace(editor.document.uri, root);
@@ -232,11 +258,29 @@ export function collectEditorContext(root: string): EditorContext {
  * off silently.
  */
 export function formatEditorContext(ctx: EditorContext): string {
-  if (ctx.activeFile === '' && ctx.openTabs.length === 0) {
+  const others = ctx.otherFolders ?? [];
+  if (ctx.activeFile === '' && ctx.openTabs.length === 0 && others.length === 0) {
     return '';
   }
 
   const lines: string[] = ['--- editor state (what the user is looking at; not their words) ---'];
+
+  if (others.length > 0) {
+    const shown = others.slice(0, maxOtherFolders).map((f) => `${f.name} (${f.path})`);
+    const more = others.length > maxOtherFolders ? `, and ${others.length - maxOtherFolders} more` : '';
+    lines.push(
+      `Folders open in this window: you work in ${ctx.workingFolder ?? 'the first'}. Also open: ${shown.join(', ')}${more}. ` +
+        'Your search, edit and command tools reach only the folder you work in, so a question about the window ' +
+        'is not answered by listing it alone: say which folders are open. list_directory and read_file can look ' +
+        'inside another one by its absolute path (the user is asked first). To work in another folder, the user ' +
+        'runs "Mochiii: Choose Working Folder".'
+    );
+  }
+
+  if (ctx.activeFile === '' && ctx.openTabs.length === 0) {
+    lines.push('--- end editor state ---');
+    return lines.join('\n');
+  }
 
   if (ctx.activeFile === '') {
     lines.push('Active editor: none (no file-backed editor is focused).');
