@@ -30,6 +30,7 @@ func (s *Server) credentialValuesLocked() []string {
 		s.apiKey,
 		os.Getenv("MOCHIII_API_KEY"),
 		os.Getenv("MOCHIII_PROXY_KEY"),
+		s.githubTokenForScrub(), // githubcred.go: kept on disk, but the daemon holds it to use it
 	}, s.launchSecrets...) {
 		if strings.TrimSpace(v) != "" {
 			vals = append(vals, v)

@@ -1,6 +1,6 @@
 # Documentation index
 
-**83 documents: 74 in `docs/`, 1 in `docs/ARCHIVE/`, and 8 at the repository root.**
+**84 documents: 75 in `docs/`, 1 in `docs/ARCHIVE/`, and 8 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -120,6 +120,7 @@ a refactor or fails loudly; a line number silently points at something else.
 | [`MCP_MASTER.md`](MCP_MASTER.md) | Front door for agent mode / MCP; links to its own evidence. |
 | [`MCP_DEBUG_PLAYBOOK.md`](MCP_DEBUG_PLAYBOOK.md) | Operational: diagnosing a misbehaving MCP server. |
 | [`MCP_LANE_B_THREAT_MODEL.md`](MCP_LANE_B_THREAT_MODEL.md) | Why Lane B is **unconfined**, stated plainly. Read before touching agent mode. |
+| [`GITHUB_THREAT_MODEL.md`](GITHUB_THREAT_MODEL.md) | What Mochiii's GitHub connection holds, reads and sends: the bot token, the one host, text anyone can write. Grows with each phase. Coderefs-enforced. |
 | [`MIGRATION_RUNBOOK_0000_0004.md`](MIGRATION_RUNBOOK_0000_0004.md) | Applying Supabase migrations by hand. Needs dashboard access. |
 | [`ENTERPRISE_QA_MASTER.md`](ENTERPRISE_QA_MASTER.md) | The whole-product QA campaign definition. |
 | [`SPEC_WORKFLOW.md`](SPEC_WORKFLOW.md) | The spec workflow: `/spec` writes one, then build to it and check the result against it, approving every change. |

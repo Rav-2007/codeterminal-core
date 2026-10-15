@@ -50,6 +50,13 @@ type serverExtras struct {
 	// to ask them their tools, and two at once would start each twice; an add
 	// and a remove must not interleave their read-change-write of one file.
 	mcpAdminMu sync.Mutex
+
+	// githubCredPath is the file the GitHub token is kept in (githubcred.go).
+	// Empty means there is none -- every Server built outside main -- so a
+	// test never reads the developer's own token.
+	githubCredPath string
+	// github is what the daemon knows about GitHub (github.go).
+	github githubState
 }
 
 // handleConnectOrMCP answers whichever of the two requests serveConn's connect
@@ -65,8 +72,19 @@ type serverExtras struct {
 //
 // A RulesRequest (userrules.go) came through the same branch on 2026-10-13, for
 // the same reason and under the same rule: its payload is the user's own words
-// and is not logged either.
+// and is not logged either. A GitHubRequest (githubrequest.go) followed on
+// 2026-10-15: one of them carries a GitHub token.
 func (s *Server) handleConnectOrMCP(ctx context.Context, enc *json.Encoder, raw json.RawMessage, connectReq protocol.ConnectRequest) {
+	if isGitHubRequest(raw) {
+		var githubReq protocol.GitHubRequest
+		if err := json.Unmarshal(raw, &githubReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
+			s.logger.Print("github request decode error")
+			return
+		}
+		s.handleGitHub(ctx, enc, githubReq)
+		return
+	}
 	if isRulesRequest(raw) {
 		var rulesReq protocol.RulesRequest
 		if err := json.Unmarshal(raw, &rulesReq); err != nil {

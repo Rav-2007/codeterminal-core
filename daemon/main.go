@@ -493,6 +493,7 @@ func main() {
 			configPath:      absoluteOrAsGiven(resolvedConfigPath),
 			userServersPath: userServersPathOrNone(logger),
 			mcpRunDir:       mcpRunDirOrNone(logger),
+			githubCredPath:  githubCredPathOrNone(logger),
 		},
 		modelOverride:           *modelOverride,
 		systemPrompt:            systemPrompt,

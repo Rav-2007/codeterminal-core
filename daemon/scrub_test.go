@@ -12,16 +12,20 @@ import (
 // pattern in scrubPatterns, built to satisfy each regex's length/charset
 // requirements exactly. None of these are live credentials.
 var fakeSecrets = map[string]string{
-	"openai_key":           "sk-" + strings.Repeat("a1B2", 6), // 24 chars, >= 20
-	"aws_access_key":       "AKIA1234567890ABCDEF",            // AKIA + 16
-	"github_token":         "ghp_" + strings.Repeat("x9Y8", 6),
-	"slack_token":          "xoxb-1234567890-abcdefghijklmno",
-	"google_key":           "AIza" + strings.Repeat("q", 35),
-	"supabase_secret":      "sb_secret_" + strings.Repeat("z7", 12),
-	"supabase_publishable": "sb_publishable_" + strings.Repeat("z7", 12),
-	"mochiii_key":          "mochi_" + strings.Repeat("0a1b2c3d4e", 3), // 30 hex chars
-	"stripe_secret_key":    "sk_live_" + strings.Repeat("4aB7", 6),
-	"private_key_block":    "-----BEGIN PRIVATE KEY-----\nMIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT\n-----END PRIVATE KEY-----",
+	"openai_key":     "sk-" + strings.Repeat("a1B2", 6), // 24 chars, >= 20
+	"aws_access_key": "AKIA1234567890ABCDEF",            // AKIA + 16
+	"github_token":   "ghp_" + strings.Repeat("x9Y8", 6),
+	// A fine-grained GitHub token: github_pat_, 22 characters, '_', 59 more.
+	// The shape GitHub recommends -- and the one /github connect is most
+	// likely to be handed -- and the pattern above did not know it.
+	"github_fine_grained_token": "github_pat_11" + strings.Repeat("AbC9", 5) + "_" + strings.Repeat("xY7_z", 11) + "Q2w4",
+	"slack_token":               "xoxb-1234567890-abcdefghijklmno",
+	"google_key":                "AIza" + strings.Repeat("q", 35),
+	"supabase_secret":           "sb_secret_" + strings.Repeat("z7", 12),
+	"supabase_publishable":      "sb_publishable_" + strings.Repeat("z7", 12),
+	"mochiii_key":               "mochi_" + strings.Repeat("0a1b2c3d4e", 3), // 30 hex chars
+	"stripe_secret_key":         "sk_live_" + strings.Repeat("4aB7", 6),
+	"private_key_block":         "-----BEGIN PRIVATE KEY-----\nMIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT\n-----END PRIVATE KEY-----",
 	// The providers /connect accepts, in the shape each one really issues.
 	"openrouter_key":    "sk-or-v1-" + strings.Repeat("0a1b2c3d", 8), // 64 hex
 	"anthropic_key":     "sk-ant-api03-" + strings.Repeat("aB3_dE-5", 10),

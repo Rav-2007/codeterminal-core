@@ -113,6 +113,9 @@ var protectedTagFamilies = []string{
 	// message tells the model to follow this block, so a forged one would be
 	// a standing instruction written by a file or a web page.
 	"userrules",
+	// Text from the project's GitHub repository (githubtools.go): anyone can
+	// write an issue or a comment on a public one.
+	"githubcontent",
 }
 
 var protectedTagPatterns = compileProtectedTagPatterns()
@@ -179,6 +182,8 @@ var envelopeTagsInUse = []string{
 	commandOutputCloseTag,
 	userRulesOpenTag,
 	userRulesCloseTag,
+	githubContentOpenTagPrefix + `o/r" item="issue #1">`,
+	githubContentCloseTag,
 }
 
 // neutralizeDelimiters defuses any tag-like text inside untrusted retrieved

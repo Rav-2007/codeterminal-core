@@ -61,6 +61,9 @@ type chatExtras struct {
 	// that is safe to draw ("ravi@laptop"); empty when the system would not say.
 	// Stored once, before anything is drawn, and only ever drawn (whoami.go).
 	whoami string
+	// githubTokenEntry says the masked box is taking a GitHub token, not a
+	// provider key (github.go). Cleared by endConnect, with the box.
+	githubTokenEntry bool
 }
 
 // connInfo is what the daemon last said it is sending to.
@@ -194,6 +197,8 @@ func (m chatModel) handleSideAnswer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAccount(msg)
 	case rulesResultMsg: // not the line's, but chat.go has one case for all of these
 		return m.handleRulesResult(msg)
+	case githubResultMsg:
+		return m.handleGitHubResult(msg)
 	}
 	return m, nil
 }

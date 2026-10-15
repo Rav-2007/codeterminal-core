@@ -341,6 +341,12 @@ var notYetPorted = map[string]string{
 	"remember": "the daemon applies saved rules to every client; the commands that change them come to VS Code after its 0.2.0 overhaul",
 	"rules":    "ported together with /remember",
 	"forget":   "ported together with /remember",
+	// GitHub (protocol/github.go) is client-neutral in the daemon, as the rules
+	// are; the terminal has the commands first (owner's plan, 2026-10-15).
+	"github": "the daemon keeps the token for every client; the extension gets the commands after its 0.2.0 overhaul",
+	"issue":  "ported together with /github",
+	"issues": "ported together with /github",
+	"pr":     "ported together with /github",
 	// Long tasks (daemon/longtask.go) are terminal-first by the owner's
 	// decision (2026-09-30): the daemon side is client-neutral, and VS Code has
 	// no task meter or /task review yet.

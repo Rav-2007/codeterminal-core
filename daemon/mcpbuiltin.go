@@ -492,6 +492,9 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	// configurable -- every other tool in this function exists unconditionally
 	// and is governed only by policy.
 	tools = append(tools, s.webTools()...)
+	// GitHub's one read-only tool, present only while a token and this
+	// project's repository are set (githubtools.go).
+	tools = append(tools, s.githubTools()...)
 
 	// repo_map is READ-ONLY and belongs to every mode, plan included.
 	//
