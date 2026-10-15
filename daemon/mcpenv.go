@@ -41,10 +41,60 @@ var mcpEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
 // validMCPEnvName reports why name cannot be given a value, or nil.
 func validMCPEnvName(name string) error {
+	if envNameLooksLikeKey(name) {
+		return errKeyAsEnvName
+	}
 	if !mcpEnvNamePattern.MatchString(name) {
 		return fmt.Errorf("%q is not a variable name (letters, digits and _, not starting with a digit)", truncateForClient(name, 40))
 	}
 	return mcp.ValidateEnvAllowList([]string{name})
+}
+
+// A KEY PASTED WHERE A VARIABLE NAME GOES.
+//
+// "sbp_" and forty hex digits is a legal variable name, so the name pattern
+// lets a Supabase token through; it was then stored in mcp-servers.json, shown
+// on the server's row as "needs sbp_…", and written into the agent's setup
+// section, which goes to the model (FOUND 2026-10-15, live test). A real
+// variable name is words joined by '_'; a key has a long run that mixes letters
+// and digits, or one of the prefixes the big providers stamp on theirs.
+var (
+	keyPrefixPattern = regexp.MustCompile(`^(sbp_|gh[pousr]_|github_pat_|glpat_|sk_live_|sk_test_|rk_live_|pk_live_|AKIA[0-9A-Z]{12})`)
+	keyRunPattern    = regexp.MustCompile(`[A-Za-z0-9]{16,}`)
+	errKeyAsEnvName  = fmt.Errorf("that looks like a key, not a variable name. Give the variable's NAME " +
+		"(for example SUPABASE_ACCESS_TOKEN), then put the key itself in with Set key")
+)
+
+// envNameLooksLikeKey reports whether name is more likely a secret than the
+// name of a variable. Never repeat name in a message when it is.
+func envNameLooksLikeKey(name string) bool {
+	if keyPrefixPattern.MatchString(name) {
+		return true
+	}
+	for _, run := range keyRunPattern.FindAllString(name, -1) {
+		if strings.ContainsAny(run, "0123456789") && strings.IndexFunc(run, unicode.IsLetter) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// maskedEnvNames is names as they may be shown: one that looks like a key
+// keeps its first four characters and loses the rest, so a server saved
+// before envNameLooksLikeKey existed stops showing its key everywhere it is
+// listed -- including the agent's setup section.
+func maskedEnvNames(names []string) []string {
+	if !slices.ContainsFunc(names, envNameLooksLikeKey) {
+		return names
+	}
+	out := make([]string, len(names))
+	for i, n := range names {
+		if envNameLooksLikeKey(n) {
+			n = n[:min(4, len(n))] + "…(a key, not a variable name: change this server)"
+		}
+		out[i] = n
+	}
+	return out
 }
 
 // validMCPEnvValue reports why value cannot be stored, or nil. The error never

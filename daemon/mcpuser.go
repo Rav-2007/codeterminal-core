@@ -147,6 +147,9 @@ func validateUserServer(name string, srv MCPServerConfig) error {
 			return fmt.Errorf("the env entry for %q carries a value; this list takes variable NAMES only, passed "+
 				"through from the daemon's environment, so that a secret is never stored or shown", envName)
 		}
+		if envNameLooksLikeKey(env) {
+			return errKeyAsEnvName
+		}
 	}
 	if err := validateServerBlock(srv); err != nil {
 		return err

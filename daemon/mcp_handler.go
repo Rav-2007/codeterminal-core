@@ -179,8 +179,8 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 		state := s.mcpStates.get(name)
 		out = append(out, protocol.MCPServerInfo{
 			Name: name, Command: commandLine(srv), Source: source, Disabled: srv.Disabled,
-			Program: srv.Command, Args: srv.Args, Env: srv.Env, Cwd: srv.Cwd,
-			EnvMissing: s.envMissing(name, srv.Env), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
+			Program: srv.Command, Args: srv.Args, Env: maskedEnvNames(srv.Env), Cwd: srv.Cwd,
+			EnvMissing: maskedEnvNames(s.envMissing(name, srv.Env)), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
 			State: state.state, StateDetail: state.detail,
 		})
 	}

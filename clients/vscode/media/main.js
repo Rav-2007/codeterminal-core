@@ -2998,6 +2998,10 @@
     if (slashIndex >= items.length) {
       slashIndex = 0;
     }
+    // The menu is rebuilt on every arrow key, which resets its scroll to the
+    // top; keep where it was and then bring the active row into view.
+    const scrollTop = slashMenuEl.scrollTop;
+    let activeBtn = null;
     clearChildren(slashMenuEl);
     items.forEach((c, i) => {
       const btn = document.createElement('button');
@@ -3005,6 +3009,7 @@
       btn.setAttribute('role', 'option');
       if (i === slashIndex) {
         btn.className = 'active';
+        activeBtn = btn;
       }
       const name = document.createElement('span');
       name.className = 'slash-name';
@@ -3021,6 +3026,17 @@
       slashMenuEl.appendChild(btn);
     });
     slashMenuEl.classList.add('visible');
+    slashMenuEl.scrollTop = scrollTop;
+    if (activeBtn) {
+      // Scroll the menu only, never the chat behind it.
+      const top = activeBtn.offsetTop;
+      const bottom = top + activeBtn.offsetHeight;
+      if (top < slashMenuEl.scrollTop) {
+        slashMenuEl.scrollTop = top;
+      } else if (bottom > slashMenuEl.scrollTop + slashMenuEl.clientHeight) {
+        slashMenuEl.scrollTop = bottom - slashMenuEl.clientHeight;
+      }
+    }
   }
 
   // A TRAILING SPACE ONLY WHERE AN ARGUMENT GOES. Every completion used to add
