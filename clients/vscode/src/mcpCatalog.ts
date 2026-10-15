@@ -112,6 +112,23 @@ export function validServerName(id: unknown): id is string {
   );
 }
 
+/**
+ * looksLikeKey is true when what was typed as a variable NAME is more likely a
+ * key: "sbp_" and forty hex digits is a legal name, and a Supabase token saved
+ * that way was shown on the server's row and sent to the model (2026-10-15).
+ * Mirrors the daemon's envNameLooksLikeKey (daemon/mcpenv.go). A message about
+ * such a name must never repeat it.
+ */
+export function looksLikeKey(name: string): boolean {
+  if (/^(sbp_|gh[pousr]_|github_pat_|glpat_|sk_live_|sk_test_|rk_live_|pk_live_|AKIA[0-9A-Z]{12})/.test(name)) {
+    return true;
+  }
+  return (name.match(/[A-Za-z0-9]{16,}/g) ?? []).some((run) => /[0-9]/.test(run) && /[A-Za-z]/.test(run));
+}
+
+export const KEY_AS_NAME_HINT =
+  "That looks like a key, not a variable name. Give the variable's NAME (for example SUPABASE_ACCESS_TOKEN)";
+
 export function validEnvName(name: unknown): name is string {
   return (
     typeof name === 'string' &&

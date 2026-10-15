@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { MCPRequest, MCPServerInfo, RESTART_HINT, sendMCP } from './daemonClient';
-import { validEnvName, validServerName } from './mcpCatalog';
+import { KEY_AS_NAME_HINT, looksLikeKey, validEnvName, validServerName } from './mcpCatalog';
 import { splitArgs } from './mcpInstall';
 import type { McpServersProvider } from './mcpServersView';
 
@@ -118,6 +118,9 @@ export function requestFromForm(form: McpForm): { req?: Request; error?: string 
     const n = row.name.trim();
     if (!n) {
       continue;
+    }
+    if (looksLikeKey(n)) {
+      return { error: `${KEY_AS_NAME_HINT} in the name box, and paste the key in the value box beside it.` };
     }
     if (!validEnvName(n)) {
       return { error: `${n} is not a variable Mochiii will pass to a server.` };

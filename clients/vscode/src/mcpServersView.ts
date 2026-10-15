@@ -34,7 +34,7 @@ import {
   RESTART_HINT,
   sendMCP,
 } from './daemonClient';
-import { validEnvName, validServerName } from './mcpCatalog';
+import { KEY_AS_NAME_HINT, looksLikeKey, validEnvName, validServerName } from './mcpCatalog';
 import { ServerSpec, splitArgs, storeServer } from './mcpInstall';
 import { cachedMcpEnv, storeMcpEnv, storedMcpEnvNames } from './mcpSecrets';
 import { McpPopupHost, mcpPopupHost } from './mcpPopup';
@@ -363,6 +363,9 @@ export async function askForServer(existing?: MCPServerInfo): Promise<ServerSpec
         if (n.includes('=')) {
           // The value is not repeated back: this box may be on a shared screen.
           return `${n.split('=')[0]} carries a value. Give the variable's NAME only; its value stays in your environment`;
+        }
+        if (looksLikeKey(n)) {
+          return `${KEY_AS_NAME_HINT} here; after adding, put the key itself in with Set key`;
         }
         if (!validEnvName(n)) {
           return `${n} is not a variable Mochiii will pass to a server`;

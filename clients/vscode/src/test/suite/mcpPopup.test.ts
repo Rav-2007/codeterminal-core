@@ -73,6 +73,12 @@ suite('the MCP pop-up turns a form into the daemon request', () => {
     assert.ok(requestFromForm({ ...base, commandLine: '' }).error);
     const forbidden = requestFromForm({ ...base, commandLine: 'npx x', env: [{ name: 'MOCHIII_API_KEY', value: 'sk-1' }] });
     assert.ok(forbidden.error && !forbidden.error.includes('sk-1'), forbidden.error);
+    // A key pasted in the NAME box is a legal-looking name; it was saved and shown (2026-10-15).
+    const pasted = 'sbp_' + '0a1b'.repeat(10);
+    const keyAsName = requestFromForm({ ...base, commandLine: 'npx x', env: [{ name: pasted, value: '' }] });
+    assert.ok(keyAsName.error?.includes('looks like a key') && !keyAsName.error.includes('0a1b'), keyAsName.error);
+    const realName = requestFromForm({ ...base, commandLine: 'npx x', env: [{ name: 'SUPABASE_ACCESS_TOKEN', value: pasted }] });
+    assert.strictEqual(realName.error, undefined);
   });
 });
 

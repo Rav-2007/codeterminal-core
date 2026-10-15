@@ -3025,6 +3025,7 @@
     // The menu is rebuilt on every arrow key, which resets its scroll to the
     // top; keep where it was and then bring the active row into view.
     const scrollTop = slashMenuEl.scrollTop;
+    /** @type {HTMLButtonElement | null} */
     let activeBtn = null;
     clearChildren(slashMenuEl);
     items.forEach((c, i) => {
