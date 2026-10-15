@@ -1043,6 +1043,10 @@ var builtinToolClasses = map[string]builtinClass{
 	"sandbox_exec":              classExecutes,
 	"web_search":                classNetwork,
 	"web_fetch":                 classNetwork,
+	// Registered only while a GitHub token and this project's repository are
+	// set (githubtools.go). It reads GitHub's API and carries nothing the
+	// model wrote but numbers and a label.
+	"github": classNetwork,
 	// Registered only in /spec check and build turns (mcpbuiltin.go), which is
 	// how they were left out: they record a verdict and a task list.
 	"record_criterion": classConfined,

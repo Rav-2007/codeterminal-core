@@ -597,6 +597,9 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /remember tests here are run with make check   # (TUI) keep a rule for this project
 /rules                 # (TUI) the saved rules, numbered, and the file they are kept in
 /forget 2              # (TUI) remove rule 2
+/github                # (TUI) Mochiii's GitHub account and this project's repository; /github connect
+/issue 104             # (TUI) an issue and its comments, attached to your next question
+/pr 31 log             # (TUI) why a pull request's CI failed, attached to your next question
 
 /help /mcp-server /explain /test /doc /security
 /review /plan /run /clear /compact /context /git /init /search /exit
@@ -1241,6 +1244,47 @@ and every later chat in that project starts with it:
 
 A rule is an instruction about the work. It does not change which tools the
 model has or what needs your approval.
+
+### GitHub
+
+Mochiii reads the project's GitHub repository: issues, pull requests, and why
+CI failed. Opening pull requests, answering review comments and merging are
+planned and not built yet.
+
+```text
+/github connect   # paste a token into a hidden box
+/github           # who Mochiii is on GitHub, and this project's repository
+/issue 104        # an issue and its comments
+/issues bug       # the open issues, optionally with a label
+/pr               # the open pull requests
+/pr 31            # one: its checks, reviews, and whether it can merge
+/pr 31 log        # the lines that say why its CI failed, not the whole log
+```
+
+`/issue`, `/pr 31` and `/pr 31 log` attach what they show to your next
+question, once, like `/git`. In agent mode the model can read the same things
+itself with one read-only tool, `github`.
+
+- **Give Mochiii its own GitHub account.** GitHub never lets the author of a
+  pull request approve it, so a token for your own account would leave you
+  unable to approve Mochiii's work; connect warns when that is what it was
+  given. Create an account, invite it to the repository, sign in as it, and
+  make a classic token with the scope `repo` only (Settings > Developer
+  settings > Personal access tokens). An account invited to one repository
+  reaches only that one, whatever the token's scopes say. Leave out
+  `workflow`.
+- **The token is the daemon's.** It is checked with GitHub before it is kept,
+  stored in `~/.mochiii/github.json` (readable only by you), and never shown
+  to the model, put in a command's environment, or logged. The secret
+  scrubber knows both GitHub token shapes.
+- **One repository per project**, read from the `origin` remote and pinned at
+  connect. If `origin` changes later, `/github` says so and Mochiii keeps the
+  pinned one until you run `/github use`.
+- **Text from GitHub is not an instruction.** Anyone can write on a public
+  repository, so what Mochiii reads there reaches the model fenced, scrubbed,
+  and with each author's relationship to the repository beside their name.
+  The tool takes only a number, a kind and a label, so nothing the model has
+  read can be sent anywhere through it.
 
 ### Embedding helper
 

@@ -196,6 +196,7 @@ func (m chatModel) beginConnect() (tea.Model, tea.Cmd) {
 func (m *chatModel) endConnect() {
 	m.input.SetValue("")
 	m.connectBase = ""
+	m.githubTokenEntry = false
 	m.input.EchoMode = textinput.EchoNormal
 	m.input.Placeholder = defaultInputPlaceholder
 	m.state = stateIdle
@@ -207,6 +208,11 @@ func (m *chatModel) endConnect() {
 // editing behaves normally -- but it must never fall through to the ordinary
 // prompt path, which would send the typed key to the model as a question.
 func (m chatModel) handleConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.githubTokenEntry {
+		if next, cmd, handled := m.handleGitHubTokenKey(msg.String()); handled {
+			return next, cmd
+		}
+	}
 	switch msg.String() {
 	case "esc":
 		if m.setup.step == setupKey {

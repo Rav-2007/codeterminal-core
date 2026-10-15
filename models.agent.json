@@ -95,6 +95,7 @@
         "sandbox_exec": "ask",
         "web_search": "allow",
         "web_fetch": "allow",
+        "github": "allow",
         "record_criterion": "allow",
         "update_tasks": "allow",
         "record_finding": "allow",

@@ -106,6 +106,10 @@ var scrubPatterns = []struct {
 	{"stripe_secret_key", regexp.MustCompile(`\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}`)},
 	{"aws_access_key", regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
 	{"github_token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`)},
+	// GitHub's fine-grained tokens: github_pat_, then 22 and 59 characters
+	// joined by '_'. Missed until 2026-10-15, when /github connect made them a
+	// token this daemon is handed.
+	{"github_fine_grained_token", regexp.MustCompile(`github_pat_[A-Za-z0-9_]{60,}`)},
 	{"slack_token", regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`)},
 	{"google_key", regexp.MustCompile(`AIza[0-9A-Za-z_\-]{35}`)},
 	{"supabase_secret", regexp.MustCompile(`sb_secret_[A-Za-z0-9]{20,}`)},
