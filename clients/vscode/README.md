@@ -35,8 +35,10 @@ shares it rather than racing to start its own.
 ## Getting started
 
 1. Install the extension and open a trusted workspace.
-2. Run **Mochiii: Open Chat** (Ctrl/Cmd+Shift+P). The chat opens in the
-   secondary side bar on the right, so your files stay open beside it. The
+2. Click Mochiii's lotus icon in the Activity Bar, or run **Mochiii: Open
+   Chat** (Ctrl/Cmd+Shift+P), which opens it in the secondary side bar on the
+   right so your files stay open beside it. The chat lives in one place at a
+   time; the other offers **Move the chat here**. The
    buttons beside History open **Customize** (MCP servers, specs, tools),
    **Account** (provider, key, model, spend) and **Settings**.
 3. `/connect` a provider, or set `mochiii.apiBase` to a local model server.
@@ -46,8 +48,8 @@ shares it rather than racing to start its own.
 
 Linux x64 and Windows x64 today (no macOS build yet). On Linux the bundled
 runtime needs **glibc 2.34 or newer** — Ubuntu 22.04+, Debian 12+, Fedora 35+,
-RHEL 9+; Ubuntu 20.04, Debian 11 and RHEL 8 are too old. This is a **preview**
-release — expect rough edges, and [tell us about them](https://github.com/Rav-2007/codeterminal-core/issues).
+RHEL 9+; Ubuntu 20.04, Debian 11 and RHEL 8 are too old. Found a rough edge?
+[Tell us about it](https://github.com/Rav-2007/codeterminal-core/issues).
 
 Known limits, worth knowing before relying on them: no native VS Code diff
 view/inline decorations, ghost text, or error interceptor yet; no remote-host

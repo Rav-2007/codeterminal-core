@@ -59,6 +59,18 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 	if s.cfg == nil {
 		return protocol.MCPResponse{Error: "this daemon has no configuration loaded"}
 	}
+	// A sign-in's waits never hold the admin lock: they wait on a browser, and
+	// every other MCP request -- the sidebar's refresh included -- would wait
+	// behind them (mcpoauth.go).
+	switch req.Action {
+	case protocol.MCPActionAuthWait:
+		return s.mcpAuthWait(req)
+	case protocol.MCPActionAuthComplete:
+		return s.mcpAuthComplete(req)
+	case protocol.MCPActionAuthCancel:
+		return s.mcpAuthCancel(req)
+	}
+
 	s.mcpAdminMu.Lock()
 	defer s.mcpAdminMu.Unlock()
 	s.refreshMCPSecrets()
@@ -89,11 +101,25 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 		return s.mcpSetDisabled(ctx, req, true)
 	case protocol.MCPActionSetEnv:
 		return s.mcpSetEnv(req)
+	case protocol.MCPActionCheck:
+		return s.mcpCheck(ctx, req)
+	case protocol.MCPActionGet:
+		return s.mcpGet(req)
+	case protocol.MCPActionAddJSON:
+		return s.mcpAddJSON(ctx, req)
+	case protocol.MCPActionAuthStart:
+		return s.mcpAuthStart(req)
+	case protocol.MCPActionSignOut:
+		return s.mcpSignOut(req)
+	case protocol.MCPActionApprove:
+		return s.mcpApprove(req, protocol.MCPApprovalApproved)
+	case protocol.MCPActionReject:
+		return s.mcpApprove(req, protocol.MCPApprovalRejected)
 	}
 	return protocol.MCPResponse{Error: fmt.Sprintf("unknown mcp action %q; the actions are %s", truncateForClient(req.Action, 32),
 		strings.Join([]string{protocol.MCPActionList, protocol.MCPActionServers, protocol.MCPActionTools, protocol.MCPActionAdd,
 			protocol.MCPActionUpdate, protocol.MCPActionRemove, protocol.MCPActionEnable, protocol.MCPActionDisable,
-			protocol.MCPActionSetEnv}, ", "))}
+			protocol.MCPActionSetEnv, protocol.MCPActionCheck, protocol.MCPActionGet, protocol.MCPActionAddJSON}, ", "))}
 }
 
 // mcpList reports the tools this daemon would offer the model on its next
@@ -120,7 +146,7 @@ func (s *Server) mcpList(ctx context.Context) protocol.MCPResponse {
 		return resp
 	}
 
-	lctx, cancel := context.WithTimeout(ctx, cfg.MCP.Budget.resolvedConnectTimeout()+mcpListGrace)
+	lctx, cancel := context.WithTimeout(ctx, listDeadline(cfg))
 	defer cancel()
 	registry, connectErrs := s.buildRegistry(lctx, s.logger, &proposalSink{}, "")
 	defer func() {
@@ -129,6 +155,10 @@ func (s *Server) mcpList(ctx context.Context) protocol.MCPResponse {
 		}
 	}()
 	report.WriteString("\n")
+	_, _ = registry.Advertised(lctx)
+	s.mcpStates.listed(registry.Listed())
+	resp.Servers = s.serverInfos(cfg)
+	writeServerStatus(&report, resp.Servers)
 	if err := writeToolReport(lctx, &report, &report, cfg, s.configPathOrDefault(), registry, connectErrs); err != nil {
 		return protocol.MCPResponse{Error: "listing the tools: " + err.Error()}
 	}
@@ -175,20 +205,42 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 		source := protocol.MCPSourceUser
 		if _, fromConfig := s.cfg.MCP.Servers[name]; fromConfig {
 			source = protocol.MCPSourceConfig
+		} else if srv.project != "" {
+			source = protocol.MCPSourceProject
 		}
 		state := s.mcpStates.get(name)
-		out = append(out, protocol.MCPServerInfo{
+		var headerNames, headersMissing []string
+		if srv.remote() {
+			headerNames = sortedStringKeys(srv.Headers)
+			_, headersMissing = s.remoteHeaders(name, srv)
+		}
+		info := protocol.MCPServerInfo{
+			Transport: strings.ToLower(srv.Type), Headers: headerNames, HeadersMissing: headersMissing,
 			Name: name, Command: commandLine(srv), Source: source, Disabled: srv.Disabled,
-			Program: srv.Command, Args: srv.Args, Env: srv.Env, Cwd: srv.Cwd,
-			EnvMissing: s.envMissing(name, srv.Env), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
-			State: state.state, StateDetail: state.detail,
-		})
+			Program: srv.Command, Args: srv.Args, Env: maskedEnvNames(srv.Env), Cwd: srv.Cwd,
+			EnvMissing: maskedEnvNames(s.envMissing(name, srv.Env)), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
+			Warnings: missingTemplateWarnings(s.templateMissing(name, srv)),
+			State:    state.state, StateDetail: state.detail, ToolCount: state.tools, ToolsError: state.toolsErr,
+			ToolsListed: state.counted,
+			SignedIn:    srv.remote() && s.mcpSecrets.oauthOf(name, srv.URL) != nil,
+		}
+		if srv.remote() {
+			info.URL = shownURL(srv.URL)
+		}
+		if srv.project != "" {
+			info.Approval, info.Digest, info.ProjectFile = srv.approval, srv.digest, srv.project
+		}
+		info.StatusLine = mcpStatusLine(info)
+		out = append(out, info)
 	}
 	return out
 }
 
 // commandLine is a server's program and arguments as one line, for a person.
 func commandLine(srv MCPServerConfig) string {
+	if srv.remote() {
+		return strings.ToLower(srv.Type) + " " + shownURL(srv.URL)
+	}
 	return strings.TrimSpace(srv.Command + " " + strings.Join(srv.Args, " "))
 }
 
@@ -207,6 +259,9 @@ func changeWarning(name string, srv MCPServerConfig) string {
 
 // grantWarning is the text both warnings share, after their first words.
 func grantWarning(lead string, srv MCPServerConfig) string {
+	if srv.remote() {
+		return remoteWarning(lead, srv)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s will make this daemon run:\n\n    %s\n\n", lead, commandLine(srv))
 	b.WriteString("as an ordinary program with YOUR full privileges. Mochiii cannot confine an external MCP server: " +
@@ -214,6 +269,13 @@ func grantWarning(lead string, srv MCPServerConfig) string {
 		"What protects you is that each of its tools asks before it runs, and every call is in the audit log.")
 	if len(srv.Env) > 0 {
 		fmt.Fprintf(&b, "\n\nIt will be given these variables from the daemon's environment: %s.", strings.Join(srv.Env, ", "))
+	}
+	if len(srv.EnvMap) > 0 {
+		var parts []string
+		for _, k := range sortedStringKeys(srv.EnvMap) {
+			parts = append(parts, k+" = "+srv.EnvMap[k])
+		}
+		fmt.Fprintf(&b, "\n\nIt will also be given: %s.", strings.Join(parts, ", "))
 	}
 	b.WriteString("\n\n" + startsWhere(srv))
 	b.WriteString("\n\nOnly add a server whose program you trust.")
@@ -242,6 +304,54 @@ func grantWarning(lead string, srv MCPServerConfig) string {
 // down, and the answer says which of "it works" and "it is saved but did not
 // start" is true -- the same honesty /connect owes a key.
 func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace bool) protocol.MCPResponse {
+	srv := MCPServerConfig{
+		Command: strings.TrimSpace(req.Command), Args: req.Args, Env: req.Env,
+		AcknowledgedUnconfined: true, Cwd: strings.TrimSpace(req.Cwd),
+		ConnectTimeoutSeconds: req.ConnectTimeoutSeconds,
+	}
+	var headerValues map[string]string
+	if strings.TrimSpace(req.URL) != "" {
+		kind := strings.ToLower(strings.TrimSpace(req.Transport))
+		if kind == "" {
+			kind = "http"
+		}
+		srv = MCPServerConfig{Type: kind, URL: strings.TrimSpace(req.URL), AcknowledgedUnconfined: true,
+			ConnectTimeoutSeconds: req.ConnectTimeoutSeconds}
+		if req.Command != "" || len(req.Args) > 0 || len(req.Env) > 0 {
+			return protocol.MCPResponse{Error: "a server is either a URL or a command, not both"}
+		}
+		srv.Headers, headerValues = splitHeaders(req.Headers)
+	}
+	return s.mcpStoreBlockWith(ctx, strings.TrimSpace(req.Name), srv, req.EnvValues, headerValues, req.AcknowledgedUnconfined, replace)
+}
+
+// splitHeaders keeps a header's ${VAR} template in the block and takes any
+// other value out of it, to be kept as a key.
+func splitHeaders(given map[string]string) (block, values map[string]string) {
+	for _, name := range sortedStringKeys(given) {
+		v := strings.TrimSpace(given[name])
+		if block == nil {
+			block = map[string]string{}
+		}
+		if strings.Contains(v, "${") || v == "" {
+			block[name] = v
+			continue
+		}
+		block[name] = ""
+		if values == nil {
+			values = map[string]string{}
+		}
+		values[name] = v
+	}
+	return block, values
+}
+
+// mcpStoreBlockWith is mcpStore for a block already built: from a request's
+// parts, or from another client's JSON entry (mcpjson.go). headerValues are a
+// remote server's header values, kept as keys on the acknowledged step.
+func (s *Server) mcpStoreBlockWith(ctx context.Context, name string, srv MCPServerConfig, envValues, headerValues map[string]string,
+	acknowledged, replace bool) protocol.MCPResponse {
+	req := protocol.MCPRequest{EnvValues: envValues, AcknowledgedUnconfined: acknowledged}
 	nothing, done := "; nothing was added", "Added"
 	if replace {
 		nothing, done = "; nothing was changed", "Changed"
@@ -249,16 +359,19 @@ func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace 
 	if strings.TrimSpace(s.userServersPath) == "" {
 		return protocol.MCPResponse{Error: "this daemon has nowhere to store an added server"}
 	}
-	name := strings.TrimSpace(req.Name)
-	srv := MCPServerConfig{
-		Command: strings.TrimSpace(req.Command), Args: req.Args, Env: req.Env,
-		AcknowledgedUnconfined: true, Cwd: strings.TrimSpace(req.Cwd),
-	}
 	if err := validateUserServer(name, srv); err != nil {
 		return protocol.MCPResponse{Error: err.Error() + nothing}
 	}
 	if err := validEnvValues(srv.Env, req.EnvValues); err != nil {
 		return protocol.MCPResponse{Error: err.Error() + nothing}
+	}
+	for _, h := range sortedStringKeys(headerValues) {
+		if err := mcp.ValidateHeader(h, headerValues[h]); err != nil {
+			return protocol.MCPResponse{Error: err.Error() + nothing}
+		}
+		if err := validMCPEnvValue(headerValues[h]); err != nil {
+			return protocol.MCPResponse{Error: h + ": " + err.Error() + nothing}
+		}
 	}
 	if _, inConfig := s.cfg.MCP.Servers[name]; inConfig {
 		if replace {
@@ -286,9 +399,9 @@ func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace 
 		if replace {
 			warning = changeWarning(name, srv)
 		}
-		if len(req.EnvValues) > 0 {
+		if given := append(sortedStringKeys(req.EnvValues), sortedStringKeys(headerValues)...); len(given) > 0 {
 			warning += fmt.Sprintf("\n\nThe values you gave for %s are kept for this server only, in a file only you "+
-				"can read, and are never shown to the model.", strings.Join(sortedStringKeys(req.EnvValues), ", "))
+				"can read, and are never shown to the model.", strings.Join(given, ", "))
 		}
 		return protocol.MCPResponse{
 			Ok: false, AgentMode: s.cfg.MCP.Enabled, NeedsAcknowledgement: true, Detail: warning,
@@ -306,6 +419,14 @@ func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace 
 	// value for a variable the server no longer reads.
 	if err := s.storeServerEnv(name, srv.Env, req.EnvValues); err != nil {
 		return protocol.MCPResponse{Error: fmt.Sprintf("%s was saved, but its keys were not: %v. Set them with Set key", name, err)}
+	}
+	for _, h := range sortedStringKeys(headerValues) {
+		if err := s.mcpSecrets.setHeader(name, h, headerValues[h]); err != nil {
+			return protocol.MCPResponse{Error: fmt.Sprintf("%s was saved, but its %s header was not: %v. Set it with Set key", name, h, err)}
+		}
+	}
+	if len(headerValues) > 0 {
+		s.rebuildCredScrubber()
 	}
 	s.logger.Printf("mcp: server %s %s by the user (lane=third_party, unconfined): %s",
 		name, strings.ToLower(done), commandLine(srv))
@@ -398,7 +519,12 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 		notes = append(notes, fmt.Sprintf("Mochiii has no value for %s, so the server starts without it. "+
 			"Set it with `mcp set-key %s %s` or Set key in VS Code.", env, name, env))
 	}
-	if !filepath.IsAbs(srv.Command) {
+	if srv.remote() {
+		if _, missing := s.remoteHeaders(name, srv); len(missing) > 0 {
+			notes = append(notes, fmt.Sprintf("Mochiii has no value for its %s header, so the server will likely refuse it. "+
+				"Set it with Set key in VS Code or `mcp set-key %s --header %s`.", strings.Join(missing, ", "), name, missing[0]))
+		}
+	} else if !filepath.IsAbs(srv.Command) {
 		if _, err := lookPath(srv.Command); err != nil {
 			return fmt.Sprintf("%s %s, but %q was not found on this daemon's PATH, so it cannot start yet. "+
 				"Install it, or remove the server and add it again with the program's absolute path.", done, name, srv.Command), notes
@@ -411,7 +537,8 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 	// a server offering four tools was reported as "offers 4 tool(s)" while the
 	// model was going to be shown one of them, because this daemon's own tools
 	// had taken eleven of the twelve places on the menu.
-	tctx, cancel := context.WithTimeout(ctx, s.cfg.MCP.Budget.resolvedConnectTimeout()+mcpListGrace)
+	trial, _ := s.agentConfig()
+	tctx, cancel := context.WithTimeout(ctx, listDeadline(trial))
 	defer cancel()
 	registry, connectErrs := s.buildRegistry(tctx, s.logger, &proposalSink{}, "")
 	defer func() { _ = registry.Close() }()
@@ -422,6 +549,7 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 		}
 	}
 	tools, listErrs := registry.Advertised(tctx)
+	s.mcpStates.listed(registry.Listed())
 	var offered, leftOut []string
 	for _, tool := range tools {
 		if tool.Server == name {
@@ -445,16 +573,16 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 			"and each asks before it runs.", done, name, total, someNames(offered)), notes
 	}
 
+	// NOT "RAISE THE LIMIT" ANY MORE. The tools past the cap are not lost: each
+	// turn keeps the ones that fit the question best, and the model can look
+	// up the rest with find_tools (toolsearch.go). So the answer says that,
+	// and the setting is named only as the optional knob it now is.
 	limit := s.cfg.MCP.Budget.resolvedMaxAdvertisedTools()
-	reach := "none of them will reach the model"
-	if len(offered) > 0 {
-		reach = fmt.Sprintf("only %d of them will reach the model (%s)", len(offered), someNames(offered))
-	}
-	return fmt.Sprintf("%s %s. It started and offers %d tool(s), but %s: this daemon shows the model at most %d tools "+
-		"at a time, and %d of those places are taken by tools that come first. Left out: %s. "+
-		"To offer them, raise mcp.budget.max_advertised_tools in %s and restart the daemon -- each tool on the menu "+
-		"costs tokens on every request, which is why there is a limit.",
-		done, name, total, reach, limit, len(tools)-len(offered), someNames(leftOut), s.configPathOrDefault()), notes
+	return fmt.Sprintf("%s %s. It started and offers %d tool(s). The model is shown at most %d tools at a time, so "+
+		"each question gets the ones that fit it best and the model looks up the rest when a task needs them "+
+		"(%d are not on the default list: %s). Each asks before it runs. To show more at once, raise "+
+		"mcp.budget.max_advertised_tools in %s -- each tool on the list costs tokens on every request.",
+		done, name, total, limit, len(leftOut), someNames(leftOut), s.configPathOrDefault()), notes
 }
 
 // someNames lists names for a sentence, cutting a long list short.

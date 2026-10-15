@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 )
 
 // THE APPLY ORACLE SPOKE POSIX ERRNO.
@@ -49,10 +50,51 @@ import (
 // 7's no-absolute-paths property intact.
 func describeFileError(op, relPath, path string, err error) error {
 	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-		return fmt.Errorf("%s %s: is a directory; an edit block names a file, not a directory: %w", op, relPath, err)
+		return &dirError{op: op, path: relPath, cause: err}
 	}
 	if errors.Is(err, fs.ErrPermission) {
-		return fmt.Errorf("%s %s: permission denied: %w", op, relPath, err)
+		return &quietCause{msg: fmt.Sprintf("%s %s: permission denied", op, relPath), cause: err}
 	}
 	return fmt.Errorf("%s %s: %w", op, relPath, err)
 }
+
+// ErrIsDirectory is in the chain of every refusal whose path names an existing
+// folder, so a caller can tell that state apart without reading the wording.
+var ErrIsDirectory = errors.New("is a directory")
+
+// dirError is an edit aimed at a folder. FOUND 2026-10-15: asked to write a
+// login page "in the new_file", the model sent ~/Desktop/new_file -- an empty
+// FOLDER of that name -- and was told only "is a directory ... read
+// /home/<user>/Desktop/new_file: is a directory". That names the absolute path
+// this file promises never to name, and gives no next step, so the model
+// stopped. The message now says what to send instead.
+type dirError struct {
+	op, path string
+	cause    error
+}
+
+func (e *dirError) Error() string {
+	op := ""
+	if e.op != "" {
+		op = e.op + " "
+	}
+	return fmt.Sprintf("%s%s: is a directory, not a file -- an edit names one file. To create a file in "+
+		"this folder, give the file's own path, such as %s/<name>", op, e.path, strings.TrimRight(e.path, `/\`))
+}
+
+func (e *dirError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrIsDirectory}
+	}
+	return []error{ErrIsDirectory, e.cause}
+}
+
+// quietCause keeps its cause for errors.Is but out of the message: an
+// *os.PathError's text carries the absolute path (see describeFileError).
+type quietCause struct {
+	msg   string
+	cause error
+}
+
+func (e *quietCause) Error() string { return e.msg }
+func (e *quietCause) Unwrap() error { return e.cause }

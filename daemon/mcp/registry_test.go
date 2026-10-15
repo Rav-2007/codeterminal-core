@@ -352,3 +352,38 @@ func TestAdvertisedOrderIsStableAcrossCalls(t *testing.T) {
 		}
 	}
 }
+
+// Listed is each server's health as the last listing found it: a tool count
+// for one that answered, the error for one that did not, and nothing for the
+// built-ins. It is a copy, so a caller cannot change the registry through it.
+func TestListedRecordsEachServersLastAnswer(t *testing.T) {
+	r := NewRegistry(mapPolicy{}, 10)
+	if got := r.Listed(); len(got) != 0 {
+		t.Fatalf("before any listing Listed() = %v, want empty", got)
+	}
+	if err := r.RegisterBuiltin(newBuiltin("read_file")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AddServer("broken", &fakeClient{name: "broken", listErr: ErrServerUnavailable}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AddServer("fine", &fakeClient{name: "fine", tools: []Tool{{Name: "a"}, {Name: "b"}}}); err != nil {
+		t.Fatal(err)
+	}
+	r.Advertised(context.Background())
+
+	got := r.Listed()
+	if len(got) != 2 {
+		t.Fatalf("Listed() = %v, want the two third-party servers only", got)
+	}
+	if got["fine"].Tools != 2 || got["fine"].Err != nil {
+		t.Errorf("fine = %+v, want 2 tools and no error", got["fine"])
+	}
+	if !errors.Is(got["broken"].Err, ErrServerUnavailable) {
+		t.Errorf("broken = %+v, want its listing error", got["broken"])
+	}
+	delete(got, "fine")
+	if _, ok := r.Listed()["fine"]; !ok {
+		t.Error("changing the returned map changed the registry's record")
+	}
+}

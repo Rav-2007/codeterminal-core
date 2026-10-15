@@ -43,11 +43,13 @@ import {
 } from './daemonClient';
 import { ChatHost, panelHost, viewHost } from './chatHost';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
+import { ChatLocation, chatElsewhereHtml, chatElsewhereOptions } from './chatElsewhere';
 import { activeWorkingFolder } from './workingFolder';
 import { ConnectOutcome, connectKey, hasConnectKey } from './connectBridge';
 import { ANY_KEY_CHOICE, modelChoices, providerChoices } from './connectFlow';
 import { ICONS, chatPagesMarkup, chatPagesStyles, headerPageButtons } from './chatPages/markup';
-import { ChatPagesHost } from './chatPages/pagesHost';
+import { ChatPagesHost, currentPagesContext } from './chatPages/pagesHost';
+import { McpPopupHost, mcpPopupHost, setMcpPopupHost } from './mcpPopup';
 import { chatLookStyles } from './chatLook';
 import { mcpMarketplaceStyles } from './mcpMarketplace';
 import { editorContextForPrompt } from './editorContext';
@@ -110,6 +112,16 @@ export const CHAT_VIEW_TYPE = 'mochiiiChat';
 // with this string.
 export const CHAT_VIEW_ID = 'mochiii.chatView';
 
+// The same chat's second sidebar home: a view in Mochiii's own ACTIVITY BAR
+// container, so Mochiii has an icon beside Explorer, Search and the other
+// agents, as Claude Code and Codex do (2026-10-15). CHAT_VIEW_ID stays in the
+// secondary side bar, beside the files. One conversation, one live host at a
+// time: see chatElsewhere.ts.
+export const CHAT_ACTIVITY_VIEW_ID = 'mochiii.chatViewActivity';
+
+/** Every contributed chat view id; package.json and extension.ts must agree. */
+export const CHAT_VIEW_IDS: readonly string[] = [CHAT_VIEW_ID, CHAT_ACTIVITY_VIEW_ID];
+
 // How long the panel waits for the daemon to answer when it opens. Mochiii
 // starts only when it is used (package.json activationEvents), so the command
 // that opened this panel is usually what started the daemon a moment ago --
@@ -121,6 +133,18 @@ const PREFLIGHT_RETRY_MS = 300;
 // VS Code restores: scripts on, and local files from media/ and nowhere else.
 function chatWebviewOptions(extensionUri: vscode.Uri): vscode.WebviewOptions {
   return { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')] };
+}
+
+// showElsewhere turns a chat view into the "open elsewhere" placeholder. The
+// view may already be gone (it was torn down for re-resolution), and then
+// there is nothing to show and nothing to do.
+function showElsewhere(webview: vscode.Webview, viewId: string, where: ChatLocation, busy: boolean): void {
+  try {
+    webview.options = chatElsewhereOptions();
+    webview.html = chatElsewhereHtml(viewId, where, busy);
+  } catch {
+    // Disposed webview: the view will be resolved afresh when shown again.
+  }
 }
 
 // turnsFromWire keeps only "user"/"assistant" roles, mirroring
@@ -157,6 +181,9 @@ export class ChatPanel {
   // See chatHost.ts for the four ways the two differ and why this is an
   // interface rather than two copies of this class.
   private readonly host: ChatHost;
+  // Which contributed view hosts it, when a view does: there are two
+  // (CHAT_VIEW_IDS), and the one the chat leaves must say where it went.
+  private viewId: string | undefined;
   private readonly disposables: vscode.Disposable[] = [];
   // Set while a prompt the webview marked as a retry ("Try again") is being
   // dispatched; startModelTurn reads it. See the retry note there.
@@ -295,15 +322,79 @@ export class ChatPanel {
   // The conversation survives that: it lives in the daemon, and runPreflight
   // hydrates the transcript from persisted_history exactly as it does for a
   // panel that has just opened.
-  static resolveSidebarView(view: vscode.WebviewView, extensionUri: vscode.Uri): void {
-    view.webview.options = chatWebviewOptions(extensionUri);
+  static resolveSidebarView(view: vscode.WebviewView, extensionUri: vscode.Uri, viewId: string = CHAT_VIEW_ID): void {
     // One chat at a time, wherever it lives. A sidebar view resolving while an
-    // editor tab is open takes over.
-    if (ChatPanel.current) {
-      ChatPanel.current.dispose();
-      ChatPanel.current = undefined;
-    }
+    // editor tab is open takes over. Released BEFORE this webview's options
+    // are set: when the chat was already in this very view, release must not
+    // leave its placeholder (and its script-less options) behind in it.
+    const where: ChatLocation = viewId === CHAT_ACTIVITY_VIEW_ID ? 'activity' : 'secondary';
+    ChatPanel.release(where, view.webview);
+    view.webview.options = chatWebviewOptions(extensionUri);
     ChatPanel.current = new ChatPanel(viewHost(view), extensionUri);
+    ChatPanel.current.viewId = viewId;
+  }
+
+  /**
+   * offerSidebarView is what a chat view does when it is resolved or shown
+   * and is not already the live host. It takes the chat when nothing else
+   * needs it -- no chat yet, or one in a host the user has left, with nothing
+   * running. Otherwise it says where the chat is and offers to move it: two
+   * side bars can be open at once, and taking the chat just because the
+   * other one was CLICKED would cut an answer, an approval or a review short.
+   */
+  static offerSidebarView(view: vscode.WebviewView, extensionUri: vscode.Uri, viewId: string): void {
+    const cur = ChatPanel.current;
+    if (cur && cur.host.webview === view.webview) {
+      return;
+    }
+    if (!cur || (!cur.host.visible && !cur.busy)) {
+      ChatPanel.resolveSidebarView(view, extensionUri, viewId);
+      return;
+    }
+    showElsewhere(view.webview, viewId, cur.location(), cur.busy);
+  }
+
+  /** The contributed view the chat is live in, or undefined (a tab, or none). */
+  static hostViewId(): string | undefined {
+    return ChatPanel.current?.host.kind === 'view' ? ChatPanel.current.viewId : undefined;
+  }
+
+  // release ends the live chat ahead of a new host, and leaves the view it was
+  // in saying where it went rather than holding a transcript nothing updates.
+  private static release(to: ChatLocation, taking?: vscode.Webview): void {
+    const prev = ChatPanel.current;
+    if (!prev) {
+      return;
+    }
+    const prevViewId = prev.host.kind === 'view' ? prev.viewId : undefined;
+    const prevWebview = prev.host.webview;
+    prev.dispose();
+    ChatPanel.current = undefined;
+    if (prevViewId && prevWebview !== taking) {
+      showElsewhere(prevWebview, prevViewId, to, false);
+    }
+  }
+
+  // location is where this chat is, for another host's placeholder.
+  private location(): ChatLocation {
+    if (this.host.kind === 'panel') {
+      return 'editor';
+    }
+    return this.viewId === CHAT_ACTIVITY_VIEW_ID ? 'activity' : 'secondary';
+  }
+
+  // busy is work a handover would cut: an answer streaming, a tool approval
+  // the daemon is holding open, a key being connected, or an edit review or
+  // auto-apply part-way through.
+  private get busy(): boolean {
+    return (
+      this.inFlight !== undefined ||
+      this.pendingApproval !== undefined ||
+      this.connectPending !== undefined ||
+      this.autoApplyRunInFlight ||
+      this.applyInFlight ||
+      this.currentIndex < this.pendingBlocks.length
+    );
   }
 
   /**
@@ -336,10 +427,7 @@ export class ChatPanel {
     // closed (an extension must not rearrange the user's layout); it is left
     // in place and re-adopts the chat when it next becomes visible, which
     // extension.ts's visibility handler does.
-    if (ChatPanel.current) {
-      ChatPanel.current.dispose();
-      ChatPanel.current = undefined;
-    }
+    ChatPanel.release('editor');
 
     const panel = vscode.window.createWebviewPanel(CHAT_VIEW_TYPE, 'Mochiii Chat', vscode.ViewColumn.Beside, {
       ...chatWebviewOptions(extensionUri),
@@ -379,6 +467,8 @@ export class ChatPanel {
   // The Customize, Account and Settings pages (src/chatPages): their requests
   // arrive on this webview and are answered there, from rules.ts's tables.
   private readonly pages: ChatPagesHost;
+  // The MCP pop-up's host side (mcpPopup.ts); the MCP commands open it.
+  private readonly mcpPopup: McpPopupHost;
 
   private constructor(host: ChatHost, extensionUri: vscode.Uri) {
     this.host = host;
@@ -391,6 +481,20 @@ export class ChatPanel {
       connect: () => this.openConnect().then((r) => this.afterConnect(r, false)),
     });
     this.disposables.push(this.pages);
+    this.mcpPopup = new McpPopupHost({
+      post: (m) => this.postSafe(m),
+      clientName: () => currentPagesContext()?.clientName ?? 'vscode',
+      provider: () => currentPagesContext()?.mcpServers,
+      reveal: () => this.host.reveal(),
+    });
+    setMcpPopupHost(this.mcpPopup);
+    this.disposables.push({
+      dispose: () => {
+        if (mcpPopupHost() === this.mcpPopup) {
+          setMcpPopupHost(undefined);
+        }
+      },
+    });
     this.host.webview.html = this.getHtml(extensionUri);
 
     this.host.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), null, this.disposables);
@@ -417,7 +521,7 @@ export class ChatPanel {
     // The panel's own display settings follow the Settings UI live.
     vscode.workspace.onDidChangeConfiguration(
       (e) => {
-        if (e.affectsConfiguration('mochiii.toolActivity')) {
+        if (e.affectsConfiguration('mochiii.toolActivity') || e.affectsConfiguration('mochiii.developerDiagnostics')) {
           this.postUiSettings();
         }
       },
@@ -557,6 +661,9 @@ export class ChatPanel {
     key?: string;
   }): void {
     if (this.pages.handle(msg as unknown as Record<string, unknown>)) {
+      return;
+    }
+    if (this.mcpPopup.handle(msg as unknown as Record<string, unknown>)) {
       return;
     }
     if (msg.type === 'pickAttachments' && typeof msg.remaining === 'number') {
@@ -778,6 +885,7 @@ export class ChatPanel {
       type: 'uiSettings',
       toolActivity: cfg.get<string>('toolActivity') === 'expanded' ? 'expanded' : 'compact',
       defaultMode: cfg.get<string>('defaultMode') ?? 'auto',
+      developerDiagnostics: cfg.get<boolean>('developerDiagnostics') === true,
     });
   }
 
@@ -2218,6 +2326,7 @@ export class ChatPanel {
     const pagesUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'pages.js'));
     const marketUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'marketplace.js'));
     const connectUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'connect.js'));
+    const mcpPopupUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'mcpPopup.js'));
     const controlsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'controls.js'));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'logo.png'));
     const nonce = getNonce();
@@ -2239,6 +2348,7 @@ ${mcpMarketplaceStyles('.market-root')}
 ${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${marketUri}"></script>
   <script nonce="${nonce}" src="${pagesUri}"></script>
   <script nonce="${nonce}" src="${connectUri}"></script>
+  <script nonce="${nonce}" src="${mcpPopupUri}"></script>
   <script nonce="${nonce}" src="${controlsUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -3041,6 +3151,21 @@ export function chatPanelStyles(): string {
     color: var(--ct-ink);
     overflow: hidden;
   }
+  /* THE MCP POP-UP (media/mcpPopup.js): the connect pop-up's look, fixed over
+     the chat and its pages rather than over the composer. */
+  .mcp-popup { position: fixed; left: 12px; right: 12px; top: 56px; bottom: auto; max-height: calc(100vh - 80px); z-index: 60; overflow-y: auto; }
+  .mcp-pop-tabs { display: flex; gap: 4px; background: var(--ct-control-bg); border-radius: 10px; padding: 3px; }
+  .mcp-pop-tab { flex: 1; border: 0; border-radius: 8px; padding: 5px 8px; background: transparent; color: var(--ct-muted); font: inherit; font-size: 12.5px; cursor: pointer; }
+  .mcp-pop-tab[aria-selected="true"] { background: var(--ct-surface); color: var(--ct-ink); }
+  .mcp-pop-pane { display: flex; flex-direction: column; gap: 8px; }
+  .mcp-pop-pane[hidden] { display: none !important; }
+  .mcp-pop-env { display: flex; flex-direction: column; gap: 6px; }
+  .mcp-pop-envrow { display: flex; gap: 6px; align-items: center; }
+  .mcp-pop-envrow .connect-input { flex: 1; min-width: 0; }
+  .mcp-pop-addvar { align-self: flex-start; padding: 3px 10px; }
+  .mcp-pop-json { resize: vertical; min-height: 110px; }
+  .connect-input.mono { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+  .mcp-pop-warning { white-space: pre-wrap; font-size: 12px; max-height: 220px; overflow-y: auto; padding: 8px 10px; border-radius: 10px; background: var(--ct-control-bg); }
   .connect-popup[hidden], .connect-body[hidden], .connect-icon[hidden], .connect-notice[hidden], .connect-btn[hidden],
   .connect-loading[hidden], .connect-input[hidden], .connect-list[hidden] { display: none !important; }
   .connect-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px; }
@@ -3744,7 +3869,89 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       </div>
     </div>
   </div>
-  ${chatPagesMarkup()}`;
+  ${chatPagesMarkup()}
+  <!-- ADD OR CHANGE AN MCP SERVER (media/mcpPopup.js): a pop-up over the chat
+       and its pages, in place of the input boxes at the top of the window. A
+       command or another client's JSON, the variables it reads with their
+       values hidden, then the daemon's warning and the server's name typed. -->
+  <div id="mcpPopup" class="connect-popup mcp-popup" hidden role="dialog" aria-modal="true" aria-labelledby="mcpPopTitle">
+    <div class="connect-head">
+      <div class="connect-titles">
+        <div class="connect-step" id="mcpPopStep">MCP server</div>
+        <div class="connect-title" id="mcpPopTitle">Add an MCP server</div>
+      </div>
+      <button type="button" class="connect-icon" id="mcpPopClose" aria-label="Cancel" title="Cancel">✕</button>
+    </div>
+    <div class="connect-notice" id="mcpPopNotice" role="alert" hidden></div>
+    <div class="connect-body" id="mcpPopForm">
+      <div class="mcp-pop-tabs" role="tablist" aria-label="How to describe the server">
+        <button type="button" class="mcp-pop-tab" role="tab" id="mcpPopTabCommand" aria-selected="true">Command</button>
+        <button type="button" class="mcp-pop-tab" role="tab" id="mcpPopTabUrl" aria-selected="false">URL</button>
+        <button type="button" class="mcp-pop-tab" role="tab" id="mcpPopTabJson" aria-selected="false">Paste JSON</button>
+      </div>
+      <label for="mcpPopName" class="connect-label">Name</label>
+      <input id="mcpPopName" class="connect-input" type="text" placeholder="github" autocomplete="off" spellcheck="false">
+      <div id="mcpPopCommandPane" class="mcp-pop-pane">
+        <label for="mcpPopCommand" class="connect-label">Command</label>
+        <input id="mcpPopCommand" class="connect-input mono" type="text" placeholder="npx -y some-mcp-server@1.2.3" autocomplete="off" spellcheck="false">
+        <div class="connect-note">The program and its arguments, run directly (no shell). Never put a key here: the command is stored and shown.</div>
+        <div class="connect-label">Variables it reads</div>
+        <div id="mcpPopEnv" class="mcp-pop-env"></div>
+        <button type="button" class="connect-btn ghost mcp-pop-addvar" id="mcpPopAddVar">+ Add a variable</button>
+        <div class="connect-note">A value is kept for this server only, in a file only you can read, and never shown to the model. Leave it empty to pass the variable from Mochiii's environment.</div>
+        <label for="mcpPopCwd" class="connect-label">Starts in</label>
+        <select id="mcpPopCwd" class="connect-input">
+          <option value="">A private folder of its own (recommended)</option>
+          <option value="workspace">The project, only if it needs the project's files</option>
+        </select>
+      </div>
+      <div id="mcpPopUrlPane" class="mcp-pop-pane" hidden>
+        <label for="mcpPopUrl" class="connect-label">Server URL</label>
+        <input id="mcpPopUrl" class="connect-input mono" type="text" placeholder="https://mcp.example.com/mcp" autocomplete="off" spellcheck="false">
+        <label for="mcpPopTransport" class="connect-label">Transport</label>
+        <select id="mcpPopTransport" class="connect-input">
+          <option value="http">HTTP (streamable, current servers)</option>
+          <option value="sse">SSE (older servers)</option>
+        </select>
+        <div class="connect-label">Headers it is sent</div>
+        <div id="mcpPopHeaders" class="mcp-pop-env"></div>
+        <button type="button" class="connect-btn ghost mcp-pop-addvar" id="mcpPopAddHeader">+ Add a header</button>
+        <div class="connect-note">For a token: name Authorization, value Bearer &lt;token&gt;. The value is kept for this server only, in a file only you can read. Every call you approve sends its arguments to this server.</div>
+      </div>
+      <div id="mcpPopJsonPane" class="mcp-pop-pane" hidden>
+        <label for="mcpPopJson" class="connect-label">One server's entry from another MCP client</label>
+        <textarea id="mcpPopJson" class="connect-input mono mcp-pop-json" rows="7" spellcheck="false"
+          placeholder='{"command": "npx", "args": ["-y", "some-mcp-server"], "env": {"API_KEY": "..."}}'></textarea>
+        <div class="connect-note">Claude Desktop, Cursor and Claude Code use this shape, and an "mcpServers" block with one server works too. Its env values are kept as keys, not in the server list.</div>
+      </div>
+      <div class="connect-actions">
+        <button type="button" class="connect-btn ghost" id="mcpPopCancel">Cancel</button>
+        <button type="button" class="connect-btn primary" id="mcpPopContinue">Continue</button>
+      </div>
+    </div>
+    <div class="connect-body" id="mcpPopConfirm" hidden>
+      <div class="mcp-pop-warning" id="mcpPopWarning"></div>
+      <label for="mcpPopTyped" class="connect-label" id="mcpPopTypedLabel">Type the server's name to go on</label>
+      <input id="mcpPopTyped" class="connect-input" type="text" autocomplete="off" spellcheck="false">
+      <div class="connect-actions">
+        <button type="button" class="connect-btn ghost" id="mcpPopBack">Back</button>
+        <button type="button" class="connect-btn primary" id="mcpPopAgree" disabled>Add</button>
+      </div>
+    </div>
+    <div class="connect-body" id="mcpPopKey" hidden>
+      <label for="mcpPopKeyName" class="connect-label">Variable</label>
+      <select id="mcpPopKeyName" class="connect-input"></select>
+      <label for="mcpPopKeyValue" class="connect-label">Value</label>
+      <input id="mcpPopKeyValue" class="connect-input" type="password" autocomplete="off" spellcheck="false">
+      <div class="connect-note" id="mcpPopKeyNote">Kept for this server only, in a file only you can read, and never shown to the model.</div>
+      <div class="connect-actions">
+        <button type="button" class="connect-btn ghost" id="mcpPopKeyForget" hidden>Forget it</button>
+        <button type="button" class="connect-btn ghost" id="mcpPopKeyCancel">Cancel</button>
+        <button type="button" class="connect-btn primary" id="mcpPopKeySave">Save</button>
+      </div>
+    </div>
+  </div>
+`;
 }
 
 // clip shortens s to at most n characters for a label, marking the cut.

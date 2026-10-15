@@ -292,6 +292,12 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 	if p.checked != "" && !p.checkPassed {
 		info.Output = p.checkOutput
 	}
+	// NOTHING CHANGED, NOTHING RAN: no report. "not checked: the agent did not
+	// build or test these changes" under a turn whose only edit FAILED read as
+	// though there were changes to test (2026-10-15).
+	if len(net) == 0 && len(p.blocks) == 0 && p.checked == "" && len(notOffered) == 0 && len(byCommand) == 0 {
+		info = nil
+	}
 	return append(net, p.blocks...), info, degraded
 }
 
@@ -322,22 +328,16 @@ func (p *proposalSink) add(b editapply.EditBlock) {
 // this turn's proposal sink. Registered by buildRegistry, which forces their
 // lane and confinement so a tool here cannot misreport itself.
 func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builtin {
-	// A LONG TASK READS BY RANGE AND RUNS COMMANDS LONGER (taskmodes.go). Both
-	// are offered in its modes only, so an ordinary turn's request -- the
-	// measured default -- stays byte-identical.
+	// EVERY TURN READS BY RANGE (2026-10-15). Ranges were offered to long tasks
+	// only, to keep an ordinary turn's request the measured one -- which left an
+	// ordinary turn no way to read past the first 64 KB of a file: the handler
+	// always accepted start_line, but the schema never offered it. A long task
+	// still runs commands longer (taskmodes.go); reading is the same everywhere.
 	readDescription := "Read a UTF-8 text file. A workspace-relative path reads from the workspace. " +
 		"An absolute or ~/ path reads anywhere else on the user's machine: the user is asked first, " +
-		"and private keys and credential stores are always refused."
+		"and private keys and credential stores are always refused. start_line and end_line (1-based, " +
+		"inclusive) return just those lines, numbered: the way to read part of a file, or a file past 64 KB."
 	readSchema := `{
-					"type":"object",
-					"properties":{"path":{"type":"string","description":"Workspace-relative path, or an absolute or ~/ path outside the workspace."}},
-					"required":["path"],
-					"additionalProperties":false
-				}`
-	if isLongTaskMode(mode) {
-		readDescription += " start_line and end_line (1-based, inclusive) return just those lines, numbered: " +
-			"the way to read part of a file, or a file past 64 KB."
-		readSchema = `{
 					"type":"object",
 					"properties":{
 						"path":{"type":"string","description":"Workspace-relative path, or an absolute or ~/ path outside the workspace."},
@@ -347,13 +347,13 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 					"required":["path"],
 					"additionalProperties":false
 				}`
-	}
 	// The same literal as always (schema() keeps its token order), with the
 	// program list widened only when extra_programs applies on this host.
 	execSchema := `{
 					"type":"object",
 					"properties":{
-						"command":{"type":"string","description":"One build or test command: go, npm, make or cargo and its arguments, e.g. go test ./... -- NOT a shell: no pipes, &&, cat or echo. To see a file, use read_file."}
+						"command":{"type":"string","description":"One build or test command: go, npm, make or cargo and its arguments, e.g. go test ./... -- NOT a shell: no pipes, &&, cat or echo. To see a file, use read_file."},
+						"timeout_seconds":{"type":"integer","minimum":1,"description":"How long it may run. Leave out for the default; give more for a whole test suite or a build."}
 					},
 					"required":["command"],
 					"additionalProperties":false
@@ -556,7 +556,7 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	// menu -- the measured default -- is unchanged.
 	if isLongTaskMode(mode) {
 		tools = append(tools, s.recordFindingTool(proposals), s.finishTaskTool(proposals),
-			s.grepTool(proposals), s.gitHistoryTool(), s.checkpointTool(proposals),
+			s.grepTool(proposals), s.findFilesTool(proposals), s.gitHistoryTool(), s.checkpointTool(proposals),
 			s.renameSymbolTool(proposals), s.investigateTool(proposals))
 	} else if !isBuildMode(mode) {
 		// EXACT SEARCH IN AN ORDINARY TURN TOO (2026-10-08).
@@ -575,7 +575,9 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 		// against a cap of 12, measured flat from 5 to 12. Not a build turn,
 		// whose own tools already fill the menu -- one more there would push a
 		// tool off the end.
-		tools = append(tools, s.grepTool(proposals))
+		// FINDING A FILE BY NAME (findfiles.go), for the same reason: without
+		// it a model lists folder after folder to find one file.
+		tools = append(tools, s.grepTool(proposals), s.findFilesTool(proposals))
 	}
 
 	// propose_edit in every mode that edits: not plan, not check. In spec mode
@@ -636,6 +638,7 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 			})
 	}
 
+	tools = append(append(tools, s.fileOpTools(proposals, mode)...), s.runCommandTools(mode)...) // fileops.go, runcommand.go
 	// PLAN MODE DROPS EVERY TOOL THAT EXECUTES CODE OR REACHES THE NETWORK.
 	//
 	// This used to be one line above -- `if mode != "plan"` removing
@@ -798,8 +801,8 @@ func (s *Server) builtinReadFile(ctx context.Context, raw json.RawMessage) (mcp.
 		// reason about the part it cannot see as if it were absent. fullSize,
 		// not len(data): the whole point of readBoundedFile is that the rest
 		// was never read, so the honest number comes from the stat.
-		truncated = fmt.Sprintf("\n\n[... truncated: %s is %d bytes, showing the first %d ...]",
-			args.Path, fullSize, maxBuiltinReadBytes)
+		truncated = fmt.Sprintf("\n\n[... truncated: %s is %d bytes, showing the first %d. Read the rest "+
+			"with start_line and end_line ...]", args.Path, fullSize, maxBuiltinReadBytes)
 	}
 	return mcp.Result{Content: string(data) + truncated}, nil
 }
@@ -1024,7 +1027,7 @@ func applyInWorkingCopy(proposals *proposalSink, block editapply.EditBlock) (mcp
 	block.FilePath = rel
 	prepared, err := st.apply(block)
 	if err != nil {
-		res, _ := toolError("that edit cannot be applied: %s", st.toReal(err.Error()))
+		res, _ := editFailure(shown, st.toReal(err.Error()), err)
 		return res, true
 	}
 	what := fmt.Sprintf("changed lines %d-%d of %s", prepared.StartLine, prepared.EndLine, shown)
@@ -1103,7 +1106,7 @@ func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, prop
 		// The refusal text is already written for a human and names no absolute
 		// path -- it is the same message the edit pipeline shows. Handing it
 		// back to the model lets it fix its own SEARCH text.
-		return toolError("that edit cannot be applied: %v", err)
+		return editFailure(args.Path, err.Error(), err)
 	}
 
 	proposals.add(block)

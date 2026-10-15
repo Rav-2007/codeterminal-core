@@ -123,8 +123,10 @@ func TestOnlySandboxExecIsMarkedAsExecutingCode(t *testing.T) {
 			marked = append(marked, name)
 		}
 	}
-	if strings.Join(marked, ",") != "sandbox_exec" {
-		t.Fatalf("tools marked as executing code: %v, want exactly [sandbox_exec]", marked)
+	// run_command joined on 2026-10-14, on purpose: the real terminal the user
+	// asked for, which always asks (runcommand.go).
+	if strings.Join(marked, ",") != "sandbox_exec,run_command" {
+		t.Fatalf("tools marked as executing code: %v, want exactly [sandbox_exec run_command]", marked)
 	}
 }
 
@@ -225,10 +227,18 @@ var allBuiltinNames = []string{
 	"query_compiler_definition", "query_compiler_references",
 	"sandbox_exec", "propose_edit", "propose_ast_edit",
 	"web_search", "web_fetch",
+	// Deleting, moving and restoring files (fileops.go): this daemon's own code,
+	// behind the edit pipeline's path gates, executing nothing.
+	"delete_path", "move_path", "restore_deleted",
+	// The real terminal (runcommand.go): it executes code, unconfined.
+	"run_command",
 	// An ordinary turn's since 2026-10-08, when exact search stopped being a
 	// long-task tool. It reads the project's files in this process, under the
 	// gates read_file is under: it runs nothing and reaches nothing.
 	"grep",
+	// Since 2026-10-15 (findfiles.go): grep's walk and gate, names only. It runs
+	// nothing and reaches nothing.
+	"find_files",
 }
 
 // AND THE LIST HAS TO BE COMPLETE, or the sentence above is not true.

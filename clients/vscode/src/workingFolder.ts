@@ -55,3 +55,39 @@ export function setActiveWorkingFolder(fsPath: string): void {
 export function activeWorkingFolder(): string {
   return active;
 }
+
+/** The workspaceState key for the other folders the user has been told about. */
+export const FOLDERS_NOTED_KEY = 'mochiii.otherFoldersNoted';
+
+/**
+ * otherFoldersNotice is what to tell the user about folders open beside the
+ * working one that they have not been told about yet, and the updated list of
+ * told folders; message is '' when there is nothing new to say.
+ *
+ * AT STARTUP, NOT ONLY ON CHANGE (2026-10-15). Adding a second folder to a
+ * one-folder window turns it into a workspace and restarts the extension, so
+ * onDidChangeWorkspaceFolders never fired for the case it was written for:
+ * Mochiii came back with two folders, said nothing, and answered "there are no
+ * other folders" about the one it could see. Said once per folder per
+ * workspace, so a window that is meant to hold several is not nagged.
+ */
+export function otherFoldersNotice(
+  folders: readonly FolderChoice[],
+  working: string,
+  noted: readonly string[]
+): { message: string; noted: string[] } {
+  const told = new Set(noted);
+  const fresh = folders.filter((f) => f.fsPath !== working && !told.has(f.fsPath));
+  if (!working || fresh.length === 0) {
+    return { message: '', noted: [...noted] };
+  }
+  const current = folders.find((f) => f.fsPath === working)?.name ?? working;
+  const names = fresh.map((f) => f.name).join(', ');
+  const verb = fresh.length === 1 ? 'is' : 'are';
+  return {
+    message:
+      `Mochiii works in one folder: ${current}. ${names} ${verb} open too -- Mochiii can look inside when you ask ` +
+      '(it asks first), or you can make it the working folder.',
+    noted: [...noted, ...fresh.map((f) => f.fsPath)],
+  };
+}

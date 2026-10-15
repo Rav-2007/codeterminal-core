@@ -98,6 +98,11 @@ type agentTurn struct {
 	// the same host, the second elsewhere, the third ends the turn. A reply with
 	// anything in it resets it, so empties apart are each asked again.
 	emptyInARow int
+	// lastFailure is the most recent failed tool call's reason, as the user
+	// would read it ("propose_edit: ... is a directory ..."), or "" once a call
+	// succeeds. A turn that ends on empty replies says it, so the failure the
+	// model went quiet after is not left folded inside the work block.
+	lastFailure string
 
 	// nudgedForGrounding records that the loop already asked this turn's model
 	// to look something up instead of hedging about it.
@@ -160,7 +165,8 @@ func repeatableLaunchGrantKey(qualified, key string) string {
 // for queries they never saw -- written after the model had read their files.
 // What leaves is the arguments, so the arguments are what a grant is for.
 func grantKey(spec mcp.Tool, qualified, arguments string) string {
-	if !spec.ExecutesCode && !spec.ReachesNetwork {
+	// A destructive call too: "yes" to deleting one file is not yes to another.
+	if !spec.ExecutesCode && !spec.ReachesNetwork && !spec.Destructive {
 		return qualified
 	}
 	return qualified + "\x00" + argumentsDigest(arguments)
@@ -508,7 +514,10 @@ func (s *Server) runAgentLoop(
 	if ledger != nil && ledger.menu != nil {
 		offer = ledger.menu
 	}
-	tools, excludedThirdParty, listErrs := s.advertisedToolSpecs(ctx, registry, offer)
+	// The request picks which tools make the menu when not all of them fit
+	// (mcp/relevance.go): the question and, for a short follow-up such as "yes,
+	// do that", the one before it.
+	tools, excludedThirdParty, listErrs := s.advertisedToolSpecsFor(ctx, registry, offer, menuQuery(messages))
 	for _, err := range listErrs {
 		s.logger.Printf("agent: %v", err)
 	}
@@ -536,26 +545,29 @@ func (s *Server) runAgentLoop(
 	}
 
 	// A TOOL THAT WAS DROPPED AND A TOOL THAT WAS NEVER OFFERED LOOK IDENTICAL
-	// from outside, and only one of them is the user's own configuration
-	// quietly not doing what they wrote. Registry.Advertised has always
-	// recorded what the cap left out; until now nothing in a live turn read it,
-	// so the report existed only in `mcp list`. Lowering the default to the
-	// widest measured menu (5) makes this reachable in ordinary use, so it has
-	// to be visible in ordinary use.
-	if dropped := registry.Dropped(); len(dropped) > 0 && onDegraded != nil {
-		s.logger.Printf("agent: max_advertised_tools (%d) left out %d tool(s): %s",
-			s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), len(dropped), strings.Join(dropped, ", "))
-		onDegraded(protocol.Degradation{
-			Component: protocol.DegradedToolMenuTruncated,
-			// NAMES, not just a count. A user told "3 tool(s) were not offered"
-			// cannot tell whether the one they need is among them, so the notice
-			// answered half the question it raised; `mcp list` has always named
-			// them, and this is the live path reaching the same bar.
-			Detail: fmt.Sprintf("%d configured tool(s) were not offered to the model this turn, "+
-				"because mcp.budget.max_advertised_tools is %d: %s. Every tool on the menu costs tokens on every request and a "+
-				"wider one made the model choose worse on a borderline request, so the limit is deliberate — raise it if you need these tools.",
-				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), strings.Join(dropped, ", ")),
+	// from outside. They no longer behave identically: what the cap left out
+	// can be found (toolsearch.go), so the model is offered find_tools and the
+	// dropped tools stay reachable for the whole turn.
+	//
+	// THE USER IS NOT TOLD ANY MORE, and that is the point. The notice this
+	// replaced named a config key and listed eighteen internal tool names on
+	// every turn -- the cap working as designed, reported as a fault. The
+	// decision is still recorded in full in the daemon log, which is where a
+	// developer looks for it.
+	var search *toolSearch
+	if dropped := registry.DroppedTools(); len(dropped) > 0 {
+		search = newToolSearch(dropped, func(t mcp.Tool) bool {
+			return offer.allowsTool(t) && !modeWithholds(mode, t) &&
+				!(modeWithholdsLaneB(mode) && t.Lane != protocol.LaneFirstParty)
 		})
+		reach := "none of them usable in this step"
+		if search != nil {
+			reach = "find_tools offered"
+			tools = append(tools, search.spec())
+		}
+		s.logger.Printf("agent: max_advertised_tools (%d) left out %d tool(s), %s: %s",
+			s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), len(dropped), reach,
+			strings.Join(registry.Dropped(), ", "))
 	}
 
 	// PRE-FLIGHT GROUNDING. A question whose answer changes over time gets one
@@ -715,22 +727,36 @@ func (s *Server) runAgentLoop(
 			switch turn.emptyInARow {
 			case 1:
 				turn.messages = append(turn.messages, chatMessage{Role: "user", Content: emptyReplyNote})
-				s.logger.Printf("agent: the model sent an empty reply at step %d (served by %q); asking the same host again",
-					turn.iteration, servedBy)
+				s.logger.Printf("agent: the model sent an empty reply at step %d (served by %q, finish_reason %q); asking the same host again",
+					turn.iteration, servedBy, finishReason)
 				continue
 			case 2:
-				routing = avoidProvider(routing, servedBy)
-				s.logger.Printf("agent: a second empty reply in a row at step %d (served by %q); asking again elsewhere",
-					turn.iteration, servedBy)
+				// "Elsewhere" needs a name to avoid. A host that never named
+				// itself (a direct provider API, a local server) cannot be
+				// routed around, and the log said it was all the same.
+				if servedBy == "" {
+					s.logger.Printf("agent: a second empty reply in a row at step %d (finish_reason %q); the host "+
+						"was not named, so it cannot be avoided -- asking once more", turn.iteration, finishReason)
+				} else {
+					routing = avoidProvider(routing, servedBy)
+					s.logger.Printf("agent: a second empty reply in a row at step %d (served by %q); asking again elsewhere",
+						turn.iteration, servedBy)
+				}
 				continue
 			}
 			s.logger.Printf("agent: the model sent an empty reply three times in a row; stopping at step %d", turn.iteration)
+			detail := "the model sent back an empty answer three times in a row, so this task stopped — " +
+				"what you see above is everything that was done. Ask again, or pick another model with /model."
+			if turn.lastFailure != "" {
+				detail = "the model sent back an empty answer three times in a row after a tool call failed (" +
+					turn.lastFailure + "), so this task stopped and nothing was changed by that call. " +
+					"Ask again with that in mind, or pick another model with /model."
+			}
 			return agentResult{
 				FinalText: full.String(),
 				Incomplete: &protocol.IncompleteInfo{
 					Reason: protocol.IncompleteProviderError,
-					Detail: "the model sent back an empty answer three times in a row, so this task stopped — " +
-						"what you see above is everything that was done. Ask again, or pick another model with /model.",
+					Detail: detail,
 				},
 				ToolNames:      turn.toolNames,
 				ToolSignatures: turn.toolSignatures,
@@ -829,6 +855,23 @@ func (s *Server) runAgentLoop(
 			if bud.taskClosed != nil && bud.taskClosed() {
 				turn.messages = append(turn.messages, toolResultMessage(call,
 					"Not run: the task is finished, and no more tools can be called."))
+				continue
+			}
+			// A LOOKUP IS ANSWERED HERE, not dispatched: it runs nothing, and
+			// what it changes is this loop's own menu (toolsearch.go).
+			if search != nil && isFindToolsCall(call.Function.Name) {
+				content, found, repeat := search.answer(call.Function.Arguments)
+				for _, t := range found {
+					tools = append(tools, toolSpecFor(t))
+				}
+				if repeat {
+					turn.repeats++
+				}
+				s.logger.Printf("agent: find_tools %s added %d tool(s)", call.Function.Arguments, len(found))
+				findToolsActivity(onActivity, call.ID, len(found))
+				turn.toolNames = append(turn.toolNames, findToolsQualified)
+				turn.toolBytes += len(content)
+				turn.messages = append(turn.messages, toolResultMessage(call, content))
 				continue
 			}
 			result, cancelled := s.dispatchToolCall(ctx, registry, turn, &bud, call, appr, onActivity, role)
@@ -1073,6 +1116,7 @@ func (s *Server) dispatchToolCall(
 	}
 
 	audit := auditFor(turn.iteration, turn.mode, name, decision.tool, decision.policy, arguments)
+	audit.CallID = call.ID
 	audit.Source, audit.DenyCause = decision.source, decision.cause
 	audit.WaitedMS = decision.waited.Milliseconds()
 	if decision.tool.Server != "" {
@@ -1120,9 +1164,15 @@ func (s *Server) dispatchToolCall(
 	//
 	// An approved launch travels to the tool on its context and nowhere else:
 	// scoped to this one call, gone when it returns.
-	callCtx := ctx
+	//
+	// THE TURN'S DEADLINE BINDS THE CALL TOO (2026-10-15). It was checked only
+	// between steps, so a command given a long timeout_seconds ran past
+	// turn_timeout_seconds, which run_command's own comment said could not
+	// happen. bud.deadline already includes the time the human spent deciding.
+	callCtx, cancelCall := context.WithDeadline(ctx, bud.deadline)
+	defer cancelCall()
 	if decision.launchKey != "" {
-		callCtx = withApprovedLaunch(ctx, decision.launchKey)
+		callCtx = withApprovedLaunch(callCtx, decision.launchKey)
 		audit.Launch = decision.launchProgram
 	}
 	if decision.outsideRead != "" {
@@ -1229,8 +1279,10 @@ func (s *Server) dispatchToolCall(
 	// overrun in the same budget is not a rounding error, it is the same bug
 	// with a smaller constant.
 	frameOverhead := 0
+	outcome := ""
 	if decision.tool.Lane == protocol.LaneThirdParty {
-		frameOverhead = len(frameLaneBOutput(decision.tool.Server, ""))
+		outcome = laneBOutcomeNote(result)
+		frameOverhead = len(outcome) + len(frameLaneBOutput(decision.tool.Server, ""))
 	}
 	renderCap := cap - frameOverhead
 	if renderCap < 0 {
@@ -1254,9 +1306,16 @@ func (s *Server) dispatchToolCall(
 	failReason := ""
 	if result.IsError {
 		failReason = toolFailureReason(rendered)
+		// THE LOG SAYS WHY, keyed by the call id the chat row and the audit
+		// line carry. It used to record only "outcome":"error" and a byte count,
+		// so a failure the user reported had to be reconstructed by hand.
+		s.logger.Printf("agent: %q failed (call %q): %s", name, call.ID, failReason)
+		turn.lastFailure = activity.Tool + ": " + failReason
+	} else {
+		turn.lastFailure = ""
 	}
 	if decision.tool.Lane == protocol.LaneThirdParty {
-		rendered = frameLaneBOutput(decision.tool.Server, rendered)
+		rendered = outcome + frameLaneBOutput(decision.tool.Server, rendered)
 		emitted = len(rendered)
 	}
 
@@ -1585,6 +1644,7 @@ func (s *Server) resolveExecutable(
 		// the prompt must not say it is.
 		Confined:       spec.Confined && outside == "",
 		ReachesNetwork: spec.ReachesNetwork,
+		Remote:         spec.Remote,
 		// The third capability question. It drove the Confined stamp and
 		// plan-mode denial from the day it was added and reached no client, so
 		// the prompt could say "not sandboxed" about a go-to-definition call
@@ -1708,7 +1768,13 @@ func askApproval(ctx context.Context, appr approver, req protocol.ToolApprovalRe
 // configuration quietly not applying. It is nil for the unorchestrated agent,
 // which excludes nothing.
 func (s *Server) advertisedToolSpecs(ctx context.Context, registry *mcp.Registry, role *agentRole) (specs []toolSpec, excludedThirdParty []string, errs []error) {
-	tools, errs := registry.Advertised(ctx)
+	return s.advertisedToolSpecsFor(ctx, registry, role, "")
+}
+
+// advertisedToolSpecsFor is advertisedToolSpecs for one request: when the cap
+// bites, the tools kept are the ones that best match query (mcp/relevance.go).
+func (s *Server) advertisedToolSpecsFor(ctx context.Context, registry *mcp.Registry, role *agentRole, query string) (specs []toolSpec, excludedThirdParty []string, errs []error) {
+	tools, errs := registry.AdvertisedFor(ctx, query)
 	specs = make([]toolSpec, 0, len(tools))
 	for _, tool := range tools {
 		if !role.allowsTool(tool) {
@@ -1717,14 +1783,7 @@ func (s *Server) advertisedToolSpecs(ctx context.Context, registry *mcp.Registry
 			}
 			continue
 		}
-		specs = append(specs, toolSpec{
-			Type: "function",
-			Function: toolSpecFunction{
-				Name:        tool.QualifiedName(),
-				Description: tool.Description,
-				Parameters:  tool.Schema,
-			},
-		})
+		specs = append(specs, toolSpecFor(tool))
 	}
 	return specs, excludedThirdParty, errs
 }

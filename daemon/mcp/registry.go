@@ -119,8 +119,22 @@ type Registry struct {
 
 	// dropped records tools omitted from the advertised set, for reporting.
 	// Silent truncation would look identical to a server that never offered
-	// the tool.
-	dropped []string
+	// the tool. droppedTools holds the same tools whole, for the find_tools
+	// lookup (daemon/toolsearch.go): a tool left off the menu must stay
+	// reachable, not merely be named.
+	dropped      []string
+	droppedTools []Tool
+
+	// listed is what each third-party server answered on the last Advertised
+	// call: how many tools it offered, or why it could not say. It is how a
+	// server's row can read "Connected (5 tools)" without starting it again.
+	listed map[string]ListOutcome
+}
+
+// ListOutcome is one server's answer to the last tool listing.
+type ListOutcome struct {
+	Tools int
+	Err   error
 }
 
 func NewRegistry(policy PolicyResolver, maxAdvertised int) *Registry {
@@ -256,6 +270,14 @@ func (r *Registry) AddServer(name string, c Client) error {
 // and its error is returned alongside, for the caller to surface as a
 // protocol.DegradedMCPServer.
 func (r *Registry) Advertised(ctx context.Context) ([]Tool, []error) {
+	return r.AdvertisedFor(ctx, "")
+}
+
+// AdvertisedFor is Advertised for one request: when the cap bites, the
+// third-party tools that match query best are the ones kept (relevance.go),
+// instead of the first ones in alphabetical order. Built-ins still come first,
+// for the reason Advertised gives. An empty query is Advertised exactly.
+func (r *Registry) AdvertisedFor(ctx context.Context, query string) ([]Tool, []error) {
 	r.mu.RLock()
 	builtins := make([]Builtin, 0, len(r.builtins))
 	for _, b := range r.builtins {
@@ -280,12 +302,15 @@ func (r *Registry) Advertised(ctx context.Context) ([]Tool, []error) {
 
 	var externalTools []Tool
 	var errs []error
+	listed := make(map[string]ListOutcome, len(servers))
 	for _, name := range sortedKeys(servers) {
 		tools, err := servers[name].ListTools(ctx)
 		if err != nil {
 			errs = append(errs, err)
+			listed[name] = ListOutcome{Err: err}
 			continue
 		}
+		listed[name] = ListOutcome{Tools: len(tools)}
 		for _, tool := range tools {
 			if policyOf(policy, name, tool.Name) == PolicyDeny {
 				continue
@@ -295,19 +320,39 @@ func (r *Registry) Advertised(ctx context.Context) ([]Tool, []error) {
 	}
 	SortTools(externalTools)
 
+	// Ranked only when something has to go: a menu that fits keeps its stable
+	// alphabetical order, which is what a provider's prompt cache keys on.
 	all := append(builtinTools, externalTools...)
+	if maxAdvertised > 0 && len(all) > maxAdvertised {
+		RankByRelevance(externalTools, query)
+		all = withNamedServerReserve(builtinTools, externalTools, query, sortedKeys(servers), maxAdvertised)
+	}
 
 	r.mu.Lock()
+	r.listed = listed
 	r.dropped = nil
+	r.droppedTools = nil
 	if maxAdvertised > 0 && len(all) > maxAdvertised {
 		for _, tool := range all[maxAdvertised:] {
 			r.dropped = append(r.dropped, tool.QualifiedName())
 		}
+		r.droppedTools = append([]Tool(nil), all[maxAdvertised:]...)
 		all = all[:maxAdvertised]
 	}
 	r.mu.Unlock()
 
 	return all, errs
+}
+
+// Listed is what each third-party server answered on the last Advertised call.
+func (r *Registry) Listed() map[string]ListOutcome {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]ListOutcome, len(r.listed))
+	for k, v := range r.listed {
+		out[k] = v
+	}
+	return out
 }
 
 // Dropped names the tools the advertised cap left out on the last Advertised
@@ -316,6 +361,16 @@ func (r *Registry) Dropped() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return append([]string(nil), r.dropped...)
+}
+
+// DroppedTools is Dropped with each tool whole: what the find_tools lookup
+// searches. Every one already passed the deny filter, so none is a tool the
+// configuration forbids -- but the caller still owes it the role and mode
+// checks, as for any tool on the menu.
+func (r *Registry) DroppedTools() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]Tool(nil), r.droppedTools...)
 }
 
 // Canonicalize resolves a tool name the MODEL supplied to the exact qualified

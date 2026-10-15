@@ -50,9 +50,23 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 		return runMCPNamed(sub, args, logger)
 	case "set-key":
 		return runMCPSetKey(args, logger)
+	case "get":
+		return runMCPNamed(sub, args, logger)
+	case "check":
+		return runMCPCheck(args, logger)
+	case "add-json":
+		return runMCPAddJSON(args, logger)
+	case "auth":
+		return runMCPAuth(args, logger)
+	case "sign-out":
+		return runMCPNamed(protocol.MCPActionSignOut, args, logger)
+	case "approve":
+		return runMCPApprove(args, logger)
+	case "reject":
+		return runMCPNamed(protocol.MCPActionReject, args, logger)
 	}
-	return fmt.Errorf("unknown mcp subcommand %q (the subcommands are \"list\", \"add\", \"remove\", "+
-		"\"enable\", \"disable\" and \"set-key\")", sub)
+	return fmt.Errorf("unknown mcp subcommand %q (the subcommands are list, get, check, add, add-json, remove, "+
+		"enable, disable and set-key)", sub)
 }
 
 // mcpUsage is the one usage text for every subcommand.
@@ -60,7 +74,14 @@ func mcpUsage() {
 	fmt.Fprintf(os.Stderr, "usage:\n"+
 		"  %[1]s mcp list   [--config models.json] [--workspace .]\n"+
 		"  %[1]s mcp add    <name> [--env NAME | --env NAME=value]... [--in-project] [--acknowledge-unconfined] -- <command> [args...]\n"+
-		"  %[1]s mcp set-key <name> <VARIABLE> [--forget]   (the value is read from stdin, not the command line)\n"+
+		"  %[1]s mcp add    <name> --transport http|sse [--header \"Name: value\"]... <url>\n"+
+		"  %[1]s mcp set-key <name> <VARIABLE> [--forget] [--header]   (the value is read from stdin, not the command line)\n"+
+		"  %[1]s mcp add-json <name> '<json>'   (one server's entry from another MCP client's \"mcpServers\")\n"+
+		"  %[1]s mcp get    <name>\n"+
+		"  %[1]s mcp check  [<name>] [--timeout seconds]\n"+
+		"  %[1]s mcp auth   <name>      sign in to a remote server in your browser\n"+
+		"  %[1]s mcp sign-out <name>\n"+
+		"  %[1]s mcp approve <name> | reject <name>   a server this project's .mcp.json proposes\n"+
 		"  %[1]s mcp remove <name>\n"+
 		"  %[1]s mcp disable <name>\n"+
 		"  %[1]s mcp enable <name>\n\n"+
@@ -119,7 +140,10 @@ func runMCPList(args []string, logger *log.Logger) error {
 	// this command does not start the embedder.
 	srv := &Server{
 		cfg: cfg, workspace: root, logger: logger,
-		serverExtras: serverExtras{configPath: absoluteOrAsGiven(resolvedConfigPath), userServersPath: userServersPathOrNone(logger), mcpRunDir: mcpRunDirOrNone(logger)},
+		serverExtras: serverExtras{
+			configPath: absoluteOrAsGiven(resolvedConfigPath), userServersPath: userServersPathOrNone(logger),
+			mcpRunDir: mcpRunDirOrNone(logger), mcpSecrets: mcpSecretStoreOrNone(logger),
+		},
 	}
 	// The servers the user added count, exactly as they do for a running
 	// daemon (mcpuser.go).
@@ -133,14 +157,31 @@ func runMCPList(args []string, logger *log.Logger) error {
 		return nil
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), listDeadline(effective))
+	defer cancel()
 	registry, connectErrs := srv.buildRegistry(ctx, logger, &proposalSink{}, "")
 	defer func() {
 		if err := registry.Close(); err != nil {
 			logger.Printf("shutting down MCP servers: %v", err)
 		}
 	}()
+	// Each server's health first, as `claude mcp list` gives it, then the tools.
+	_, _ = registry.Advertised(ctx)
+	srv.mcpStates.listed(registry.Listed())
+	writeServerStatus(os.Stdout, srv.serverInfos(effective))
 	return writeToolReport(ctx, os.Stdout, os.Stderr, effective, resolvedConfigPath, registry, connectErrs)
+}
+
+// writeServerStatus prints one status line per configured server.
+func writeServerStatus(w io.Writer, infos []protocol.MCPServerInfo) {
+	if len(infos) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(w, "MCP servers:")
+	for _, info := range infos {
+		_, _ = fmt.Fprintf(w, "  %s: %s - %s\n", info.Name, info.Command, info.StatusLine)
+	}
+	_, _ = fmt.Fprintln(w)
 }
 
 // agentModeOffReport is what a list says when there are no tools to list.
@@ -268,6 +309,10 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 		"or NAME=value to keep a value for this server in ~/.mochiii/mcp-secrets.json (owner-only)")
 	ack := fs.Bool("acknowledge-unconfined", false, "confirm, without being asked, that the server runs with your full privileges")
 	inProject := fs.Bool("in-project", false, "start the server inside the project being worked on, instead of a private folder of its own")
+	transport := fs.String("transport", "", "http or sse for a remote server reached at a URL; leave it out for a program")
+	var headers envNames
+	fs.Var(&headers, "header", "a header for a remote server, \"Name: value\" (repeatable); a value is kept as a key, "+
+		"a ${VAR} in it is kept as written")
 	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
 	fs.Usage = mcpUsage
 
@@ -284,7 +329,14 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 	rest := fs.Args()
 	if len(rest) == 0 {
 		mcpUsage()
+		if *transport != "" {
+			return fmt.Errorf("mcp add --transport %s needs the server's URL", *transport)
+		}
 		return fmt.Errorf("mcp add needs the command to run, after --")
+	}
+	headerMap, err := parseHeaderFlags(headers)
+	if err != nil {
+		return err
 	}
 
 	srv, err := mcpAdminServer(*configPath, logger)
@@ -295,6 +347,14 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 	req := protocol.MCPRequest{
 		MCP: true, Action: protocol.MCPActionAdd, Name: name,
 		Command: rest[0], Args: rest[1:], Env: names, EnvValues: values, AcknowledgedUnconfined: *ack,
+	}
+	if *transport != "" {
+		if len(rest) != 1 || len(names) > 0 || *inProject {
+			return fmt.Errorf("a remote server takes its URL and --header only")
+		}
+		req.Command, req.Args, req.Transport, req.URL, req.Headers = "", nil, *transport, rest[0], headerMap
+	} else if len(headerMap) > 0 {
+		return fmt.Errorf("--header is for a remote server (--transport http <url>)")
 	}
 	if *inProject {
 		req.Cwd = protocol.MCPCwdWorkspace
@@ -485,19 +545,34 @@ func splitEnvFlags(flags []string) (names []string, values map[string]string) {
 func runMCPSetKey(args []string, logger *log.Logger) error {
 	fs := flag.NewFlagSet("mcp set-key", flag.ExitOnError)
 	forget := fs.Bool("forget", false, "forget the stored value instead of setting one")
+	header := fs.Bool("header", false, "the name is a remote server's header (Authorization), not a variable")
 	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
 	fs.Usage = mcpUsage
-	if len(args) < 2 || strings.HasPrefix(args[0], "-") || strings.HasPrefix(args[1], "-") {
-		mcpUsage()
-		return fmt.Errorf("mcp set-key needs the server's name and the variable's name")
+	// Names and flags in any order: `set-key github --header Authorization`
+	// and `set-key github Authorization --header` both read naturally.
+	var names, flagArgs []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--config" || a == "-config":
+			flagArgs = append(flagArgs, a)
+			if i+1 < len(args) {
+				flagArgs, i = append(flagArgs, args[i+1]), i+1
+			}
+		case strings.HasPrefix(a, "-"):
+			flagArgs = append(flagArgs, a)
+		default:
+			names = append(names, a)
+		}
 	}
-	name, variable := args[0], args[1]
-	if err := fs.Parse(args[2:]); err != nil {
+	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q: the value is read from stdin, never the command line", fs.Arg(0))
+	if len(names) != 2 {
+		mcpUsage()
+		return fmt.Errorf("mcp set-key takes the server's name and the variable's (or, with --header, the header's) " +
+			"name; the value is read from stdin, never the command line")
 	}
+	name, variable := names[0], names[1]
 	srv, err := mcpAdminServer(*configPath, logger)
 	if err != nil {
 		return err
@@ -511,7 +586,159 @@ func runMCPSetKey(args []string, logger *log.Logger) error {
 			return fmt.Errorf("no value was given; nothing was stored (use --forget to remove one)")
 		}
 	}
+	req := protocol.MCPRequest{MCP: true, Action: protocol.MCPActionSetEnv, Name: name, EnvName: variable, EnvValue: value}
+	if *header {
+		req.EnvName, req.HeaderName = "", variable
+	}
+	return printMCPResponse(srv.mcpResult(context.Background(), req))
+}
+
+// parseHeaderFlags reads repeated --header "Name: value" flags. The error names
+// the header, never its value.
+func parseHeaderFlags(flags []string) (map[string]string, error) {
+	var out map[string]string
+	for _, f := range flags {
+		name, value, ok := strings.Cut(f, ":")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("--header takes \"Name: value\"")
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[name] = strings.TrimSpace(value)
+	}
+	return out, nil
+}
+
+// runMCPCheck is `mcp check [<name>] [--timeout N]`: start the server (or all of
+// them) now and say how each fared.
+func runMCPCheck(args []string, logger *log.Logger) error {
+	fs := flag.NewFlagSet("mcp check", flag.ExitOnError)
+	timeout := fs.Int("timeout", 0, fmt.Sprintf("seconds to wait for a server's first start, at most %d", maxConnectTimeoutSeconds))
+	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
+	fs.Usage = mcpUsage
+	name := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	srv, err := mcpAdminServer(*configPath, logger)
+	if err != nil {
+		return err
+	}
 	return printMCPResponse(srv.mcpResult(context.Background(), protocol.MCPRequest{
-		MCP: true, Action: protocol.MCPActionSetEnv, Name: name, EnvName: variable, EnvValue: value,
+		MCP: true, Action: protocol.MCPActionCheck, Name: name, ConnectTimeoutSeconds: *timeout,
 	}))
+}
+
+// runMCPAddJSON is `mcp add-json <name> '<json>'`, add's two steps from an entry
+// written for another MCP client. Its env values are kept as keys, not in the
+// server list (mcpjson.go).
+func runMCPAddJSON(args []string, logger *log.Logger) error {
+	fs := flag.NewFlagSet("mcp add-json", flag.ExitOnError)
+	ack := fs.Bool("acknowledge-unconfined", false, "confirm, without being asked, that the server runs with your full privileges")
+	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
+	fs.Usage = mcpUsage
+	if len(args) < 2 || strings.HasPrefix(args[0], "-") {
+		mcpUsage()
+		return fmt.Errorf("mcp add-json needs a name and the JSON")
+	}
+	name, entry := args[0], args[1]
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
+	srv, err := mcpAdminServer(*configPath, logger)
+	if err != nil {
+		return err
+	}
+	req := protocol.MCPRequest{MCP: true, Action: protocol.MCPActionAddJSON, Name: name, JSON: []byte(entry), AcknowledgedUnconfined: *ack}
+	ctx := context.Background()
+	resp := srv.mcpResult(ctx, req)
+	if resp.NeedsAcknowledgement {
+		_, _ = fmt.Fprintf(mcpOut, "%s\n\nType the server's name (%s) to add it, or anything else to cancel: ", resp.Detail, name)
+		typed, _ := bufio.NewReader(mcpIn).ReadString('\n')
+		if strings.TrimSpace(typed) != name {
+			_, _ = fmt.Fprintln(mcpOut, "Cancelled; nothing was added.")
+			return nil
+		}
+		req.AcknowledgedUnconfined = true
+		resp = srv.mcpResult(ctx, req)
+	}
+	return printMCPResponse(resp)
+}
+
+// runMCPAuth is `mcp auth <name>`: sign in to a remote server. The address is
+// printed for the user to open -- this command opens nothing itself -- and the
+// browser comes back to this process, which keeps the token in the key file
+// that every daemon reads.
+func runMCPAuth(args []string, logger *log.Logger) error {
+	fs := flag.NewFlagSet("mcp auth", flag.ExitOnError)
+	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
+	fs.Usage = mcpUsage
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		mcpUsage()
+		return fmt.Errorf("mcp auth needs the server's name")
+	}
+	name := args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	srv, err := mcpAdminServer(*configPath, logger)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	begun := srv.mcpResult(ctx, protocol.MCPRequest{MCP: true, Action: protocol.MCPActionAuthStart, Name: name})
+	if begun.Error != "" {
+		return errors.New(begun.Error)
+	}
+	if begun.AuthState != protocol.MCPAuthPending {
+		return printMCPResponse(begun)
+	}
+	_, _ = fmt.Fprintf(mcpOut, "Open this address in your browser to sign in to %s:\n\n  %s\n\nWaiting (up to %d minutes)…\n",
+		name, begun.AuthURL, begun.ExpiresInSeconds/60)
+	for {
+		resp := srv.mcpResult(ctx, protocol.MCPRequest{MCP: true, Action: protocol.MCPActionAuthWait, AuthID: begun.AuthID})
+		if resp.AuthState != protocol.MCPAuthPending {
+			return printMCPResponse(resp)
+		}
+	}
+}
+
+// runMCPApprove is `mcp approve <name>`: the warning for a server the
+// project's .mcp.json proposes, then its name typed, then the approval -- of
+// the definition the warning described (its digest), and no other.
+func runMCPApprove(args []string, logger *log.Logger) error {
+	fs := flag.NewFlagSet("mcp approve", flag.ExitOnError)
+	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
+	fs.Usage = mcpUsage
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		mcpUsage()
+		return fmt.Errorf("mcp approve needs the server's name")
+	}
+	name := args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	srv, err := mcpAdminServer(*configPath, logger)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	req := protocol.MCPRequest{MCP: true, Action: protocol.MCPActionApprove, Name: name}
+	first := srv.mcpResult(ctx, req)
+	if !first.NeedsAcknowledgement {
+		return printMCPResponse(first)
+	}
+	_, _ = fmt.Fprintf(mcpOut, "%s\n\nType the server's name (%s) to approve it, or anything else to cancel: ", first.Detail, name)
+	typed, _ := bufio.NewReader(mcpIn).ReadString('\n')
+	if strings.TrimSpace(typed) != name {
+		_, _ = fmt.Fprintln(mcpOut, "Cancelled; it stays pending.")
+		return nil
+	}
+	req.AcknowledgedUnconfined, req.Digest = true, first.Digest
+	return printMCPResponse(srv.mcpResult(ctx, req))
 }

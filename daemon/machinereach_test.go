@@ -19,6 +19,8 @@ const (
 	reachSpecsOnly    = "under specs/ only"
 	reachNoWrite      = "You cannot create or change files in this turn."
 	reachNoDelete     = "You CANNOT delete, move or rename a file or folder"
+	reachDelete       = "DELETE, MOVE and RENAME files and folders with delete_path and move_path"
+	reachTerminal     = "RUN ANY SHELL COMMAND in the user's real project with run_command"
 	reachRun          = "RUN only build and test commands ("
 	reachNoRun        = "You cannot run commands in this turn."
 )
@@ -104,18 +106,29 @@ func TestMachineReachSaysOnlyWhatTheToolsDo(t *testing.T) {
 			t.Errorf("mode %q: the programs named are not the ones sandbox_exec starts (%v):\n%s", mode, s.execPrograms(), reach)
 		}
 
-		// "No tool does it" -- in every mode, and by looking at the menu.
-		if !strings.Contains(reach, reachNoDelete) {
-			t.Errorf("mode %q: nothing says files cannot be deleted, moved or renamed", mode)
+		if got := strings.Contains(reach, reachTerminal); got != offered(runCommandToolName) {
+			t.Errorf("mode %q: says it runs any shell command = %v, but run_command offered = %v", mode, got, offered(runCommandToolName))
+		}
+		// Deleting and moving: said iff the tools are on the menu, and no other
+		// tool on it deletes or moves a file.
+		canDelete := offered(deleteToolName) || offered(moveToolName)
+		if got := strings.Contains(reach, reachDelete); got != canDelete {
+			t.Errorf("mode %q: says it can delete or move = %v, but the tools offered = %v", mode, got, canDelete)
+		}
+		if got := strings.Contains(reach, reachNoDelete); got != !canDelete {
+			t.Errorf("mode %q: says it cannot delete = %v, but the tools offered = %v", mode, got, canDelete)
 		}
 		for _, b := range s.builtinTools(&proposalSink{}, mode) {
-			if b.Tool.Name == "rename_symbol" {
-				continue // renames an identifier across the code, through propose_edit's review; no file moves
+			switch b.Tool.Name {
+			case "rename_symbol": // renames an identifier across the code, through propose_edit's review
+				continue
+			case deleteToolName, moveToolName, restoreToolName:
+				continue
 			}
 			for _, verb := range []string{"delete", "remove", "move", "rename", "unlink", "trash"} {
 				if strings.Contains(b.Tool.Name, verb) {
-					t.Errorf("mode %q offers %s: the section still tells the model no tool can %s a file -- "+
-						"update machineReach along with the tool", mode, b.Tool.Name, verb)
+					t.Errorf("mode %q offers %s: machineReach does not describe it -- update it along with the tool",
+						mode, b.Tool.Name)
 				}
 			}
 		}
@@ -277,7 +290,7 @@ func TestAnAgentTurnIsToldWhatItCanReachAndAPlainTurnIsUnchanged(t *testing.T) {
 	if !strings.HasPrefix(agent, base+"\n\n") || strings.Count(agent, machineReachHeader) != 1 {
 		t.Fatalf("an agent turn's system message is not the base prompt with the section in it once:\n%s", agent)
 	}
-	for _, want := range []string{reachReadAnywhere, reachWriteHome, reachNoDelete, reachRun} {
+	for _, want := range []string{reachReadAnywhere, reachWriteHome, reachDelete, reachRun} {
 		if !strings.Contains(agent, want) {
 			t.Errorf("an agent turn is not told %q:\n%s", want, agent)
 		}

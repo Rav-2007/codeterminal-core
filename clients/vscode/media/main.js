@@ -733,7 +733,8 @@
     if (effortSupported) {
       effortBtn.removeAttribute('aria-disabled');
       effortBtn.setAttribute('aria-label', 'Thinking effort: ' + effortName + '. Click to change.');
-      effortBtn.title = 'Thinking effort: ' + effortName + '. Click to change (low / medium / high).';
+      // Two short lines: one long line was cut off at the side bar's edge.
+      effortBtn.title = 'Thinking effort: ' + effortName + '\nClick to change: Auto, Low, Medium, High';
       return;
     }
     const which = effortUnsupportedModel ? ' by ' + effortUnsupportedModel : ' by this model';
@@ -1168,7 +1169,7 @@
   });
   if (toolsBtn) {
     toolsBtn.addEventListener('click', () => {
-      if (pages) pages.open('customize', { tab: 'mcp', sub: 'installed' });
+      if (pages) pages.openMcp();
     });
   }
   /** @param {any} msg */
@@ -1900,11 +1901,16 @@
     for (const item of items) {
       const line = document.createElement('span');
       line.className = 'item';
-      let text = `⚠ degraded (${item.component}): ${item.detail}`;
+      // PLAIN WORDS BY DEFAULT. The component id ("tool_menu_truncated") is
+      // the daemon's name for a subsystem, not something a person asked
+      // about; it is shown only with mochiii.developerDiagnostics on, and the
+      // daemon log (Mochiii: Show Daemon Log) has the full record either way.
+      let detail = item.detail;
       if (item.component === 'workspace_too_large' && item.metadata && item.metadata.file_count) {
         const count = new Intl.NumberFormat().format(item.metadata.file_count);
-        text = `⚠ degraded (${item.component}): workspace is too large (> 10,000 files, exactly ${count}), semantic search is disabled`;
+        detail = `This folder is too large for semantic search (${count} files, the limit is 10,000), so Mochiii searches it by text only.`;
       }
+      const text = developerDiagnostics ? `⚠ [${item.component}] ${detail}` : `⚠ ${detail}`;
       line.textContent = text;
       degradedEl.appendChild(line);
 
@@ -2487,6 +2493,11 @@
     const risks = [];
     if (req.reaches_network) {
       risks.push('LEAVES YOUR MACHINE: sent to a third party over the internet');
+      // A remote MCP server's call (FEATURE_MCP_REMOTE): where, by name. Kept
+      // word for word with the TUI's renderApprovalPanel.
+      if (req.remote) {
+        risks.push('SENT TO ' + req.remote + ', the remote MCP server you added: what it does with this is up to its operator');
+      }
       // Why this one is asked about when the tool is allowed. Kept word for
       // word with the TUI's egressAddressRisk / egressQueryRisk.
       if (req.egress_review === 'address') {
@@ -2581,6 +2592,21 @@
     }
     const only = (k) =>
       Object.keys(args).length === 1 && typeof args[k] === 'string' ? args[k] : '';
+    // Deleting and moving files (daemon/fileops.go): said as what happens.
+    // Kept word for word with the TUI's approvalQuestion.
+    // Not "Run command:" -- that is sandbox_exec's, in a private copy. This one
+    // runs in the real project, as the user's terminal would.
+    if (req.server === 'builtin' && req.tool === 'run_command' && typeof args.command === 'string') {
+      const where = typeof args.cwd === 'string' && args.cwd ? ' (in ' + args.cwd + ')' : '';
+      return 'Run in your terminal' + where + ': ' + args.command + ' ?';
+    }
+    if (req.server === 'builtin' && req.tool === 'delete_path' && only('path')) {
+      return 'Delete ' + only('path') + " (moved to Mochiii's trash, where it can be restored) ?";
+    }
+    if (req.server === 'builtin' && req.tool === 'move_path' && Object.keys(args).length === 2 &&
+        typeof args.from === 'string' && typeof args.to === 'string') {
+      return 'Move ' + args.from + ' to ' + args.to + ' ?';
+    }
     if (req.outside_path) {
       return 'Read outside this project: ' + req.outside_path + ' ?';
     }
@@ -2678,6 +2704,10 @@
     sandbox_exec: 'Ran a command in the sandbox',
     web_fetch: 'Fetched a web page',
     web_search: 'Searched the web',
+    run_command: 'Ran a command in your terminal',
+    delete_path: 'Deleted a file',
+    move_path: 'Moved a file',
+    restore_deleted: 'Restored a deleted file',
   };
   const WORK_STATE_WORDS = { run: 'running', ok: 'done', fail: 'failed', denied: 'not run', step: '' };
   // The badge each row carries (Stage 9, the mockup's "Tool Execution" card).
@@ -2685,6 +2715,8 @@
   const WORK_GLYPHS = { run: '\u25cc', ok: '\u2713', fail: '\u2715', denied: '\u2298', step: '\u203a' };
   // compact: a block starts folded; expanded: it starts open (mochiii.toolActivity).
   let toolActivityMode = 'compact';
+  // mochiii.developerDiagnostics: notices carry the daemon's component id.
+  let developerDiagnostics = false;
   let defaultModeApplied = false;
   /** @type {HTMLDetailsElement | null} */
   let workBlockEl = null;
@@ -2998,6 +3030,11 @@
     if (slashIndex >= items.length) {
       slashIndex = 0;
     }
+    // The menu is rebuilt on every arrow key, which resets its scroll to the
+    // top; keep where it was and then bring the active row into view.
+    const scrollTop = slashMenuEl.scrollTop;
+    /** @type {HTMLButtonElement | null} */
+    let activeBtn = null;
     clearChildren(slashMenuEl);
     items.forEach((c, i) => {
       const btn = document.createElement('button');
@@ -3005,6 +3042,7 @@
       btn.setAttribute('role', 'option');
       if (i === slashIndex) {
         btn.className = 'active';
+        activeBtn = btn;
       }
       const name = document.createElement('span');
       name.className = 'slash-name';
@@ -3021,6 +3059,17 @@
       slashMenuEl.appendChild(btn);
     });
     slashMenuEl.classList.add('visible');
+    slashMenuEl.scrollTop = scrollTop;
+    if (activeBtn) {
+      // Scroll the menu only, never the chat behind it.
+      const top = activeBtn.offsetTop;
+      const bottom = top + activeBtn.offsetHeight;
+      if (top < slashMenuEl.scrollTop) {
+        slashMenuEl.scrollTop = top;
+      } else if (bottom > slashMenuEl.scrollTop + slashMenuEl.clientHeight) {
+        slashMenuEl.scrollTop = bottom - slashMenuEl.clientHeight;
+      }
+    }
   }
 
   // A TRAILING SPACE ONLY WHERE AN ARGUMENT GOES. Every completion used to add
@@ -3131,8 +3180,11 @@
     if (!pages) {
       return false;
     }
-    if (m[1] === 'mcp' || m[1] === 'mcp-server') {
-      pages.open('customize', { tab: 'mcp', sub: arg ? 'market' : 'installed', search: arg || undefined });
+    if ((m[1] === 'mcp' || m[1] === 'mcp-server') && !arg) {
+      // Bare /mcp is Claude Code's dialog: every server and what it needs.
+      pages.openMcp();
+    } else if (m[1] === 'mcp' || m[1] === 'mcp-server') {
+      pages.open('customize', { tab: 'mcp', sub: 'market', search: arg });
     } else {
       pages.open(m[1] === 'account' ? 'account' : 'settings');
     }
@@ -3392,9 +3444,23 @@
       })
     : null;
 
+  const mcpPopup = window.MochiiiMcpPopup
+    ? window.MochiiiMcpPopup.init(vscode, {
+        closePopups: () => {
+          setHistoryOpen(false);
+          setModelPopupOpen(false);
+          setModesPopupOpen(false);
+          setContextPopupOpen(false);
+        },
+      })
+    : null;
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (connectPopup && connectPopup.handle(msg)) {
+      return;
+    }
+    if (mcpPopup && mcpPopup.handle(msg)) {
       return;
     }
     if (pages && pages.handle(msg)) {
@@ -3551,6 +3617,7 @@
         break;
       case 'uiSettings':
         toolActivityMode = msg.toolActivity === 'expanded' ? 'expanded' : 'compact';
+        developerDiagnostics = msg.developerDiagnostics === true;
         // The mode a new chat starts in (mochiii.defaultMode), applied once,
         // when the panel opens: changing the setting later does not switch a
         // chat that is already going.

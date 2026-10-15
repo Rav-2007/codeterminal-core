@@ -2,7 +2,7 @@
   "name": "mochiii-vscode",
   "displayName": "Mochiii",
   "description": "A local-first AI coding assistant. Your code is indexed, embedded and retrieved on your own machine.",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "publisher": "MochiiiAIAgent",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/icon.png",
@@ -10,7 +10,6 @@
     "color": "#2B1B24",
     "theme": "dark"
   },
-  "preview": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/Rav-2007/codeterminal-core.git",
@@ -57,6 +56,7 @@
   "activationEvents": [
     "onWebviewPanel:mochiiiChat",
     "onView:mochiii.chatView",
+    "onView:mochiii.chatViewActivity",
     "onView:mochiii.mcpServers",
     "onUri"
   ],
@@ -100,6 +100,11 @@
           ],
           "default": "compact",
           "description": "How the chat shows the tools the agent used in a turn."
+        },
+        "mochiii.developerDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show internal details in the chat's notices: which daemon component reported each one (for example `tool_menu_truncated`). Off by default, because those names mean nothing to someone using Mochiii. The full record is always in the daemon log: run **Mochiii: Show Daemon Log**."
         },
         "mochiii.defaultMode": {
           "type": "string",
@@ -186,6 +191,36 @@
         "icon": "$(edit)"
       },
       {
+        "command": "mochiii.mcp.approve",
+        "title": "Approve MCP Server the Project Proposes…",
+        "category": "Mochiii",
+        "icon": "$(check)"
+      },
+      {
+        "command": "mochiii.mcp.reject",
+        "title": "Reject MCP Server the Project Proposes",
+        "category": "Mochiii",
+        "icon": "$(close)"
+      },
+      {
+        "command": "mochiii.mcp.signIn",
+        "title": "Sign In to MCP Server…",
+        "category": "Mochiii",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "mochiii.mcp.signOut",
+        "title": "Sign Out of MCP Server",
+        "category": "Mochiii",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "mochiii.mcp.check",
+        "title": "Check MCP Server",
+        "category": "Mochiii",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "mochiii.mcp.setKey",
         "title": "Set Key for MCP Server…",
         "category": "Mochiii",
@@ -217,6 +252,13 @@
       }
     ],
     "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mochiii-activitybar",
+          "title": "Mochiii",
+          "icon": "media/activity-icon.svg"
+        }
+      ],
       "secondarySidebar": [
         {
           "id": "mochiii",
@@ -237,6 +279,15 @@
         {
           "id": "mochiii.mcpServers",
           "name": "MCP Servers",
+          "icon": "media/activity-icon.svg",
+          "contextualTitle": "Mochiii"
+        }
+      ],
+      "mochiii-activitybar": [
+        {
+          "type": "webview",
+          "id": "mochiii.chatViewActivity",
+          "name": "Chat",
           "icon": "media/activity-icon.svg",
           "contextualTitle": "Mochiii"
         }
@@ -283,7 +334,32 @@
           "group": "inline@1"
         },
         {
+          "command": "mochiii.mcp.check",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
+          "group": "inline@0"
+        },
+        {
           "command": "mochiii.mcp.setKey",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
+          "group": "1_change@0"
+        },
+        {
+          "command": "mochiii.mcp.signIn",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
+          "group": "1_change@0"
+        },
+        {
+          "command": "mochiii.mcp.approve",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.project.pending && isWorkspaceTrusted",
+          "group": "inline@1"
+        },
+        {
+          "command": "mochiii.mcp.reject",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.project.pending",
+          "group": "1_change@3"
+        },
+        {
+          "command": "mochiii.mcp.signOut",
           "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
           "group": "1_change@0"
         },
@@ -309,6 +385,26 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "mochiii.mcp.approve",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.reject",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.signIn",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.signOut",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.check",
+          "when": "false"
+        },
         {
           "command": "mochiii.mcp.setKey",
           "when": "false"

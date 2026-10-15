@@ -11,5 +11,7 @@ interface Window {
   };
   /** media/connect.js: the connect popup -- a provider, then its key. */
   MochiiiConnect?: { init(vscode: any, hooks: any): { handle(msg: any): boolean; isOpen(): boolean } };
-  MochiiiPages?: { init(vscode: any, hooks: any): { handle(msg: any): boolean; open(page: string, opts?: any): void; close(): void; isOpen(): boolean } };
+  /** media/mcpPopup.js: add or change an MCP server, or set its key. */
+  MochiiiMcpPopup?: { init(vscode: any, hooks: any): { handle(msg: any): boolean; isOpen(): boolean } };
+  MochiiiPages?: { init(vscode: any, hooks: any): { handle(msg: any): boolean; open(page: string, opts?: any): void; openMcp(): void; close(): void; isOpen(): boolean } };
 }

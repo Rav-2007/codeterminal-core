@@ -41,10 +41,60 @@ var mcpEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
 // validMCPEnvName reports why name cannot be given a value, or nil.
 func validMCPEnvName(name string) error {
+	if envNameLooksLikeKey(name) {
+		return errKeyAsEnvName
+	}
 	if !mcpEnvNamePattern.MatchString(name) {
 		return fmt.Errorf("%q is not a variable name (letters, digits and _, not starting with a digit)", truncateForClient(name, 40))
 	}
 	return mcp.ValidateEnvAllowList([]string{name})
+}
+
+// A KEY PASTED WHERE A VARIABLE NAME GOES.
+//
+// "sbp_" and forty hex digits is a legal variable name, so the name pattern
+// lets a Supabase token through; it was then stored in mcp-servers.json, shown
+// on the server's row as "needs sbp_…", and written into the agent's setup
+// section, which goes to the model (FOUND 2026-10-15, live test). A real
+// variable name is words joined by '_'; a key has a long run that mixes letters
+// and digits, or one of the prefixes the big providers stamp on theirs.
+var (
+	keyPrefixPattern = regexp.MustCompile(`^(sbp_|gh[pousr]_|github_pat_|glpat_|sk_live_|sk_test_|rk_live_|pk_live_|AKIA[0-9A-Z]{12})`)
+	keyRunPattern    = regexp.MustCompile(`[A-Za-z0-9]{16,}`)
+	errKeyAsEnvName  = fmt.Errorf("that looks like a key, not a variable name. Give the variable's NAME " +
+		"(for example SUPABASE_ACCESS_TOKEN), then put the key itself in with Set key")
+)
+
+// envNameLooksLikeKey reports whether name is more likely a secret than the
+// name of a variable. Never repeat name in a message when it is.
+func envNameLooksLikeKey(name string) bool {
+	if keyPrefixPattern.MatchString(name) {
+		return true
+	}
+	for _, run := range keyRunPattern.FindAllString(name, -1) {
+		if strings.ContainsAny(run, "0123456789") && strings.IndexFunc(run, unicode.IsLetter) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// maskedEnvNames is names as they may be shown: one that looks like a key
+// keeps its first four characters and loses the rest, so a server saved
+// before envNameLooksLikeKey existed stops showing its key everywhere it is
+// listed -- including the agent's setup section.
+func maskedEnvNames(names []string) []string {
+	if !slices.ContainsFunc(names, envNameLooksLikeKey) {
+		return names
+	}
+	out := make([]string, len(names))
+	for i, n := range names {
+		if envNameLooksLikeKey(n) {
+			n = n[:min(4, len(n))] + "…(a key, not a variable name: change this server)"
+		}
+		out[i] = n
+	}
+	return out
 }
 
 // validMCPEnvValue reports why value cannot be stored, or nil. The error never
@@ -151,6 +201,9 @@ func (s *Server) envMissing(server string, env []string) []string {
 // mcpSetEnv answers MCPActionSetEnv. With a server name the value is that
 // server's own; without one it is for every server that reads the variable.
 func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
+	if strings.TrimSpace(req.HeaderName) != "" {
+		return s.mcpSetHeader(req)
+	}
 	name := strings.TrimSpace(req.EnvName)
 	if err := validMCPEnvName(name); err != nil {
 		return protocol.MCPResponse{Error: err.Error()}
@@ -166,7 +219,7 @@ func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
 		if !ok {
 			return protocol.MCPResponse{Error: fmt.Sprintf("no server named %s is configured", server)}
 		}
-		if !slices.Contains(srv.Env, name) {
+		if !slices.Contains(srv.Env, name) && !slices.Contains(serverTemplateVars(srv), name) {
 			return protocol.MCPResponse{Error: fmt.Sprintf("%s does not read %s; add the variable's name to it first "+
 				"(Change, step 3)", server, name)}
 		}
@@ -210,8 +263,15 @@ func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
 // required" instead of "Active" for a server that has never once run.
 
 type mcpServerState struct {
-	state  string // protocol.MCPStateRunning or MCPStateFailed
+	state  string // protocol.MCPStateRunning, MCPStateFailed or MCPStateToolsFailed
 	detail string
+	// tools is how many tools it offered when last listed; toolsErr why the
+	// listing failed.
+	tools    int
+	toolsErr string
+	// counted is whether tools is known: a server started but not yet asked
+	// for its tools has no count, which is not the same as none.
+	counted bool
 }
 
 type mcpStateBook struct {
@@ -241,7 +301,16 @@ func (b *mcpStateBook) started(name string, err error) {
 		b.states = map[string]mcpServerState{}
 	}
 	if err == nil {
-		b.states[name] = mcpServerState{state: protocol.MCPStateRunning}
+		// A restart keeps the count it had: the same program, asked again at
+		// the next listing.
+		prev := b.states[name]
+		b.states[name] = mcpServerState{state: protocol.MCPStateRunning, tools: prev.tools, counted: prev.counted}
+		return
+	}
+	// A remote server that wants a sign-in is its own state: the remedy is a
+	// button, not a fix to its command.
+	if strings.Contains(err.Error(), errNeedsSignIn.Error()) {
+		b.states[name] = mcpServerState{state: protocol.MCPStateNeedsAuth, detail: "it needs you to sign in"}
 		return
 	}
 	detail := b.lastLine[name]
@@ -265,6 +334,24 @@ func (b *mcpStateBook) forget(name string) {
 	defer b.mu.Unlock()
 	delete(b.states, name)
 	delete(b.lastLine, name)
+}
+
+// listed records what each started server answered when its tools were listed.
+func (b *mcpStateBook) listed(outcomes map[string]mcp.ListOutcome) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for name, o := range outcomes {
+		st, ok := b.states[name]
+		if !ok || st.state == protocol.MCPStateFailed {
+			continue
+		}
+		if o.Err != nil {
+			st.state, st.toolsErr, st.tools, st.counted = protocol.MCPStateToolsFailed, truncateForClient(o.Err.Error(), 240), 0, false
+		} else {
+			st.state, st.toolsErr, st.tools, st.counted = protocol.MCPStateRunning, "", o.Tools, true
+		}
+		b.states[name] = st
+	}
 }
 
 func (b *mcpStateBook) get(name string) mcpServerState {

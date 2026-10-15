@@ -93,6 +93,10 @@ type toolAuditEvent struct {
 	// began running in this workspace at that moment, which is the event an
 	// incident review would actually be looking for.
 	Launch string `json:"launch,omitempty"`
+	// CallID is the model's id for the call, the one the chat's tool row
+	// carries (protocol.ToolActivity.CallID) and the daemon log names on a
+	// failure: the thread from what the user saw to what was recorded.
+	CallID string `json:"call_id,omitempty"`
 }
 
 // toolAuditMaxBytes bounds the active file before rotation; one rotation keeps

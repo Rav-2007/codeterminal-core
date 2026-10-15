@@ -244,3 +244,34 @@ suite('editor context: what the block says', () => {
     assert.ok(out.includes('a.ts'));
   });
 });
+
+// The model is told which folders the window has open, so "can you see the
+// folder in the explorer" is not answered by listing the working folder alone.
+suite('editor context: the other open folders', () => {
+  const base = (): EditorContext => ({
+    activeFile: '', languageId: '', totalLines: 0, cursorLine: 0, body: '', bodyClipped: false,
+    selection: '', selectionRange: [0, 0], openTabs: [], tabsClipped: false,
+  });
+
+  test('other folders are named with their paths, even with no file open', () => {
+    const out = formatEditorContext({
+      ...base(),
+      workingFolder: 'workspace',
+      otherFolders: [{ name: 'new_file', path: '/home/u/Desktop/new_file' }],
+    });
+    for (const want of ['you work in workspace', 'new_file (/home/u/Desktop/new_file)', 'absolute path', 'Choose Working Folder']) {
+      assert.ok(out.includes(want), `missing ${want}:\n${out}`);
+    }
+    assert.ok(out.endsWith('--- end editor state ---'), out);
+  });
+
+  test('one folder and nothing open: still nothing to send', () => {
+    assert.strictEqual(formatEditorContext({ ...base(), otherFolders: [] }), '');
+  });
+
+  test('a window with many folders names the first few and counts the rest', () => {
+    const many = Array.from({ length: 13 }, (_, i) => ({ name: `f${i}`, path: `/p/f${i}` }));
+    const out = formatEditorContext({ ...base(), workingFolder: 'w', otherFolders: many });
+    assert.ok(out.includes('and 3 more') && !out.includes('f12 ('), out);
+  });
+});

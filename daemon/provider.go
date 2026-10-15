@@ -707,6 +707,18 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 	// real stopping condition -- "stop" for a natural end, "length" for a cut-off
 	// answer (M1). Reported once, via onFinish, on the success path only.
 	finishReason := ""
+	// streamErr is the first error the provider sent INSIDE the stream, other
+	// than the budget kill handled below. It ends the call as a failure only
+	// when the stream delivered nothing else (failedEmpty): an error beside real
+	// output leaves that output, and its finish reason, as they were.
+	var streamErr *ModelError
+	delivered := false
+	failedEmpty := func() error {
+		if streamErr == nil || delivered || len(accumulator.order) > 0 {
+			return nil
+		}
+		return streamErr
+	}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
@@ -715,6 +727,9 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
 			ended = true
+			if err := failedEmpty(); err != nil {
+				return nil, err
+			}
 			return finishStream(accumulator, finishReason, onFinish)
 		}
 
@@ -750,6 +765,8 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		// through to the guard below on its own merits.
 		if slug, ok := errorSlug(chunk.Error); ok && slug == protocol.IncompleteBudgetExceeded {
 			finishReason = protocol.IncompleteBudgetExceeded
+		} else if streamErr == nil {
+			streamErr = inStreamError(chunk.Error)
 		}
 		// Fed BEFORE the zero-choices guard's siblings below so a chunk
 		// carrying only tool-call fragments is not skipped by an early
@@ -761,6 +778,10 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		}
 		if fr := chunk.Choices[0].FinishReason; fr != "" {
 			finishReason = fr
+			if fr == finishReasonError && streamErr == nil {
+				streamErr = &ModelError{Class: ClassUpstreamUnavailable,
+					detail: "the stream ended with finish_reason \"error\" and no error object"}
+			}
 		}
 		// Concatenated, not chosen between: a token is delivered exactly as it
 		// arrived, leading space and all, and only one of the two is ever set.
@@ -771,6 +792,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		if content == "" {
 			continue
 		}
+		delivered = true
 		if err := onToken(content); err != nil {
 			return nil, err
 		}
@@ -782,5 +804,80 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 	// close the body). Still a successful, complete read as far as we can tell,
 	// so report whatever terminal finish_reason we captured.
 	ended = true
+	if err := failedEmpty(); err != nil {
+		return nil, err
+	}
 	return finishStream(accumulator, finishReason, onFinish)
+}
+
+// finishReasonError is the finish_reason OpenRouter sends with an error raised
+// after the stream began.
+const finishReasonError = "error"
+
+// inStreamError classifies an error the provider sent inside the stream, or
+// returns nil when raw holds none (absent, null, an empty string or object).
+//
+// AN ERROR IN AN OTHERWISE EMPTY STREAM IS A FAILED CALL, NOT AN EMPTY REPLY. Only the budget
+// kill was read here; every other error chunk was dropped, the stream then
+// ended with nothing in it, and the agent loop -- seeing no text and no tool
+// call -- reported "the model sent back an empty answer" and asked again with a
+// note telling the MODEL it had been silent. FOUND 2026-10-15, live: three
+// "empty" replies in a row, each under a second, the same request answering
+// normally on another try. Classified like an HTTP error now, with the status
+// taken from the object's numeric code where it has one, so the retry rules
+// (streamWithRetry) and the user's message are a provider failure's, and the
+// provider's own words reach the daemon log (Detail) and never the socket.
+// Anything that names no class is upstream_unavailable: nothing says the
+// request was at fault, and a second try is the one that has worked.
+func inStreamError(raw json.RawMessage) *ModelError {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	status, message := 0, ""
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		message = text
+	} else {
+		var obj struct {
+			Code    json.RawMessage `json:"code"`
+			Message string          `json:"message"`
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return &ModelError{Class: ClassUpstreamUnavailable, detail: "in-stream error: " + logSafe(string(raw))}
+		}
+		message = obj.Message
+		var n int
+		var code string
+		if json.Unmarshal(obj.Code, &n) == nil {
+			status = n
+		} else if json.Unmarshal(obj.Code, &code) == nil && message == "" {
+			message = code
+		}
+		if status == 0 && message == "" {
+			return nil
+		}
+	}
+	if status == 0 && strings.TrimSpace(message) == "" {
+		return nil
+	}
+	e := classifyHTTPError(status, fmt.Sprintf("an in-stream error (code %d)", status), logSafe(message))
+	if e.Class == ClassUnknown {
+		e.Class = ClassUpstreamUnavailable
+	}
+	return e
+}
+
+// logSafe bounds upstream text for the daemon log and takes out control
+// characters, so it cannot forge or flood log lines.
+func logSafe(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	if len(s) > 500 {
+		s = s[:500] + "…"
+	}
+	return s
 }

@@ -54,7 +54,7 @@ func TestTheAgentIsToldEachServersStateThisTurn(t *testing.T) {
 }
 
 func TestTheSetupSectionSaysWhereToAddAServerWhenThereIsNone(t *testing.T) {
-	got := agentSetup("1.2.3", "", "", "/work/p", nil, nil, false)
+	got := agentSetup("1.2.3", "", "", "/work/p", nil, setupTools{}, false)
 	for _, want := range []string{"Mochiii version 1.2.3", "/work/p", "none added", "Customize > MCP"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q:\n%s", want, got)

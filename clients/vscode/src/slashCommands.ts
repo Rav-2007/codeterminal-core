@@ -49,6 +49,11 @@ export const SLASH_CATALOG: SlashDef[] = [
     panelDispatched: true,
   },
   {
+    name: 'mcp',
+    kind: 'local',
+    summary: 'your MCP servers: whether each connects, and Authenticate, Set key or Check connection',
+  },
+  {
     name: 'mcp-server',
     kind: 'local',
     summary: 'your MCP servers, and the marketplace to add more (/mcp-server [search])',

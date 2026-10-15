@@ -135,3 +135,52 @@ func TestSetEnvRefusesWhatCannotBeAServersKey(t *testing.T) {
 		}
 	}
 }
+
+// A Supabase token pasted into the "variables it reads" box was saved as a
+// variable NAME, then shown on the server's row and written into the agent's
+// setup section (FOUND 2026-10-15). It is refused without being repeated, and
+// one already saved is masked wherever the server is listed.
+func TestAKeyGivenAsAVariableNameIsRefusedAndNeverShown(t *testing.T) {
+	fakeKey := "sbp_" + strings.Repeat("0a1b", 10)
+	for _, name := range []string{
+		fakeKey,
+		"ghp_" + strings.Repeat("x", 36),
+		"github_pat_11ABCDEFG",
+		"AKIAABCDEFGHIJKLMNOP",
+		"mytoken_9f86d081884c7d659a2feaa0",
+	} {
+		if !envNameLooksLikeKey(name) {
+			t.Errorf("%s: not taken for a key", name)
+		}
+	}
+	for _, name := range []string{
+		"SUPABASE_ACCESS_TOKEN", "PERPLEXITY_API_KEY", "GITHUB_PERSONAL_ACCESS_TOKEN",
+		"AWS_SECRET_ACCESS_KEY", "S3_BUCKET", "OAUTH2_CLIENT_ID", "my_var2",
+	} {
+		if envNameLooksLikeKey(name) {
+			t.Errorf("%s: a real variable name taken for a key", name)
+		}
+	}
+
+	err := validateUserServer("supabase", MCPServerConfig{
+		Command: "npx", Args: []string{"-y", "@supabase/mcp-server-supabase@0.13.0"}, Env: []string{fakeKey},
+		AcknowledgedUnconfined: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "looks like a key") {
+		t.Fatalf("adding a server with a key for a name: err=%v, want a refusal saying it looks like a key", err)
+	}
+	if strings.Contains(err.Error(), "0a1b") {
+		t.Errorf("the refusal repeats the key: %q", err)
+	}
+
+	s := mcpAdminTestServer(t)
+	resp := s.mcpResult(context.Background(), setEnvRequest(fakeKey, "value"))
+	if resp.Ok || strings.Contains(resp.Error, "0a1b") {
+		t.Errorf("set_env with a key for a name: ok=%v err=%q, want a refusal that does not repeat it", resp.Ok, resp.Error)
+	}
+
+	shown := strings.Join(maskedEnvNames([]string{"GOOD_NAME", fakeKey}), " ")
+	if strings.Contains(shown, "0a1b") || !strings.Contains(shown, "GOOD_NAME") || !strings.Contains(shown, "sbp_…") {
+		t.Errorf("masked names = %q, want GOOD_NAME kept and the key cut to sbp_…", shown)
+	}
+}

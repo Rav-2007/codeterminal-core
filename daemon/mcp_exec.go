@@ -40,6 +40,36 @@ var execAllowedBinaries = map[string]bool{
 
 const execTimeout = 30 * time.Second
 
+// maxExecTimeout bounds timeout_seconds (2026-10-15). 30 s is the default and
+// stays it, but a real test suite rarely fits -- this repository's own takes
+// three minutes -- so a turn that has to run one asks for longer, up to this,
+// and the approval prompt shows the number it asked for. The turn's own
+// deadline still ends it first (withinDeadline; the loop runs every call under
+// a context that ends with the turn).
+const maxExecTimeout = 15 * time.Minute
+
+// withinDeadline is timeout, shortened to what is left before ctx's deadline
+// -- the turn's, for a tool call -- so a timeout message names the limit that
+// actually applied.
+func withinDeadline(ctx context.Context, timeout time.Duration) time.Duration {
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl).Truncate(time.Second); left < timeout {
+			return max(left, time.Second)
+		}
+	}
+	return timeout
+}
+
+// execTimeoutArg is the timeout one call asks for: def when it asks for none,
+// and never more than maxExecTimeout -- or def, when a long task's budget
+// already allows more.
+func execTimeoutArg(seconds int, def time.Duration) time.Duration {
+	if seconds <= 0 {
+		return def
+	}
+	return min(time.Duration(seconds)*time.Second, max(maxExecTimeout, def))
+}
+
 // execTimeoutFor is how long one command may run in this turn: a long task's
 // budget says (mcp.budget.task.exec_seconds), because a real test suite does
 // not fit in an ordinary turn's 30 s.
@@ -67,11 +97,26 @@ func (s *Server) execRefusal(bin string) string {
 	return execRefusalWith(bin, extras, len(extras) > 0 && s.sandboxExecConfined())
 }
 
+// extraPrograms are the programs past the four: the user's
+// mcp.builtin.extra_programs, and the runners this project's own manifests
+// call for (projecttoolchain.go). Both apply only where the host confines the
+// command -- execProgramsWith -- exactly as extra_programs always has.
 func (s *Server) extraPrograms() []string {
-	if s.cfg == nil {
-		return nil
+	var extras []string
+	if s.cfg != nil {
+		extras = append(extras, s.cfg.MCP.Builtin.ExtraPrograms...)
 	}
-	return s.cfg.MCP.Builtin.ExtraPrograms
+	seen := map[string]bool{}
+	for _, p := range extras {
+		seen[p] = true
+	}
+	for _, p := range projectToolchainPrograms(s.workspace) {
+		if !seen[p] {
+			seen[p] = true
+			extras = append(extras, p)
+		}
+	}
+	return extras
 }
 
 // execProgramsWith and execRefusalWith are the rule itself, given whether this
@@ -97,8 +142,9 @@ func execRefusalWith(bin string, extras []string, confined bool) string {
 			continue
 		}
 		if !confined {
-			return fmt.Sprintf("%q is in mcp.builtin.extra_programs, which applies only where commands run "+
-				"in a sandbox, and this host has none (install bubblewrap)", bin)
+			return fmt.Sprintf("%q may run only where commands run in a sandbox (it is in "+
+				"mcp.builtin.extra_programs, or this project's own toolchain), and this host has none "+
+				"(install bubblewrap); run_command can run it in the real project, with the user's approval", bin)
 		}
 		return ""
 	}
@@ -285,7 +331,8 @@ func (s *Server) sandboxExecDescriptionFor(timeout time.Duration) string {
 	}
 
 	return "Run a build or test command (" + strings.Join(s.execPrograms(), ", ") + ") in the workspace root, " +
-		"with a " + humanDuration(timeout) + " timeout. " +
+		"with a " + humanDuration(timeout) + " timeout unless timeout_seconds asks for longer (at most " +
+		humanDuration(max(maxExecTimeout, timeout)) + "): give it for a full test suite or build. " +
 		"It is not a shell: one program and its arguments, no pipes or &&. " +
 		confinement + " " + limits + " It can reach the network, which its purpose requires. " +
 		"These tools execute project-supplied scripts (Makefile recipes, package.json scripts, build.rs), " +
@@ -500,11 +547,13 @@ func (s *Server) builtinSandboxExecStaged(ctx context.Context, raw json.RawMessa
 // so its build caches) stays the project's, so a working copy builds warm.
 func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, root string, timeout time.Duration) (mcp.Result, error) {
 	var args struct {
-		Command string `json:"command"`
+		Command        string `json:"command"`
+		TimeoutSeconds int    `json:"timeout_seconds"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return toolError("arguments were not a valid JSON object: %v", err)
 	}
+	timeout = withinDeadline(ctx, execTimeoutArg(args.TimeoutSeconds, timeout))
 
 	parts := strings.Fields(strings.TrimSpace(args.Command))
 	if len(parts) == 0 {
@@ -619,6 +668,13 @@ func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, 
 	if cfg.HomeDir != "" {
 		cmd.Env = append(cmd.Env, "HOME="+cfg.HomeDir)
 	}
+	// NO PYTHON BYTECODE CACHE (2026-10-15). Python reuses a .pyc whose source
+	// has the same size and the same whole-second mtime -- so a test run, then
+	// a same-length fix ("a - b" to "a + b") in the same second, ran the OLD code
+	// and failed the fixed test. Found by TestAPythonProjectTestsItsEditsInThe
+	// WorkingCopy. A working copy is short-lived, so the cache saved nothing, and
+	// its __pycache__ folders were noise in the turn's "created by a command".
+	cmd.Env = append(cmd.Env, "PYTHONDONTWRITEBYTECODE=1")
 	// LANDLOCK HAS NO PRIVATE /tmp. bwrap mounts a fresh tmpfs there; landlock
 	// cannot, and the shared /tmp holds other programs' files and sockets, so
 	// the policy does not grant it. The command gets a directory of its own

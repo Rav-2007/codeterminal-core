@@ -31,6 +31,7 @@
         "search_code":    "allow",
         "repo_map":       "allow",
         "grep":           "allow",
+        "find_files":     "allow",
         "web_search":     "deny",
         "web_fetch":      "deny"
       }

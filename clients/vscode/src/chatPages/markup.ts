@@ -286,11 +286,45 @@ function settingsPage(): string {
   </section>`;
 }
 
-/** All three pages, hidden until opened. Placed after the composer. */
+/**
+ * THE /mcp DIALOG, the shape of Claude Code's: every server in one list, by
+ * where it comes from, each with its state; open one for what can be done to
+ * it -- Authenticate, Set key, Check connection, Disable. Filled by pages.js
+ * from the same page:mcp message as Customize > MCP, and acting through the
+ * same mcp:row table (rules.ts), so the two never disagree.
+ */
+function mcpDialog(): string {
+  return `<div class="mcp-dlg-backdrop" id="mcpDlg" hidden>
+    <div class="mcp-dlg" role="dialog" aria-modal="true" aria-labelledby="mcpDlgTitle">
+      <div class="mcp-dlg-head">
+        <h2 id="mcpDlgTitle" tabindex="-1">MCP servers</h2>
+        <button type="button" class="mcp-dlg-x" id="mcpDlgClose" aria-label="Close" title="Close (Esc)">&#x2715;</button>
+      </div>
+      <div id="mcpDlgList">
+        <input type="search" id="mcpDlgFilter" class="mcp-dlg-filter" placeholder="Filter servers…" aria-label="Filter servers" autocomplete="off" spellcheck="false">
+        <p class="mcp-dlg-notice" id="mcpDlgNotice" role="status" hidden></p>
+        <div id="mcpDlgGroups"></div>
+        <div class="mcp-dlg-foot">
+          <button type="button" class="mcp-dlg-link" data-mcpdlg="add">Add a server…</button>
+          <button type="button" class="mcp-dlg-link" data-mcpdlg="market">Browse the marketplace</button>
+        </div>
+      </div>
+      <div id="mcpDlgDetail" hidden>
+        <button type="button" class="mcp-dlg-link mcp-dlg-back" id="mcpDlgBack">&larr; Back to list</button>
+        <div class="mcp-dlg-dhead"><span class="mcp-dlg-name" id="mcpDlgName"></span><span class="mcp-pill" id="mcpDlgBadge"></span></div>
+        <div class="mcp-dlg-info" id="mcpDlgInfo"></div>
+        <div class="mcp-dlg-actions" id="mcpDlgActions"></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/** All three pages and the /mcp dialog, hidden until opened. Placed after the composer. */
 export function chatPagesMarkup(): string {
   return `${customizePage()}
   ${accountPage()}
-  ${settingsPage()}`;
+  ${settingsPage()}
+  ${mcpDialog()}`;
 }
 
 /** The pages' styles. Tokens only (scripts/theme-check.js scans this file). */
@@ -430,6 +464,62 @@ export function chatPagesStyles(): string {
   .row-act.primary { color: var(--ct-accent); font-weight: 600; }
   .tag.ask { color: var(--ct-accent); border-color: color-mix(in srgb, var(--ct-accent) 50%, transparent); }
   .row-spacer { flex: 1; }
+
+  /* The /mcp dialog (mcpDialog above). */
+  .mcp-dlg-backdrop {
+    position: fixed; inset: 0; z-index: 70;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 48px 12px 12px;
+    background: color-mix(in srgb, var(--ct-bg) 55%, transparent);
+  }
+  .mcp-dlg-backdrop[hidden] { display: none; }
+  .mcp-dlg {
+    width: 100%; max-width: 520px; max-height: calc(100vh - 64px); overflow-y: auto;
+    background: var(--ct-popover-bg); color: var(--ct-ink);
+    border: 1px solid var(--ct-border); border-radius: 12px; box-shadow: var(--ct-shadow);
+    padding: 14px 16px 16px;
+  }
+  .mcp-dlg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .mcp-dlg-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .mcp-dlg-x { font: inherit; background: transparent; border: 0; color: var(--ct-muted); cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+  .mcp-dlg-x:hover { color: var(--ct-ink); background: var(--ct-control-bg); }
+  .mcp-dlg-filter {
+    width: 100%; box-sizing: border-box; font: inherit; padding: 7px 10px; margin-bottom: 10px;
+    background: var(--ct-control-bg); color: var(--ct-ink); border: 1px solid var(--ct-control-border); border-radius: 8px;
+  }
+  .mcp-dlg-notice { color: var(--ct-muted); font-size: 12px; margin: 0 0 8px; }
+  .mcp-dlg-group { color: var(--ct-muted); font-size: 11.5px; font-weight: 600; margin: 12px 0 6px; }
+  .mcp-dlg-item {
+    display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; text-align: left;
+    font: inherit; color: var(--ct-ink); cursor: pointer;
+    background: var(--ct-surface); border: 1px solid var(--ct-border); border-radius: 8px;
+    padding: 8px 10px; margin-bottom: 6px;
+  }
+  .mcp-dlg-item:hover, .mcp-dlg-item:focus-visible { border-color: var(--ct-accent); }
+  .mcp-dlg-item .mcp-dlg-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-dlg-name { font-family: var(--vscode-editor-font-family); font-size: 13px; }
+  .mcp-pill { flex: none; font-size: 11px; border-radius: 6px; padding: 2px 8px; border: 1px solid var(--ct-border); color: var(--ct-muted); white-space: nowrap; }
+  .mcp-pill.on { color: var(--ct-ok); border-color: color-mix(in srgb, var(--ct-ok) 55%, transparent); background: color-mix(in srgb, var(--ct-ok) 12%, transparent); }
+  .mcp-pill.warn { color: var(--ct-warn); border-color: color-mix(in srgb, var(--ct-warn) 55%, transparent); background: color-mix(in srgb, var(--ct-warn) 12%, transparent); }
+  .mcp-pill.bad { color: var(--ct-danger); border-color: color-mix(in srgb, var(--ct-danger) 55%, transparent); background: color-mix(in srgb, var(--ct-danger) 12%, transparent); }
+  .mcp-dlg-foot { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--ct-border); }
+  .mcp-dlg-link { font: inherit; font-size: 12.5px; background: transparent; border: 0; padding: 0; color: var(--ct-accent); cursor: pointer; }
+  .mcp-dlg-back { color: var(--ct-muted); margin-bottom: 12px; }
+  .mcp-dlg-dhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .mcp-dlg-dhead .mcp-dlg-name { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+  .mcp-dlg-info { color: var(--ct-muted); font-size: 12px; line-height: 1.5; margin-bottom: 12px; }
+  .mcp-dlg-info p { margin: 0 0 4px; overflow-wrap: anywhere; }
+  .mcp-dlg-info code { font-family: var(--vscode-editor-font-family); }
+  .mcp-dlg-info .mcp-problem { color: var(--ct-danger); }
+  .mcp-dlg-actions { display: flex; flex-direction: column; gap: 8px; }
+  .mcp-dlg-btn {
+    font: inherit; width: 100%; padding: 8px 10px; border-radius: 8px; cursor: pointer;
+    background: var(--ct-control-bg); color: var(--ct-ink); border: 1px solid var(--ct-control-border);
+  }
+  .mcp-dlg-btn:hover { border-color: var(--ct-accent); }
+  .mcp-dlg-btn.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); border-color: var(--ct-accent-solid); }
+  .mcp-dlg-btn.primary:hover { background: var(--ct-accent-solid-hover); }
+  .mcp-dlg-btn.danger { color: var(--ct-danger); }
   .empty { color: var(--ct-muted); padding: 10px 12px; border: 1px dashed var(--ct-border); border-radius: 10px; }
   .empty p { margin: 0; line-height: 1.5; }
 

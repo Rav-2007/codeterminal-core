@@ -77,7 +77,7 @@ const (
 
 var stallKinds = map[string]stallKind{
 	"read_file": stallLookup, "list_directory": stallLookup, "search_code": stallLookup,
-	"grep": stallLookup, "repo_map": stallLookup, "git_history": stallLookup,
+	"grep": stallLookup, "find_files": stallLookup, "repo_map": stallLookup, "git_history": stallLookup,
 	"web_search": stallLookup, "web_fetch": stallLookup,
 	"query_compiler_definition": stallLookup, "query_compiler_references": stallLookup,
 	"propose_edit": stallEdit, "propose_ast_edit": stallEdit,

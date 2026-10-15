@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"mochiii/daemon/mcp"
 	"mochiii/editapply"
 	"mochiii/protocol"
 )
@@ -328,6 +329,7 @@ type MCPServerConfig struct {
 	// Command is the executable to run, Args its arguments. Never a shell
 	// string: the daemon execs the binary directly with Args as a []string, so
 	// there is no shell to quote for and no metacharacter to escape.
+	// A remote server has URL instead (and no Command).
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
 
@@ -341,6 +343,11 @@ type MCPServerConfig struct {
 	// mcp.ServerEnv). The model-API keys are never inheritable, whatever this
 	// list says -- see mcp.ForbiddenEnvNames.
 	Env []string `json:"env,omitempty"`
+
+	// EnvMap gives the server variables whose values are TEMPLATES --
+	// {"API_KEY": "${MY_KEY}"} -- so a block can say where a value comes from
+	// without holding it (mcpexpand.go). Args may hold templates too.
+	EnvMap map[string]string `json:"env_map,omitempty"`
 
 	// Tools maps a tool name to "deny", "ask" or "allow". Unlisted is "ask":
 	// the safe default is to involve the human, not to guess that a tool the
@@ -366,6 +373,36 @@ type MCPServerConfig struct {
 	// about the project. See Server.serverStartDir for why the default is not
 	// simply wherever the daemon is.
 	Cwd string `json:"cwd,omitempty"`
+
+	// ConnectTimeoutSeconds is this server's own bound on its first handshake,
+	// over mcp.budget's, at most maxConnectTimeoutSeconds: a launcher that
+	// downloads its package on first run can need longer than the rest.
+	ConnectTimeoutSeconds int `json:"connect_timeout_seconds,omitempty"`
+
+	// A REMOTE SERVER (mcp/remoteclient.go): Type "http" (streamable HTTP) or
+	// "sse", URL its endpoint, and Headers sent with every request. A header
+	// is a ${VAR} template, or "" for a value kept in the key file
+	// (mcpsecrets.go) -- never the value itself: this file is shown and copied.
+	Type    string            `json:"type,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// A server the project proposed (mcpproject.go). Never read from or
+	// written to a file: set when .mcp.json is merged in.
+	project  string // the .mcp.json it came from
+	approval string // protocol.MCPApproval*
+	digest   string
+}
+
+// remote reports whether srv is reached at a URL rather than started here.
+func (srv MCPServerConfig) remote() bool { return strings.TrimSpace(srv.URL) != "" }
+
+// connectTimeout is how long this server's handshake may take.
+func (srv MCPServerConfig) connectTimeout(budget MCPBudgetConfig) time.Duration {
+	if srv.ConnectTimeoutSeconds > 0 {
+		return time.Duration(min(srv.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)) * time.Second
+	}
+	return budget.resolvedConnectTimeout()
 }
 
 // ServerCwdWorkspace is the one value MCPServerConfig.Cwd takes besides empty.
@@ -621,7 +658,7 @@ const (
 var (
 	knownMCPKeys        = []string{"enabled", "builtin", "servers", "budget", "pipeline", "no_working_copy"}
 	knownMCPBuiltinKeys = []string{"disabled", "tools", "extra_programs"}
-	knownMCPServerKeys  = []string{"command", "args", "env", "tools", "acknowledged_unconfined", "disabled"}
+	knownMCPServerKeys  = []string{"command", "args", "env", "env_map", "tools", "acknowledged_unconfined", "disabled", "cwd", "connect_timeout_seconds", "type", "url", "headers"}
 	knownMCPBudgetKeys  = []string{"max_iterations", "turn_timeout_seconds", "max_tool_result_bytes",
 		"max_total_tool_bytes", "max_advertised_tools", "max_message_bytes",
 		"connect_timeout_seconds", "max_turn_iterations", "task"}
@@ -806,6 +843,12 @@ func (c *Config) validateMCP() error {
 }
 
 func validateServerBlock(s MCPServerConfig) error {
+	if s.remote() {
+		return validateRemoteBlock(s)
+	}
+	if t := strings.ToLower(strings.TrimSpace(s.Type)); t != "" && t != "stdio" {
+		return fmt.Errorf("has \"type\": %q but no \"url\"; a remote server needs its URL", s.Type)
+	}
 	if strings.TrimSpace(s.Command) == "" {
 		return fmt.Errorf("has no \"command\" to run")
 	}
@@ -819,7 +862,10 @@ func validateServerBlock(s MCPServerConfig) error {
 		return fmt.Errorf("has \"cwd\": %q; the only value is %q (start in the project), and leaving it out "+
 			"starts the server in a private folder of its own", s.Cwd, ServerCwdWorkspace)
 	}
-	return nil
+	if s.ConnectTimeoutSeconds < 0 || s.ConnectTimeoutSeconds > maxConnectTimeoutSeconds {
+		return fmt.Errorf("has connect_timeout_seconds %d; it is 1 to %d", s.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)
+	}
+	return validateTemplates(s)
 }
 
 func validateToolPolicies(where string, tools map[string]string) error {
@@ -985,6 +1031,10 @@ func (c *Config) warnMCPPolicySurface() {
 				"only when one is installed and otherwise with your full privileges — set these to %q to see each command first",
 				len(executes), strings.Join(executes, ", "), PolicyAsk)
 		}
+		if changes := byClass[classChangesFiles]; len(changes) > 0 {
+			c.warnf("mcp.builtin: %s set to %q, but each changes your real files when it runs, so it asks you "+
+				"every time whatever this setting says", strings.Join(changes, ", "), PolicyAllow)
+		}
 		if unknown := byClass[classUnknown]; len(unknown) > 0 {
 			c.warnf("mcp.builtin: %s set to %q, but no built-in tool has that name, so the setting does nothing",
 				strings.Join(unknown, ", "), PolicyAllow)
@@ -1015,11 +1065,12 @@ func (c *Config) warnMCPPolicySurface() {
 type builtinClass int
 
 const (
-	classUnknown  builtinClass = iota // not the name of any built-in
-	classConfined                     // our code, behind the same gates as everything else
-	classNetwork                      // sends data to a third party over the internet
-	classLaunches                     // can start a language server (register item 32)
-	classExecutes                     // runs commands the project's build files define
+	classUnknown      builtinClass = iota // not the name of any built-in
+	classConfined                         // our code, behind the same gates as everything else
+	classNetwork                          // sends data to a third party over the internet
+	classLaunches                         // can start a language server (register item 32)
+	classExecutes                         // runs commands the project's build files define
+	classChangesFiles                     // deletes, moves or restores the user's real files (fileops.go)
 )
 
 // builtinToolClasses names every built-in the daemon can register.
@@ -1056,6 +1107,8 @@ var builtinToolClasses = map[string]builtinClass{
 	"record_finding": classConfined,
 	"finish_task":    classConfined,
 	"grep":           classConfined,
+	// Names files the way grep reads them: same gate, same skipped folders (findfiles.go).
+	"find_files": classConfined,
 	// It starts git against config the repository supplies (githistory.go).
 	"git_history": classLaunches,
 	// It changes the working copy, never the project (checkpoint.go).
@@ -1065,6 +1118,12 @@ var builtinToolClasses = map[string]builtinClass{
 	// It runs a read-only sub-search; each tool call inside it is asked about
 	// on its own (investigate.go).
 	"investigate": classConfined,
+	// They change real files when allowed, so they always ask (fileops.go).
+	"delete_path":     classChangesFiles,
+	"move_path":       classChangesFiles,
+	"restore_deleted": classChangesFiles,
+	// A real terminal command: unconfined, and it always asks (runcommand.go).
+	"run_command": classExecutes,
 }
 
 // builtinToolClass classifies a configured built-in name. An unknown name is
@@ -1119,4 +1178,42 @@ func sortedToolNames(m map[string]string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// validateRemoteBlock is validateServerBlock for a server reached at a URL.
+func validateRemoteBlock(s MCPServerConfig) error {
+	if strings.TrimSpace(s.Command) != "" || len(s.Args) > 0 {
+		return fmt.Errorf("has both a \"url\" and a \"command\"; a server is one or the other")
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Type)) {
+	case "http", "sse", "streamable-http":
+	case "":
+		return fmt.Errorf("has a \"url\" but no \"type\"; add \"type\": \"http\" (or \"sse\" for an older server)")
+	default:
+		return fmt.Errorf("has \"type\": %q; a remote server is \"http\" or \"sse\"", s.Type)
+	}
+	if _, err := mcp.ValidateRemoteURL(s.URL); err != nil {
+		return fmt.Errorf("its url %v", err)
+	}
+	if strings.Contains(s.URL, "${") {
+		return fmt.Errorf("its url holds a ${VAR}; put a key in a header instead, where it is kept as a key")
+	}
+	if len(s.Env) > 0 || len(s.EnvMap) > 0 || s.Cwd != "" {
+		return fmt.Errorf("is remote, so it has no environment or folder; give a key as a header")
+	}
+	for _, name := range sortedStringKeys(s.Headers) {
+		if err := mcp.ValidateHeader(name, s.Headers[name]); err != nil {
+			return err
+		}
+		for _, v := range templateVars(s.Headers[name]) {
+			if mcp.IsForbiddenEnvName(v) {
+				return fmt.Errorf("${%s} names one of this product's own inference credentials, which is never "+
+					"sent to an MCP server", v)
+			}
+		}
+	}
+	if s.ConnectTimeoutSeconds < 0 || s.ConnectTimeoutSeconds > maxConnectTimeoutSeconds {
+		return fmt.Errorf("has connect_timeout_seconds %d; it is 1 to %d", s.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)
+	}
+	return nil
 }
