@@ -98,6 +98,11 @@ type agentTurn struct {
 	// the same host, the second elsewhere, the third ends the turn. A reply with
 	// anything in it resets it, so empties apart are each asked again.
 	emptyInARow int
+	// lastFailure is the most recent failed tool call's reason, as the user
+	// would read it ("propose_edit: ... is a directory ..."), or "" once a call
+	// succeeds. A turn that ends on empty replies says it, so the failure the
+	// model went quiet after is not left folded inside the work block.
+	lastFailure string
 
 	// nudgedForGrounding records that the loop already asked this turn's model
 	// to look something up instead of hedging about it.
@@ -722,22 +727,36 @@ func (s *Server) runAgentLoop(
 			switch turn.emptyInARow {
 			case 1:
 				turn.messages = append(turn.messages, chatMessage{Role: "user", Content: emptyReplyNote})
-				s.logger.Printf("agent: the model sent an empty reply at step %d (served by %q); asking the same host again",
-					turn.iteration, servedBy)
+				s.logger.Printf("agent: the model sent an empty reply at step %d (served by %q, finish_reason %q); asking the same host again",
+					turn.iteration, servedBy, finishReason)
 				continue
 			case 2:
-				routing = avoidProvider(routing, servedBy)
-				s.logger.Printf("agent: a second empty reply in a row at step %d (served by %q); asking again elsewhere",
-					turn.iteration, servedBy)
+				// "Elsewhere" needs a name to avoid. A host that never named
+				// itself (a direct provider API, a local server) cannot be
+				// routed around, and the log said it was all the same.
+				if servedBy == "" {
+					s.logger.Printf("agent: a second empty reply in a row at step %d (finish_reason %q); the host "+
+						"was not named, so it cannot be avoided -- asking once more", turn.iteration, finishReason)
+				} else {
+					routing = avoidProvider(routing, servedBy)
+					s.logger.Printf("agent: a second empty reply in a row at step %d (served by %q); asking again elsewhere",
+						turn.iteration, servedBy)
+				}
 				continue
 			}
 			s.logger.Printf("agent: the model sent an empty reply three times in a row; stopping at step %d", turn.iteration)
+			detail := "the model sent back an empty answer three times in a row, so this task stopped — " +
+				"what you see above is everything that was done. Ask again, or pick another model with /model."
+			if turn.lastFailure != "" {
+				detail = "the model sent back an empty answer three times in a row after a tool call failed (" +
+					turn.lastFailure + "), so this task stopped and nothing was changed by that call. " +
+					"Ask again with that in mind, or pick another model with /model."
+			}
 			return agentResult{
 				FinalText: full.String(),
 				Incomplete: &protocol.IncompleteInfo{
 					Reason: protocol.IncompleteProviderError,
-					Detail: "the model sent back an empty answer three times in a row, so this task stopped — " +
-						"what you see above is everything that was done. Ask again, or pick another model with /model.",
+					Detail: detail,
 				},
 				ToolNames:      turn.toolNames,
 				ToolSignatures: turn.toolSignatures,
@@ -1097,6 +1116,7 @@ func (s *Server) dispatchToolCall(
 	}
 
 	audit := auditFor(turn.iteration, turn.mode, name, decision.tool, decision.policy, arguments)
+	audit.CallID = call.ID
 	audit.Source, audit.DenyCause = decision.source, decision.cause
 	audit.WaitedMS = decision.waited.Milliseconds()
 	if decision.tool.Server != "" {
@@ -1286,6 +1306,13 @@ func (s *Server) dispatchToolCall(
 	failReason := ""
 	if result.IsError {
 		failReason = toolFailureReason(rendered)
+		// THE LOG SAYS WHY, keyed by the call id the chat row and the audit
+		// line carry. It used to record only "outcome":"error" and a byte count,
+		// so a failure the user reported had to be reconstructed by hand.
+		s.logger.Printf("agent: %q failed (call %q): %s", name, call.ID, failReason)
+		turn.lastFailure = activity.Tool + ": " + failReason
+	} else {
+		turn.lastFailure = ""
 	}
 	if decision.tool.Lane == protocol.LaneThirdParty {
 		rendered = outcome + frameLaneBOutput(decision.tool.Server, rendered)

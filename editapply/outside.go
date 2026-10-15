@@ -42,6 +42,16 @@ const OutsideBackupSubdir = "home"
 // errOutsideHome is returned for an absolute path outside the home folder.
 var errOutsideHome = errors.New("Mochiii only writes inside your home folder")
 
+// ErrPathRefused is in the chain of every refusal of a path an edit may never
+// write, whatever the arguments: outside the home folder, a hidden file, ~/bin.
+// Asking again with the same path cannot succeed.
+var ErrPathRefused = errors.New("this path is never written")
+
+// pathRefusal wraps why a path is refused as an ErrPathRefused.
+func pathRefusal(path, why string) error {
+	return &quietCause{msg: path + ": " + why, cause: ErrPathRefused}
+}
+
 // RealHomeDir is the user's home folder, symlinks resolved, so it compares
 // byte-for-byte with resolved target paths.
 func RealHomeDir() (string, error) {
@@ -153,7 +163,7 @@ func PrepareEditAnywhere(realWorkspaceRoot string, block EditBlock) (*PreparedEd
 		return PrepareEdit(realWorkspaceRoot, inside)
 	}
 	if !within(home, abs) || !within(home, resolvedAbs) {
-		return nil, fmt.Errorf("%s: %w", block.FilePath, errOutsideHome)
+		return nil, pathRefusal(block.FilePath, errOutsideHome.Error())
 	}
 
 	rel, err := filepath.Rel(home, abs)
@@ -161,7 +171,13 @@ func PrepareEditAnywhere(realWorkspaceRoot string, block EditBlock) (*PreparedEd
 		return nil, err
 	}
 	if why := outsideWriteRefusal(rel); why != "" {
-		return nil, fmt.Errorf("%s: %s", block.FilePath, why)
+		return nil, pathRefusal(block.FilePath, why)
+	}
+	// A FOLDER IS NOT A FILE, and is said so in the path the model sent (~/...),
+	// not the home-relative one PrepareEdit would name, which reads as a project
+	// path and would steer the next try into the project.
+	if info, err := os.Stat(resolvedAbs); err == nil && info.IsDir() {
+		return nil, &dirError{path: HomeDisplayPath(rel)}
 	}
 
 	outside := block
@@ -180,7 +196,7 @@ func PrepareEditAnywhere(realWorkspaceRoot string, block EditBlock) (*PreparedEd
 		return nil, err
 	}
 	if why := outsideWriteRefusal(resolvedRel); why != "" {
-		return nil, fmt.Errorf("%s: %s", block.FilePath, why)
+		return nil, pathRefusal(block.FilePath, why)
 	}
 	if within(realWorkspaceRoot, prepared.TargetPath) {
 		return nil, fmt.Errorf("%s leads into this project; name it by its path in the project instead", block.FilePath)

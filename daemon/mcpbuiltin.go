@@ -292,6 +292,12 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 	if p.checked != "" && !p.checkPassed {
 		info.Output = p.checkOutput
 	}
+	// NOTHING CHANGED, NOTHING RAN: no report. "not checked: the agent did not
+	// build or test these changes" under a turn whose only edit FAILED read as
+	// though there were changes to test (2026-10-15).
+	if len(net) == 0 && len(p.blocks) == 0 && p.checked == "" && len(notOffered) == 0 && len(byCommand) == 0 {
+		info = nil
+	}
 	return append(net, p.blocks...), info, degraded
 }
 
@@ -1021,7 +1027,7 @@ func applyInWorkingCopy(proposals *proposalSink, block editapply.EditBlock) (mcp
 	block.FilePath = rel
 	prepared, err := st.apply(block)
 	if err != nil {
-		res, _ := toolError("that edit cannot be applied: %s", st.toReal(err.Error()))
+		res, _ := editFailure(shown, st.toReal(err.Error()), err)
 		return res, true
 	}
 	what := fmt.Sprintf("changed lines %d-%d of %s", prepared.StartLine, prepared.EndLine, shown)
@@ -1100,7 +1106,7 @@ func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, prop
 		// The refusal text is already written for a human and names no absolute
 		// path -- it is the same message the edit pipeline shows. Handing it
 		// back to the model lets it fix its own SEARCH text.
-		return toolError("that edit cannot be applied: %v", err)
+		return editFailure(args.Path, err.Error(), err)
 	}
 
 	proposals.add(block)
