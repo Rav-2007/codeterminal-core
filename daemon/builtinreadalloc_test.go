@@ -193,6 +193,9 @@ var builtinToolSurface = []string{
 	"fileops.go",
 	// run_command bounds its output at source with tailBuffer, as sandbox_exec does.
 	"runcommand.go",
+	// Added 2026-10-15 with find_files. It reads no file's contents: it walks
+	// names, as grep's walk does, bounded by findFilesMaxWalked.
+	"findfiles.go",
 }
 
 // TestBuiltinToolSurfaceBoundsItsReads is the CLASS guard, and it exists

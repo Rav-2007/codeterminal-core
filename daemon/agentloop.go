@@ -1144,9 +1144,15 @@ func (s *Server) dispatchToolCall(
 	//
 	// An approved launch travels to the tool on its context and nowhere else:
 	// scoped to this one call, gone when it returns.
-	callCtx := ctx
+	//
+	// THE TURN'S DEADLINE BINDS THE CALL TOO (2026-10-15). It was checked only
+	// between steps, so a command given a long timeout_seconds ran past
+	// turn_timeout_seconds, which run_command's own comment said could not
+	// happen. bud.deadline already includes the time the human spent deciding.
+	callCtx, cancelCall := context.WithDeadline(ctx, bud.deadline)
+	defer cancelCall()
 	if decision.launchKey != "" {
-		callCtx = withApprovedLaunch(ctx, decision.launchKey)
+		callCtx = withApprovedLaunch(callCtx, decision.launchKey)
 		audit.Launch = decision.launchProgram
 	}
 	if decision.outsideRead != "" {

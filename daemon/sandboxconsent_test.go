@@ -236,6 +236,9 @@ var allBuiltinNames = []string{
 	// long-task tool. It reads the project's files in this process, under the
 	// gates read_file is under: it runs nothing and reaches nothing.
 	"grep",
+	// Since 2026-10-15 (findfiles.go): grep's walk and gate, names only. It runs
+	// nothing and reaches nothing.
+	"find_files",
 }
 
 // AND THE LIST HAS TO BE COMPLETE, or the sentence above is not true.

@@ -132,6 +132,7 @@ func (s *Server) builtinRunCommand(ctx context.Context, raw json.RawMessage) (mc
 	if args.TimeoutSeconds > 0 {
 		timeout = min(time.Duration(args.TimeoutSeconds)*time.Second, maxRunCommandTimeout)
 	}
+	timeout = withinDeadline(ctx, timeout) // the turn's deadline binds it too
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

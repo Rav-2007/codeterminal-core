@@ -1107,6 +1107,8 @@ var builtinToolClasses = map[string]builtinClass{
 	"record_finding": classConfined,
 	"finish_task":    classConfined,
 	"grep":           classConfined,
+	// Names files the way grep reads them: same gate, same skipped folders (findfiles.go).
+	"find_files": classConfined,
 	// It starts git against config the repository supplies (githistory.go).
 	"git_history": classLaunches,
 	// It changes the working copy, never the project (checkpoint.go).
