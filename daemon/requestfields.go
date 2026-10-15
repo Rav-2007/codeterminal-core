@@ -46,7 +46,7 @@ import (
 // Named here rather than at the sniffers because the rule below is about the
 // SET, which no individual sniffer can see. A sniffer knows whether its own key
 // is present; only this list knows whether another one is too.
-var discriminatorKeys = [...]string{"edit", "undo", "status", "search", "approval", "connect", "chats", "mcp", "rules"}
+var discriminatorKeys = [...]string{"edit", "undo", "status", "search", "approval", "connect", "chats", "mcp", "rules", "github"}
 
 // requestFields decodes raw's top-level object for exact-key inspection,
 // reporting false when it is not a JSON object, when any object in it repeats a

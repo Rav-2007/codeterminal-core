@@ -46,6 +46,11 @@ func TestBuiltinClassTableMatchesTheTools(t *testing.T) {
 	// And the long-task modes', whose record_finding and finish_task exist
 	// nowhere else.
 	tools = append(tools, s.builtinTools(&proposalSink{}, modeDebug)...)
+	// And the GitHub tool, which exists only while a token and this project's
+	// repository are stored (githubtools.go).
+	s.github.loaded = true
+	s.github.cred = githubCredential{Token: "t", Repos: map[string]string{s.workspace: "o/r"}}
+	tools = append(tools, s.githubTools()...)
 
 	// ANTI-VACUITY: a table checked against nothing agrees with everything.
 	if len(tools) < 10 {

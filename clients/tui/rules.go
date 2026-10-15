@@ -78,7 +78,8 @@ func submitRules(clientName string, req protocol.RulesRequest) tea.Cmd {
 }
 
 // handleExtraSlash answers the local commands that are not cases of
-// handleLocalSlash's switch: the three here, and the command nobody has.
+// handleLocalSlash's switch: the three here, then GitHub's and the command
+// nobody has (github.go).
 //
 // IT IS THAT SWITCH'S default, and the reason is chatExtras' (statusline.go):
 // clients/tui/chat.go must not grow, so a command added since is reached
@@ -99,7 +100,7 @@ func (m chatModel) handleExtraSlash(name, args string) (tea.Model, tea.Cmd) {
 		}
 		return m, submitRules(m.clientName, protocol.RulesRequest{Action: protocol.RulesActionRemove, Number: n})
 	}
-	return m.sayLocally("unknown local command")
+	return m.handleGitHubSlash(name, args) // github.go: the GitHub commands, and the unknown one
 }
 
 // sayLocally shows text as a command's reply: on the screen, and not part of

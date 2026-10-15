@@ -495,6 +495,7 @@ func main() {
 			mcpRunDir:       mcpRunDirOrNone(logger),
 			mcpEnv:          launch.MCPEnv,
 			mcpSecrets:      mcpSecretStoreOrNone(logger),
+			githubCredPath:  githubCredPathOrNone(logger),
 		},
 		modelOverride:           *modelOverride,
 		systemPrompt:            systemPrompt,
