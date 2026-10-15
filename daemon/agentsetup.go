@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"mochiii/daemon/mcp"
@@ -35,14 +38,41 @@ const agentSetupHeader = "ABOUT THIS MOCHIII -- the setup the user sees in Mochi
 	"your tools \"builtin\" or a \"lane\", and never show their internal names (builtin__read_file): " +
 	"say what they do."
 
-// maxSetupToolsPerServer bounds the tool names listed for one server.
-const maxSetupToolsPerServer = 12
+// maxSetupToolsPerServer bounds the tool names listed for one server as on
+// the menu; maxSetupFindablePerServer, those listed as findable. Names only,
+// a few tokens each: the schemas are what the menu cap exists to save.
+const (
+	maxSetupToolsPerServer    = 12
+	maxSetupFindablePerServer = 40
+)
+
+// evidenceRule is said whenever a server is configured. FOUND 2026-10-15: told
+// two of Supabase's 29 tools, the model said "there is no active project" and
+// then -- having called nothing at all -- "there's no Supabase project ID in
+// the daemon logs or config", while the account had projects and
+// supabase__list_projects was one find_tools call away.
+const evidenceRule = "\n- Before you tell the user that something does not exist, is not set up, or cannot be " +
+	"found on one of these servers, look it up with that server's tool for it -- if the tool is not on your " +
+	"list, add it with find_tools first. Say only what a tool result showed: a call that failed (an error, a " +
+	"missing key, a refused permission, an unreachable server) is a failure to report as such, never evidence " +
+	"that the thing is absent, and an empty result means only that this connection returned nothing. Ask the " +
+	"user for an identifier only when no tool can look it up, or when several were found and you need to know " +
+	"which one they mean -- never pick one of several yourself."
+
+// setupTools is what the section says about each server's tools this turn:
+// offered are on the model's menu, findable are left off it but can be added
+// with find_tools.
+type setupTools struct {
+	offered  map[string][]string
+	findable map[string][]string
+}
 
 // agentSetup is the section. servers are this turn's configured servers
 // (serverInfos, read after the registry was built, so State is this turn's);
-// tools are the third-party tools offered; withheld is set in a mode that
-// connects no third-party server.
-func agentSetup(version, model, base, workspace string, servers []protocol.MCPServerInfo, tools map[string][]string, withheld bool) string {
+// tools are the third-party tools offered and findable; withheld is set in a
+// mode that connects no third-party server; hints are project facts read from
+// configuration (projectHints).
+func agentSetup(version, model, base, workspace string, servers []protocol.MCPServerInfo, tools setupTools, withheld bool, hints ...string) string {
 	var b strings.Builder
 	b.WriteString(agentSetupHeader)
 
@@ -88,40 +118,156 @@ func agentSetup(version, model, base, workspace string, servers []protocol.MCPSe
 		case len(s.HeadersMissing) > 0 && s.State != protocol.MCPStateRunning:
 			fmt.Fprintf(&b, "has no value for its %s header, so it will likely refuse every call; the user sets it "+
 				"with Set key on the server in Customize > MCP.", strings.Join(s.HeadersMissing, ", "))
-		case len(tools[s.Name]) > 0:
-			names := tools[s.Name]
+		case len(tools.offered[s.Name])+len(tools.findable[s.Name]) > 0:
 			if s.URL != "" {
 				fmt.Fprintf(&b, "a remote server at %s (a call SENDS its arguments there); ", remoteHost(s.URL))
 			}
-			more := ""
-			if len(names) > maxSetupToolsPerServer {
-				more = fmt.Sprintf(" and %d more", len(names)-maxSetupToolsPerServer)
-				names = names[:maxSetupToolsPerServer]
+			offered, findable := tools.offered[s.Name], tools.findable[s.Name]
+			if len(findable) == 0 {
+				fmt.Fprintf(&b, "running; its tools: %s.", someOf(offered, maxSetupToolsPerServer))
+				break
 			}
-			fmt.Fprintf(&b, "running; its tools: %s%s.", strings.Join(names, ", "), more)
+			// ALL of its tools, not only the menu's. Listing only the offered
+			// ones is what made the model tell the user Supabase had two.
+			fmt.Fprintf(&b, "running, with %d tools.", len(offered)+len(findable))
+			if len(offered) > 0 {
+				fmt.Fprintf(&b, " On your tool list now: %s.", someOf(offered, maxSetupToolsPerServer))
+			}
+			fmt.Fprintf(&b, " Also available, not on your list until you call find_tools with what you need: %s.",
+				someOf(findable, maxSetupFindablePerServer))
 		default:
 			b.WriteString("running, but it offers no tools you can call this turn.")
 		}
 	}
+	for _, h := range hints {
+		b.WriteString("\n- " + h)
+	}
+	b.WriteString(evidenceRule)
 	return b.String()
+}
+
+// someOf is names joined, cut at max with a count of the rest.
+func someOf(names []string, max int) string {
+	if len(names) > max {
+		return strings.Join(names[:max], ", ") + fmt.Sprintf(" and %d more", len(names)-max)
+	}
+	return strings.Join(names, ", ")
+}
+
+// A SUPABASE PROJECT REF is twenty lower-case letters or digits: the
+// <ref> in https://supabase.com/dashboard/project/<ref> and
+// https://<ref>.supabase.co. Checked before one is ever repeated to the model,
+// so a malformed value -- or something that is not a ref at all, such as a key
+// pasted into the wrong flag -- is never offered as one.
+var supabaseRefPattern = regexp.MustCompile(`^[a-z0-9]{20}$`)
+
+// maxProjectRefFileBytes bounds the read of supabase/.temp/project-ref,
+// which holds one ref and a newline.
+const maxProjectRefFileBytes = 64
+
+// projectHints are the project facts this turn can state from configuration,
+// so the model does not ask the user for what is already set:
+//
+//   - a server started with --project-ref is SCOPED to that one project (the
+//     Supabase server then offers no account-level tools such as
+//     list_projects), and its tools act on it;
+//   - a folder linked with `supabase link` records the project in
+//     supabase/.temp/project-ref.
+//
+// Only a valid ref is repeated. Nothing else from a server's arguments is: they
+// can hold an --access-token.
+func projectHints(workspace string, servers []protocol.MCPServerInfo) []string {
+	var hints []string
+	supabase := false
+	for _, s := range servers {
+		if s.Disabled || s.Approval == protocol.MCPApprovalPending || s.Approval == protocol.MCPApprovalRejected {
+			continue
+		}
+		if strings.Contains(strings.ToLower(s.Name+" "+s.Program+" "+strings.Join(s.Args, " ")), "supabase") {
+			supabase = true
+		}
+		ref, found := flagValue(s.Args, "--project-ref")
+		switch {
+		case !found:
+		case supabaseRefPattern.MatchString(ref):
+			hints = append(hints, fmt.Sprintf("%s is started with --project-ref %s: it is limited to that one "+
+				"project, its tools act on it, and it cannot list the account's other projects.", s.Name, ref))
+		default:
+			hints = append(hints, fmt.Sprintf("%s is started with a --project-ref that is not a valid project "+
+				"reference (twenty lower-case letters and digits), so do not use it; the user can fix it with "+
+				"Change on the server in Customize > MCP.", s.Name))
+		}
+	}
+	if supabase && workspace != "" {
+		if ref, ok := linkedSupabaseRef(workspace); ok {
+			hints = append(hints, fmt.Sprintf("This project folder is linked to Supabase project %s "+
+				"(supabase/.temp/project-ref, written by `supabase link`). Use it when the user means "+
+				"\"this project\" and has not named another.", ref))
+		}
+	}
+	return hints
+}
+
+// flagValue finds --flag value or --flag=value in args.
+func flagValue(args []string, flag string) (string, bool) {
+	for i, a := range args {
+		if v, ok := strings.CutPrefix(a, flag+"="); ok {
+			return v, true
+		}
+		if a == flag {
+			if i+1 < len(args) {
+				return args[i+1], true
+			}
+			return "", true
+		}
+	}
+	return "", false
+}
+
+// linkedSupabaseRef reads the ref `supabase link` wrote into the workspace,
+// if it is there and valid. Only a small REGULAR file is read: Lstat, so a
+// link planted in the workspace cannot point this at a device or a file
+// outside it.
+func linkedSupabaseRef(workspace string) (string, bool) {
+	path := filepath.Join(workspace, "supabase", ".temp", "project-ref")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxProjectRefFileBytes {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	ref := strings.TrimSpace(string(data))
+	return ref, supabaseRefPattern.MatchString(ref)
 }
 
 // withAgentSetup returns messages with the setup section added to the system
 // message, for the servers and tools this turn really has.
 func (s *Server) withAgentSetup(ctx context.Context, registry *mcp.Registry, mode, model string, messages []chatMessage) []chatMessage {
 	cfg, _ := s.agentConfig()
-	tools := map[string][]string{}
-	offered, _ := registry.Advertised(ctx)
+	tools := setupTools{offered: map[string][]string{}, findable: map[string][]string{}}
+	// THE SAME MENU THE LOOP WILL OFFER: ranked against the same request
+	// (menuQuery), so "on your list" here is the list the model gets.
+	offered, _ := registry.AdvertisedFor(ctx, menuQuery(messages))
 	// The listing is also each server's health: how many tools it offered.
 	s.mcpStates.listed(registry.Listed())
 	for _, t := range offered {
 		if t.Server != mcp.BuiltinServerName {
-			tools[t.Server] = append(tools[t.Server], t.Name)
+			tools.offered[t.Server] = append(tools.offered[t.Server], t.Name)
 		}
 	}
+	// What the cap left off is findable -- the loop offers find_tools exactly
+	// when there is any -- except what this turn's mode withholds anyway.
+	for _, t := range registry.DroppedTools() {
+		if t.Server != mcp.BuiltinServerName && !modeWithholds(mode, t) && !modeWithholdsLaneB(mode) {
+			tools.findable[t.Server] = append(tools.findable[t.Server], t.Name)
+		}
+	}
+	servers := s.serverInfos(cfg)
 	_, base := s.credentials()
 	return withSystemNote(messages, agentSetup(daemonVersion, model, base, s.workspace,
-		s.serverInfos(cfg), tools, modeWithholdsLaneB(mode)))
+		servers, tools, modeWithholdsLaneB(mode), projectHints(s.workspace, servers)...))
 }
 
 // unavailableServerDetail is the notice for one server that would not start:

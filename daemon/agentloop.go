@@ -1253,8 +1253,10 @@ func (s *Server) dispatchToolCall(
 	// overrun in the same budget is not a rounding error, it is the same bug
 	// with a smaller constant.
 	frameOverhead := 0
+	outcome := ""
 	if decision.tool.Lane == protocol.LaneThirdParty {
-		frameOverhead = len(frameLaneBOutput(decision.tool.Server, ""))
+		outcome = laneBOutcomeNote(result)
+		frameOverhead = len(outcome) + len(frameLaneBOutput(decision.tool.Server, ""))
 	}
 	renderCap := cap - frameOverhead
 	if renderCap < 0 {
@@ -1280,7 +1282,7 @@ func (s *Server) dispatchToolCall(
 		failReason = toolFailureReason(rendered)
 	}
 	if decision.tool.Lane == protocol.LaneThirdParty {
-		rendered = frameLaneBOutput(decision.tool.Server, rendered)
+		rendered = outcome + frameLaneBOutput(decision.tool.Server, rendered)
 		emitted = len(rendered)
 	}
 

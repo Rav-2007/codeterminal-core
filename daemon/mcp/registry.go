@@ -322,11 +322,11 @@ func (r *Registry) AdvertisedFor(ctx context.Context, query string) ([]Tool, []e
 
 	// Ranked only when something has to go: a menu that fits keeps its stable
 	// alphabetical order, which is what a provider's prompt cache keys on.
-	if maxAdvertised > 0 && len(builtinTools)+len(externalTools) > maxAdvertised {
-		RankByRelevance(externalTools, query)
-	}
-
 	all := append(builtinTools, externalTools...)
+	if maxAdvertised > 0 && len(all) > maxAdvertised {
+		RankByRelevance(externalTools, query)
+		all = withNamedServerReserve(builtinTools, externalTools, query, sortedKeys(servers), maxAdvertised)
+	}
 
 	r.mu.Lock()
 	r.listed = listed

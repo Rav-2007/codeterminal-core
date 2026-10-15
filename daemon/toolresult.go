@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"mochiii/daemon/mcp"
 )
 
 // The egress choke point for tool output.
@@ -228,6 +230,30 @@ const (
 	laneBOutputOpenTagPrefix = "<lane_b_output server=\""
 	laneBOutputCloseTag      = "</lane_b_output>"
 )
+
+// FAILED, EMPTY AND FOUND ARE THREE DIFFERENT ANSWERS, and inside the frame
+// they looked alike: a server's error text arrived exactly as its data does,
+// and an empty success as an empty frame. FOUND 2026-10-15: the model turned
+// what it could not see into "no project exists". So the daemon -- not the
+// server, whose text it does not trust -- says which one a result is, on a
+// line of its own before the frame.
+const (
+	laneBFailedNote = "[Mochiii: this call FAILED. The server's error is below. A failure is not evidence " +
+		"that what was asked for does not exist: report the failure.]\n"
+	laneBEmptyNote = "[Mochiii: this call succeeded and returned nothing.]\n"
+)
+
+// laneBOutcomeNote is the daemon's line for a third-party result: failed,
+// empty, or "" for a result with something in it.
+func laneBOutcomeNote(result mcp.Result) string {
+	switch {
+	case result.IsError:
+		return laneBFailedNote
+	case result.Empty || strings.TrimSpace(result.Content) == "":
+		return laneBEmptyNote
+	}
+	return ""
+}
 
 // frameLaneBOutput wraps one third-party tool result so the model is told, at
 // the point of reading it, whose text this is.

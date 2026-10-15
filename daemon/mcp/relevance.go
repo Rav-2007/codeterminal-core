@@ -173,3 +173,79 @@ func SearchTools(candidates []Tool, query string, limit int) []Tool {
 	}
 	return out
 }
+
+// A SERVER THE USER NAMES GETS A FEW PLACES ON THE MENU.
+//
+// Built-ins come first when the cap bites (Registry.Advertised), and there
+// are enough of them that a 24-place menu left TWO places for every connected
+// server together. MEASURED 2026-10-15: Supabase (29 tools) and Firecrawl (17)
+// were connected, "have you connected to the supabase via mcp?" was asked, and
+// the model was shown supabase__query_logs and supabase__search_docs and
+// nothing else from either -- so it told the user those were the only
+// Supabase tools it had.
+//
+// So when the request names a connected server, up to namedServerReserve of
+// that server's best-matching tools are kept even if it costs the least
+// relevant built-ins their place. A displaced built-in is not lost: it is in
+// DroppedTools like any other, and find_tools can bring it back.
+const namedServerReserve = 6
+
+// withNamedServerReserve builds the ranked menu-plus-overflow: built-ins first,
+// except that a server named in query keeps up to namedServerReserve places.
+// The caller cuts the result at maxAdvertised. external must already be ranked.
+func withNamedServerReserve(builtins, external []Tool, query string, servers []string, maxAdvertised int) []Tool {
+	named := serversNamedIn(query, servers)
+	var namedTools, others []Tool
+	for _, t := range external {
+		if named[t.Server] {
+			namedTools = append(namedTools, t)
+		} else {
+			others = append(others, t)
+		}
+	}
+	reserve := namedServerReserve
+	if reserve > maxAdvertised/4 {
+		reserve = maxAdvertised / 4
+	}
+	if reserve > len(namedTools) {
+		reserve = len(namedTools)
+	}
+	// Room the built-ins already leave counts toward the reserve.
+	if free := maxAdvertised - len(builtins); free >= reserve {
+		return append(append(append([]Tool(nil), builtins...), namedTools...), others...)
+	}
+	keep := maxAdvertised - reserve
+	ranked := append([]Tool(nil), builtins...)
+	RankByRelevance(ranked, query)
+	out := make([]Tool, 0, len(builtins)+len(external))
+	out = append(out, ranked[:keep]...)
+	out = append(out, namedTools[:reserve]...)
+	out = append(out, ranked[keep:]...)
+	out = append(out, namedTools[reserve:]...)
+	return append(out, others...)
+}
+
+// serversNamedIn is the set of servers whose whole name appears in query, as
+// words: "supabase" in "is supabase connected", "brave-search" only when both
+// "brave" and "search" do.
+func serversNamedIn(query string, servers []string) map[string]bool {
+	words := queryWords(query)
+	named := map[string]bool{}
+	for _, s := range servers {
+		parts := relevanceTokens(s)
+		if len(parts) == 0 {
+			continue
+		}
+		all := true
+		for _, p := range parts {
+			if !words[p] {
+				all = false
+				break
+			}
+		}
+		if all {
+			named[s] = true
+		}
+	}
+	return named
+}

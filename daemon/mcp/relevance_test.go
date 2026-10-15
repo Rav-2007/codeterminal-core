@@ -156,3 +156,60 @@ func (listOnly) CallTool(context.Context, string, json.RawMessage) (Result, erro
 }
 
 func (listOnly) Close() error { return nil }
+
+func TestAServerIsNamedOnlyByItsWholeName(t *testing.T) {
+	servers := []string{"supabase", "brave-search", "github", "tools"}
+	got := serversNamedIn("Is SUPABASE connected? search github", servers)
+	if !got["supabase"] || !got["github"] || got["brave-search"] || got["tools"] {
+		t.Errorf("serversNamedIn = %v", got)
+	}
+	if !serversNamedIn("use brave search", servers)["brave-search"] {
+		t.Error("a two-word server name was not matched by both words")
+	}
+}
+
+// The reserve: a named server keeps up to namedServerReserve (and at most a
+// quarter of the menu) places, taken from the least relevant built-ins; an
+// unnamed one keeps the built-ins whole; and nothing is lost -- every tool is
+// either on the menu or after it.
+func TestANamedServerKeepsAFewPlacesAndNothingIsLost(t *testing.T) {
+	var builtins []Tool
+	for _, n := range []string{"grep", "list_directory", "move_path", "read_file", "run_command", "search_code",
+		"web_fetch", "web_search", "delete_path", "propose_edit"} {
+		builtins = append(builtins, Tool{Server: BuiltinServerName, Name: n})
+	}
+	SortTools(builtins)
+	external := supabaseLike()
+	SortTools(external)
+	query := "which supabase project is active"
+	RankByRelevance(external, query)
+
+	const cap = 12
+	out := withNamedServerReserve(builtins, external, query, []string{"supabase"}, cap)
+	if len(out) != len(builtins)+len(external) {
+		t.Fatalf("%d tools in, %d out", len(builtins)+len(external), len(out))
+	}
+	supa := 0
+	for _, tool := range out[:cap] {
+		if tool.Server == "supabase" {
+			supa++
+		}
+	}
+	if supa != cap/4 {
+		t.Errorf("the named server kept %d places on a menu of %d, want %d", supa, cap, cap/4)
+	}
+
+	out = withNamedServerReserve(builtins, external, "which project is active", []string{"supabase"}, cap)
+	for i, tool := range out[:len(builtins)] {
+		if tool.Server != BuiltinServerName {
+			t.Fatalf("an unnamed request put %s at %d, ahead of a built-in", tool.QualifiedName(), i)
+		}
+	}
+
+	// Built-ins that leave room already: the named server's tools come first
+	// among the third-party ones, and no built-in moves.
+	out = withNamedServerReserve(builtins[:2], external, query, []string{"supabase", "other"}, cap)
+	if out[0].Server != BuiltinServerName || out[1].Server != BuiltinServerName || out[2].Server != "supabase" {
+		t.Errorf("with room to spare the order changed: %v", toolNames(out[:3]))
+	}
+}
