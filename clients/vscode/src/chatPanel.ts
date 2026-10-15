@@ -2581,6 +2581,9 @@ export function chatPanelStyles(): string {
     font-style: italic;
     margin: 4px 0 12px 38px;
   }
+  /* A reopened answer's notes (main.js splitTurnNotes), inside its card. */
+  .card .turn.incomplete-notice { margin: 6px 0 0; }
+  .turn-tools-used { font-size: 11px; color: var(--ct-muted); margin-top: 6px; }
   .turn.error-inline {
     color: var(--ct-danger);
     margin-bottom: 14px;

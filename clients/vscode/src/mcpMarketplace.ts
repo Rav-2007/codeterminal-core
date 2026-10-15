@@ -449,8 +449,9 @@ export class MarketplaceCore implements vscode.Disposable {
       return;
     }
     this.post({ type: 'busy', id, busy: true });
+    let added = false;
     try {
-      await storeServer(
+      added = !!(await storeServer(
         this.clientName,
         {
           name: server.id,
@@ -460,10 +461,14 @@ export class MarketplaceCore implements vscode.Disposable {
           cwd: server.cwd ?? '',
         },
         { action: 'add', provenance: provenanceOf(server), envHelp: server.env },
-      );
+      ));
     } finally {
       this.post({ type: 'busy', id, busy: false });
       await this.provider.refresh();
+    }
+    if (added) {
+      // A server added without its key exits on its first start: offer the key now.
+      await vscode.commands.executeCommand('mochiii.mcp.offerKey', server.id);
     }
   }
 

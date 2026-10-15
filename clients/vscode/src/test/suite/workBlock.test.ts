@@ -86,13 +86,15 @@ function load() {
   };
   vm.runInNewContext(
     src.slice(start, end) +
-      '\n;globalThis.__show = showToolActivity; globalThis.__setMode = (m) => { toolActivityMode = m; };',
+      '\n;globalThis.__show = showToolActivity; globalThis.__setMode = (m) => { toolActivityMode = m; };' +
+      'globalThis.__split = splitTurnNotes;',
     sandbox,
   );
   return {
     transcriptEl,
     show: sandbox.__show as (a: Record<string, unknown>) => void,
     setMode: sandbox.__setMode as (m: string) => void,
+    split: sandbox.__split as (t: string) => { body: string; tools: string[]; cutOff: string },
   };
 }
 
@@ -160,5 +162,38 @@ suite('the work block', () => {
     b.setMode('expanded');
     b.show({ call_id: 'x', server: 'builtin', tool: 'read_file', phase: 'running' });
     assert.strictEqual(b.transcriptEl.children[0].open, true);
+  });
+});
+
+// A REOPENED ANSWER'S NOTES (2026-10-14). The daemon saves each answer with
+// "[used N tool call(s): builtin__repo_map, ...]" and, for a cut-off one,
+// "[This answer was cut off: ...]". Reopened from history they were printed as
+// reply text, and markdown read "__repo_map, builtin__" as bold, which is how a
+// user saw "builtinrepo_map".
+suite("a saved answer's notes", () => {
+  test('are taken off the text and named the way the work block names them', () => {
+    const { split } = load();
+    const got = split(
+      'I looked.\n\n[used 3 tool call(s): builtin__repo_map, builtin__read_file, builtin__read_file]' +
+        '\n\n[This answer was cut off: the model provider failed partway through the turn. The work above is real but unfinished.]',
+    );
+    assert.strictEqual(got.body, 'I looked.');
+    assert.deepStrictEqual([...got.tools], ['Mapped the project', 'Read a file']);
+    assert.strictEqual(got.cutOff, 'This answer was cut off: the model provider failed partway through the turn.');
+  });
+
+  test("a third-party tool keeps its server's name, and an answer with no notes is left alone", () => {
+    const { split } = load();
+    assert.deepStrictEqual([...split('ok\n\n[used 1 tool call(s): perplexity__search]').tools], ['perplexity · search']);
+    const plain = split('An answer that mentions [used 2 tool call(s): x] in the middle, then goes on.');
+    assert.strictEqual(plain.body, 'An answer that mentions [used 2 tool call(s): x] in the middle, then goes on.');
+    assert.deepStrictEqual([...plain.tools], []);
+  });
+
+  test('a turn the user stopped is said as stopped', () => {
+    const { split } = load();
+    const got = split('Half\n\n[This turn was stopped by the user before it finished. The work above is real, but they chose to stop it -- do not simply resume it unless they ask.]');
+    assert.strictEqual(got.body, 'Half');
+    assert.strictEqual(got.cutOff, 'This turn was stopped by the user before it finished.');
   });
 });

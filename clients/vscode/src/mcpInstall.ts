@@ -154,10 +154,13 @@ export function resultMessage(resp: MCPResponse, envHelp: CatalogEnv[]): string 
   }
   const needed = envHelp.filter((e) => e.required).map((e) => e.name);
   if (needed.length > 0) {
+    // The key is given with Set key (mcpSecrets.ts) and kept in VS Code's
+    // secret storage. It used to be "set it in the environment VS Code was
+    // started in", which from a desktop icon has no shell to set it in.
     parts.push(
-      `It needs ${needed.join(', ')}. Mochiii's daemon reads variables from the environment VS Code was started in: ` +
-        `set ${needed.length === 1 ? 'it' : 'them'} there (for example in your shell profile, then start VS Code from that shell) ` +
-        `and ${RESTART_HINT}.`,
+      `It needs ${needed.join(', ')}: set ${needed.length === 1 ? 'it' : 'them'} with Set key on the server ` +
+        `(Customize > MCP in the chat, or the MCP Servers list). Mochiii keeps ${needed.length === 1 ? 'it' : 'them'} ` +
+        `in VS Code's secret storage. A variable in the environment VS Code was started in works too.`,
     );
   }
   return parts.join(' ');

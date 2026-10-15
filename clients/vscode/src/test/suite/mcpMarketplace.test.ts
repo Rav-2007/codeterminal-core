@@ -309,11 +309,11 @@ suite('the MCP views say what is true', () => {
     assert.ok(splitArgs('npx "unclosed').error);
   });
 
-  test('after an add, a needed variable is said with where VS Code reads it', () => {
+  test('after an add, a needed variable is said with where to set it', () => {
     const m = resultMessage({ protocol_version: 1, ok: true, agent_mode: true, detail: 'Added github.' }, [
       { name: 'GITHUB_PERSONAL_ACCESS_TOKEN', required: true, secret: true },
     ]);
-    assert.ok(m.includes('GITHUB_PERSONAL_ACCESS_TOKEN') && m.includes('environment VS Code was started in'), m);
+    assert.ok(m.includes('GITHUB_PERSONAL_ACCESS_TOKEN') && m.includes('Set key') && m.includes('secret storage'), m);
   });
 });
 

@@ -1664,7 +1664,18 @@ export interface MCPServerInfo {
   args?: string[];
   env?: string[];
   cwd?: string;
+  /** The names in env the daemon has no value for (FEATURE_MCP_ENV). */
+  env_missing?: string[];
+  /** The names in env with a value in the daemon's key file (FEATURE_MCP_SECRETS). */
+  env_stored?: string[];
+  /** The last start: '' not since the daemon began, MCP_STATE_RUNNING or MCP_STATE_FAILED. */
+  state?: string;
+  /** Why it failed, in the server's own words where it gave any. */
+  state_detail?: string;
 }
+
+export const MCP_STATE_RUNNING = 'running';
+export const MCP_STATE_FAILED = 'failed';
 
 export const MCP_SOURCE_CONFIG = 'config';
 export const MCP_SOURCE_USER = 'user';
@@ -1673,9 +1684,13 @@ export const MCP_CWD_WORKSPACE = 'workspace';
 /** protocol.FeatureMCPAdmin / FeatureMCPManage, from HandshakeResponse.features. */
 export const FEATURE_MCP_ADMIN = 'mcp_admin';
 export const FEATURE_MCP_MANAGE = 'mcp_manage';
+/** protocol.FeatureMCPEnv: the daemon takes a server's key (set_env) and reports env_missing and state. */
+export const FEATURE_MCP_ENV = 'mcp_env';
+/** protocol.FeatureMCPSecrets: the daemon keeps server keys in ~/.mochiii/mcp-secrets.json itself. */
+export const FEATURE_MCP_SECRETS = 'mcp_secrets';
 
 /** servers lists the configured servers WITHOUT starting any; list starts them all to ask for their tools. */
-export type MCPAction = 'list' | 'servers' | 'tools' | 'add' | 'update' | 'remove' | 'enable' | 'disable';
+export type MCPAction = 'list' | 'servers' | 'tools' | 'add' | 'update' | 'remove' | 'enable' | 'disable' | 'set_env';
 
 /** protocol.MCPRequest. */
 export interface MCPRequest {
@@ -1690,6 +1705,11 @@ export interface MCPRequest {
   cwd?: string;
   /** The user's typed agreement that the server runs with their full privileges. */
   acknowledged_unconfined?: boolean;
+  /** set_env's variable and its value ('' forgets it). The value is a secret. */
+  env_name?: string;
+  env_value?: string;
+  /** add/update: values for names in env, for this server only (FEATURE_MCP_SECRETS). Secrets. */
+  env_values?: Record<string, string>;
 }
 
 /** protocol.MCPResponse. */

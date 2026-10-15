@@ -95,17 +95,19 @@ func (s *Server) runAgentTurn(
 	// before any phase runs, so every phase still opens with the same bytes
 	// (machinereach.go: asked what it could do, it said "only the project").
 	messages = s.withMachineReach(ctx, registry, promptReq.Mode, messages)
+	// And what Mochiii itself is set up with: its servers, as this turn found
+	// them (agentsetup.go: asked which servers it had, it said "none").
+	messages = s.withAgentSetup(ctx, registry, promptReq.Mode, model, messages)
 
 	// A server that would not start costs the user its tools, not the turn.
 	// Reported the same way every other reduced subsystem is, so it reaches the
 	// user before the answer rather than never.
 	if len(connectErrs) > 0 {
 		degraded := make([]protocol.Degradation, 0, len(connectErrs))
-		for range connectErrs {
+		for _, err := range connectErrs {
 			degraded = append(degraded, protocol.Degradation{
 				Component: protocol.DegradedMCPServer,
-				Detail: "a configured MCP server is unavailable, so the tools it provides are " +
-					"missing from this turn. The answer may decline to do something you know it can do.",
+				Detail:    s.unavailableServerDetail(err),
 			})
 		}
 		if err := enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Degraded: degraded}); err != nil {

@@ -186,6 +186,12 @@
         "icon": "$(edit)"
       },
       {
+        "command": "mochiii.mcp.setKey",
+        "title": "Set Key for MCP Server…",
+        "category": "Mochiii",
+        "icon": "$(key)"
+      },
+      {
         "command": "mochiii.mcp.enable",
         "title": "Enable MCP Server",
         "category": "Mochiii",
@@ -277,6 +283,11 @@
           "group": "inline@1"
         },
         {
+          "command": "mochiii.mcp.setKey",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
+          "group": "1_change@0"
+        },
+        {
           "command": "mochiii.mcp.edit",
           "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\.user/",
           "group": "1_change@1"
@@ -298,6 +309,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "mochiii.mcp.setKey",
+          "when": "false"
+        },
         {
           "command": "mochiii.mcp.edit",
           "when": "false"

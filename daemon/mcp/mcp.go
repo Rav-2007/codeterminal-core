@@ -311,24 +311,39 @@ func baselineEnvNames() []string {
 }
 
 func ServerEnv(allow []string) []string {
+	return ServerEnvWith(allow, nil)
+}
+
+// ServerEnvWith is ServerEnv with values the user gave this daemon for some of
+// the allowed names (a key typed into the editor, LaunchConfig.EnvValues). A
+// given value wins over the daemon's own environment, and only a name in
+// allow is ever looked up in it: being given a value grants nothing.
+func ServerEnvWith(allow []string, given func(name string) (string, bool)) []string {
 	var env []string
 	seen := map[string]bool{}
 
-	add := func(name string) {
+	add := func(name string, mayBeGiven bool) {
 		if seen[name] || IsForbiddenEnvName(name) {
 			return
 		}
-		if v, ok := os.LookupEnv(name); ok {
+		v, ok := "", false
+		if mayBeGiven && given != nil {
+			v, ok = given(name)
+		}
+		if !ok {
+			v, ok = os.LookupEnv(name)
+		}
+		if ok {
 			seen[name] = true
 			env = append(env, name+"="+v)
 		}
 	}
 
 	for _, name := range BaselineEnvNames {
-		add(name)
+		add(name, false)
 	}
 	for _, name := range allow {
-		add(name)
+		add(name, true)
 	}
 	return env
 }
