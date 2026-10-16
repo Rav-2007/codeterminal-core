@@ -830,7 +830,7 @@ jobs:
       # The question it existed to ask -- can retrieval find the code a fix must
       # touch -- is asked against CURRENT code by the expanded locate eval, and
       # that one does gate: .github/workflows/retrieval-eval.yml runs it on
-      # every PR that touches the retrieval path.
+      # every PR to main.
       # THE DATUM THAT WAS MISSING WHEN THIS JOB WENT 2.63x SLOWER. Three eval
       # runs on 2026-08-30 carried the same `ubuntu-latest` label and landed on
       # three different runner instances, one of which took 2220s for work the

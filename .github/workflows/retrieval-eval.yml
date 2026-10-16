@@ -7,7 +7,9 @@ name: retrieval eval
 # filtering lives on the workflow TRIGGER -- so a job inside build.yml cannot be
 # path-scoped without either a third-party action or a hand-rolled `git diff`
 # step whose failure mode is silently running nothing. A second workflow file
-# with its own trigger is the mechanism the platform actually provides.
+# with its own trigger is the mechanism the platform actually provides. Since
+# 2026-10-16 only the push trigger is path-scoped; every pull request runs it
+# (the comment on `pull_request` below says why).
 #
 # WHY IT EXISTS AT ALL. On 2026-08-27 a chunking change took real-repo
 # chunk-level recall from 8/9 to 4/9 and shipped, because `make check` was green
@@ -16,17 +18,37 @@ name: retrieval eval
 # build.yml is kept for drift; this one exists so the person who changed
 # retrieval is the person who learns it broke.
 #
-# COST. Roughly one ubuntu runner for 15-20 minutes, and only when the paths
-# below change -- perhaps a handful of runs a month, against the ~60 billable
-# minutes a single build.yml matrix run already costs. The model download is not
+# COST. Roughly one ubuntu runner for 8-20 minutes on each pull request push,
+# plus each branch push that touches the paths below. Hosted Linux minutes are
+# free since the repository went public (2026-10-12), and the job is not a
+# required check, so a merge never waits on it. The model download is not
 # cached deliberately: a cache key that goes stale against a model change would
 # fail by quietly measuring the wrong embedder, which is precisely the class of
 # silent-wrong-answer this whole workflow is being added to prevent.
 
 on:
+  # EVERY PULL REQUEST, NOT ONLY RETRIEVAL ONES. Widened 2026-10-16.
+  #
+  # The corpus this job scores is the whole repository (evalcorpus_test.go),
+  # so a change to ANY indexed file can move the score. Lines added above an
+  # answer push it across a 40-line chunk boundary, and a new file can outrank
+  # it. Neither touches a path on the list below. main fell from 30/49
+  # retrieved at 9e9a3b8 to 29/49 at dac2f6c, under the 61% floor, and this
+  # job never ran: c3dc5ea added lines above the turn's step ceiling in
+  # agentloop.go, which moved the answer to "where does the agent loop stop
+  # iterating" out of the overlap of two chunks and into one chunk that ranks
+  # below the top 10. The first PR to touch a listed path then inherited a red
+  # it did not cause. gates.yml moved the answer-key guard to every push for the
+  # same reason on 2026-08-28: the hazard is what changes the CORPUS.
   pull_request:
     branches: [main]
-    paths: &retrieval_paths
+  # Pushes keep the filter. A branch that changes retrieval gets the signal
+  # before its PR exists (build.yml's comment records why waiting for a PR
+  # inverts the order you want), and every other change is measured once, by
+  # its PR, rather than twice.
+  push:
+    branches: ["**"]
+    paths:
       # The retrieval path proper: anything that changes what gets indexed, how
       # it is embedded, how it is searched, or how results are ranked and cut.
       - "daemon/chunker.go"
@@ -93,11 +115,6 @@ on:
       - "testdata/queries.json"
       # And this file.
       - ".github/workflows/retrieval-eval.yml"
-  # Same filter on push, so a branch gets the signal before the PR exists --
-  # build.yml's comment records why waiting for a PR inverts the order you want.
-  push:
-    branches: ["**"]
-    paths: *retrieval_paths
   workflow_dispatch:
 
 concurrency:
@@ -109,7 +126,7 @@ env:
 
 jobs:
   locate-eval:
-    name: locate eval (retrieval paths changed)
+    name: locate eval (whole-repo corpus)
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     # Generous, and explicit. build.yml's eval job died twice on `go test`'s
     # DEFAULT 10-minute timeout with the panic sitting underneath a separate
