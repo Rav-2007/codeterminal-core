@@ -407,12 +407,25 @@ func (s *Server) builtinRecordCriterion(ctx context.Context, raw json.RawMessage
 // met needs a run that passed; a long task's finding (longtask.go) is often
 // proved by a run that FAILED -- the failing test is the bug -- so any run it
 // actually made will do.
+//
+// A PASS THAT CAN VOUCH FOR "MET" IS A REAL CHECK OF THE CODE AS IT NOW IS --
+// the rule finish_task's gate already holds (finishRefusal). Before it, any
+// passing command was enough: `go version`, which passes whatever the code
+// does, or a test run from before the edits that came after it. A gate that
+// passes wrong work is the worst kind there is -- Reflexion lost ground on the
+// benchmark whose tests passed wrong code 16.3% of the time (0.80 -> 0.77),
+// and gained it where they did so 1.4% of the time -- so the hole is closed
+// here as it is there.
 func (s *Server) unverifiedEvidence(ctx context.Context, proposals *proposalSink, evidence string, needPass bool) string {
 	if evidence == "" {
 		return "no evidence was given"
 	}
+	edits := proposals.editCount()
 	for _, c := range proposals.checks {
-		if (c.passed || !needPass) && strings.Contains(evidence, c.command) {
+		if !strings.Contains(evidence, c.command) {
+			continue
+		}
+		if !needPass || (c.passed && isVerifyingCommand(c.command) && c.edits == edits) {
 			return ""
 		}
 	}
@@ -431,7 +444,7 @@ func (s *Server) unverifiedEvidence(ctx context.Context, proposals *proposalSink
 		}
 	}
 	if needPass {
-		return "the evidence names neither a command that passed this turn nor a file:line that exists"
+		return "the evidence names neither a build or test that passed after the last edit nor a file:line that exists"
 	}
 	return "the evidence names neither a command run in this task nor a file:line that exists"
 }
