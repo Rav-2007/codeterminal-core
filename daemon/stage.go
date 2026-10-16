@@ -84,6 +84,7 @@ type stagedWorkspace struct {
 	// offeredByCommand is netChanges' account of it: the offered files a
 	// command changed, each with its command, for WorkingCopyInfo.ByCommand.
 	offeredByCommand []string
+	reshaped         int // deletes, moves and restores of the real project followed (stage_fileops.go)
 }
 
 // stagedState is what fileStates records of one file: enough to tell that a

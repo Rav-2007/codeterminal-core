@@ -39,6 +39,9 @@ type stageCheckpoint struct {
 	files map[string]*string
 	at    time.Time
 	bytes int
+	// reshaped is the copy's count of followed deletes and moves when it was
+	// taken: restored past one, it would bring back what the user removed.
+	reshaped int
 }
 
 func (s *Server) builtinCheckpoint(raw json.RawMessage, p *proposalSink) (mcp.Result, error) {
@@ -106,7 +109,7 @@ func (st *stagedWorkspace) readStageFile(rel string) (*string, error) {
 }
 
 func (st *stagedWorkspace) saveCheckpoint(name string) (mcp.Result, error) {
-	cp := &stageCheckpoint{name: name, files: map[string]*string{}, at: time.Now()}
+	cp := &stageCheckpoint{name: name, files: map[string]*string{}, at: time.Now(), reshaped: st.reshaped}
 	for _, rel := range st.order {
 		content, err := st.readStageFile(rel)
 		if err != nil {
@@ -140,6 +143,10 @@ func (st *stagedWorkspace) saveCheckpoint(name string) (mcp.Result, error) {
 // stood then: a file changed since is written back, one the checkpoint did not
 // hold returns to the project's version, and one created since is removed.
 func (st *stagedWorkspace) restoreCheckpoint(cp *stageCheckpoint) (mcp.Result, error) {
+	if cp.reshaped != st.reshaped {
+		return toolError("files were deleted or moved in the project since checkpoint %q was saved, and restoring it "+
+			"would bring back what was removed; save a new checkpoint from here instead", cp.name)
+	}
 	paths := map[string]bool{}
 	for rel := range cp.files {
 		paths[rel] = true

@@ -14,6 +14,10 @@ import (
 // turn is still the agent's edits -- at the new path, after a move -- and never
 // a "deleted in the copy" note for something the user agreed to delete.
 // Every method is a no-op without a copy.
+//
+// Each of the three mirror methods counts in st.reshaped: a checkpoint taken
+// before one is never restored (checkpoint.go), as it would put back what the
+// user agreed to remove.
 
 // stageKey is rel as the copy keys its files: the native, cleaned form
 // filepath.Rel gives. The tools' paths are the model's, with forward slashes,
@@ -95,6 +99,7 @@ func (p *proposalSink) mirrorDelete(rel string) {
 	rel = stageKey(rel)
 	_ = os.RemoveAll(filepath.Join(p.stage.root, rel))
 	p.stage.forgetUnder(rel)
+	p.stage.reshaped++
 }
 
 func (p *proposalSink) mirrorMove(from, to string) {
@@ -108,6 +113,7 @@ func (p *proposalSink) mirrorMove(from, to string) {
 		_ = os.Rename(src, dst)
 	}
 	p.stage.renameUnder(from, to)
+	p.stage.reshaped++
 }
 
 // mirrorRestore copies a restored file (or folder) into the copy, recorded as
@@ -117,6 +123,7 @@ func (p *proposalSink) mirrorRestore(rel string) {
 		return
 	}
 	st := p.stage
+	st.reshaped++
 	_ = filepath.WalkDir(filepath.Join(st.real, rel), func(path string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() {
 			return nil //nolint:nilerr
