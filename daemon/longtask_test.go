@@ -691,3 +691,39 @@ func TestAStaleCheckIsReportedAsStaleNotFailed(t *testing.T) {
 		t.Errorf("status = passed %v, stale %v; want both true", st.LastCheckPassed, st.LastCheckStale)
 	}
 }
+
+// THE CALL BUDGET IS THE NUMBER OF CALLS, the handoffs among them, though the
+// provider reports no usage. A run that reaches its budget mid-segment keeps
+// its last call for the report it ends on. A segment opened with one call left
+// takes its step and then reports, one past -- as a turn's ceiling of one bills
+// two (agentloop.go): a step has to be taken before it can be summed up.
+//
+// Neuter checks: drop the reserved last call; leave the handoffs uncounted.
+func TestTheCallBudgetIsTheNumberOfCalls(t *testing.T) {
+	read := func(n int) []string {
+		return toolCallSSE(fmt.Sprintf("r%d", n), "builtin__read_file", fmt.Sprintf(`{"path":"f%d.txt"}`, n))
+	}
+	for _, c := range []struct {
+		name         string
+		calls, asked int
+		script       [][]string
+	}{
+		{"mid-segment", 5, 5, [][]string{read(1), read(2), read(3), read(4), read(5), read(6)}},
+		{"one call left", 4, 5, [][]string{read(1), read(2), textSSE("Read two."), read(3), read(4), read(5)}},
+	} {
+		base, asked, bodies := agentUpstream(t, c.script...)
+		cfg := taskPolicies()
+		cfg.Budget.Task = &MCPTaskBudgetConfig{MaxCalls: c.calls}
+		run, _, runIt := directTaskRun(t, loopServer(t, base, cfg), modeFix)
+		if _, err := runIt(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		n := int(asked.Load())
+		sent := sentMessages(t, (*bodies)[n-1])
+		reported := sent[len(sent)-1].Content == taskBudgetWrapUpNote
+		if run.ledger.State != protocol.TaskStateBudget || n != c.asked || run.spent().Calls != n || !reported {
+			t.Errorf("%s: state %q, %d calls asked on a budget of %d (want %d), %d counted, ended on the report %v",
+				c.name, run.ledger.State, n, c.calls, c.asked, run.spent().Calls, reported)
+		}
+	}
+}

@@ -55,10 +55,10 @@ type taskRun struct {
 	// retries and the checkpoint call at each segment's end.
 	usage *usageTally
 	// doneCalls is the model calls of the segments already over, segCalls the
-	// running segment's, nested an investigation's inside it. COUNTED here as
-	// well as billed by the tally: a provider that sends no usage must not make
-	// the call budget unlimited.
-	doneCalls, segCalls, nested int
+	// running segment's, nested an investigation's inside it, wrapUps the
+	// handoffs at segments' ends. COUNTED here as well as billed by the tally:
+	// a provider that sends no usage must not make the call budget unlimited.
+	doneCalls, segCalls, nested, wrapUps int
 	// investigate runs one investigation (investigate.go); set by runLongTask.
 	investigate func(ctx context.Context, question string) (string, error)
 	// budgetStop is the run's budget verdict once there is one; it sticks.
@@ -68,7 +68,7 @@ type taskRun struct {
 // spent is what this run has used so far.
 func (r *taskRun) spent() taskSpend {
 	billed, usd := r.usage.spent()
-	return taskSpend{Calls: max(billed, r.doneCalls+r.segCalls+r.nested), USD: usd, Seconds: int(time.Since(r.start).Seconds())}
+	return taskSpend{Calls: max(billed, r.doneCalls+r.segCalls+r.nested+r.wrapUps), USD: usd, Seconds: int(time.Since(r.start).Seconds())}
 }
 
 // check is the run's budget, asked before every step of every segment with
@@ -84,13 +84,22 @@ func (r *taskRun) check(segmentCalls int) *protocol.IncompleteInfo {
 	if r.budgetStop != nil {
 		return r.budgetStop
 	}
+	// THE CALL THAT ENDS A SEGMENT IS ONE OF THE RUN'S N, as a turn's is
+	// (agentloop.go budgetStop): once the segment has made a call, a stop is
+	// followed by its handoff, so the last call is kept for that. MEASURED
+	// 2026-10-16 with a provider that sends no usage: an 18-call run asked 20
+	// and 21 times, one uncounted handoff per segment, and said it made 18.
+	reserve := 0
+	if segmentCalls > 0 {
+		reserve = 1
+	}
 	spent := r.spent()
 	var why string
 	switch {
 	case spent.USD >= r.budget.usd:
 		why = fmt.Sprintf("spent $%.2f, its budget of $%.2f", spent.USD, r.budget.usd)
-	case spent.Calls >= r.budget.calls:
-		why = fmt.Sprintf("made %d model calls, its budget of %d", spent.Calls, r.budget.calls)
+	case spent.Calls+reserve >= r.budget.calls:
+		why = fmt.Sprintf("reached its budget of %d model calls", r.budget.calls)
 	case time.Now().After(r.deadline):
 		why = fmt.Sprintf("ran for its %d minute", r.budget.minutes)
 		if r.budget.minutes != 1 {
@@ -131,14 +140,20 @@ func (r *taskRun) closed() bool {
 // reply (runLongTask streams it). MEASURED 2026-10-01 on the real binary: the
 // call that used to ask for it again was 1 of a small fix's 5 calls, and 21%
 // of the bytes it sent.
+//
+// The call a note asks for is made as soon as it is returned (wrapUpAtLimit),
+// so it is counted here, as the tally bills it for a provider that reports
+// usage: before, a provider that sent none left every handoff uncounted.
 func (r *taskRun) wrapUpNote(*protocol.IncompleteInfo) string {
+	note := segmentCheckpointNote
 	switch {
 	case r.closed():
 		return ""
 	case r.budgetStop != nil:
-		return taskBudgetWrapUpNote
+		note = taskBudgetWrapUpNote
 	}
-	return segmentCheckpointNote
+	r.wrapUps++
+	return note
 }
 
 // segmentCheckpointNote asks for the handoff the next segment starts from.
