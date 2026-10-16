@@ -529,6 +529,11 @@ check_doc_shas() {
       # A hex-looking token is not a commit. `1734900` is a decimal that
       # matches a 7-hex pattern, and this gate learned that the hard way.
       git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+      # Resolved once, as the commit it names. A short id can come to match a
+      # tree or a blob as well -- `94f699e` did, 2026-10 -- and a bare
+      # `git rev-parse` of it then fails, which under `set -e` ended the gate
+      # before it had said a word about anything else.
+      sha="$(git rev-parse --verify --quiet "${sha}^{commit}")" || continue
       checked=$((checked + 1))
       short="$(git rev-parse --short "$sha")"
       git merge-base --is-ancestor "$sha" "$MAIN_REF" 2>/dev/null && continue
