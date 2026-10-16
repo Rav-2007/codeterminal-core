@@ -905,3 +905,66 @@ retry it once on another host before it counts toward "stuck".
 
 **4. `/team`** was not re-run: Round 3 measured it four days earlier and its
 orchestration has not changed.
+
+**The fix that followed (2026-10-15).** The second option was built, as part of
+the self-correcting loop below: a long-task segment that ends with no tool call
+at all is run again on the same host, then moved to another host for the rest of
+the task, before it counts toward `stuck` (`daemon/longtask.go`). A segment
+whose call was *refused* did call a tool and still counts as before.
+
+## Round 5 — the self-correcting loop (rules written 2026-10-15, before any run)
+
+**What is measured.** Long tasks with the judge acting against the same long
+tasks with the judge only recording. The judge (`daemon/correction.go`) reads
+every check a long task runs -- its exit status and what its output says failed
+(`daemon/checkparse.go`) -- and compares it with the run before it.
+
+- **Shadow** (`mcp.correction.mode` `"shadow"`, the default): the verdicts are
+  kept in the ledger and the log. Nothing the model sees and no file changes.
+- **On** (`"on"`): under each failed check the model reads how it compares with
+  the last run and where to repair; every segment opens with the last three
+  failed checks and what the task already tried; two checks in a row worse than
+  the best so far put the best code back (not in `/refactor`, and only where the
+  `checkpoint` tool is `allow`); a failure that keeps coming back asks for
+  `investigate`, then starts the segment fresh and asks the model why, then stops
+  the task as `stuck`; a stale check is run again at a segment's end
+  (`daemon/recheck.go`), only on config `allow` or the user's grant for that
+  exact command.
+
+**The arms.** Both on the same model, budget and fixtures, one arm at a time.
+
+- **B-shadow:** `TASK_EVAL_CORRECTION=shadow`. This is Round 4's arm B with the
+  dropped-call fix; its verdicts are the judge's record of what it *would* do.
+- **B-on:** `TASK_EVAL_CORRECTION=on`.
+- **Both:** `TASK_EVAL_APPROVE=turn` (the re-check needs the task's grant, so
+  both arms answer the same way), `TASK_EVAL_LONG` in Round 4's mode per task.
+- **Tasks:** `TASK_EVAL_SET=long` (6) plus `needs_iteration`, `fix_failing_test`
+  and `edge_case_bug` from the base set in `fix` mode; 2 trials each, so 18 per
+  arm.
+
+**Rules.**
+
+- **"on" becomes the long-task default** only if B-on passes **strictly more**
+  trials than B-shadow, at **no more than 1.5x** its billed $ per solved task,
+  with **no more false finishes** (`false_finish`: the task said finished while
+  the hidden tests fail). A lead of one trial meets the rule and is reported as
+  within noise.
+- **Otherwise shadow stays the default**, the README calls the loop opt-in, and
+  every task B-on lost is diagnosed from its ledger before the round runs again.
+- **Defects, fixed before any recommendation, whatever the totals:**
+  - a restore that undid a change the trial then had to make again to pass;
+  - a B-on trial stopped `stuck` by the ladder while its best score was still
+    improving;
+  - a re-check that ran without config `allow` or a grant (the audit log's
+    `initiator: "judge"` records are checked against the answers given).
+- **Reported, not ruled:** passes per task; median calls, seconds and $; the
+  verdict counts of both arms (B-shadow's are the precision check on the rules
+  B-on acts on); restores, re-checks and their seconds; talk retries; false
+  finishes.
+- **VOID:** as Round 4.
+
+**Spend.** Not yet estimated for the model the owner chooses; asked before the
+run, with the key's remaining limit read first where the provider has an endpoint
+for it.
+
+### Status: not yet run (2026-10-15)

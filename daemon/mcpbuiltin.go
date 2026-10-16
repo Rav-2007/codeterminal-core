@@ -111,7 +111,8 @@ type proposalSink struct {
 	textNotes []string
 
 	// task is the long task this request is running (longtask.go), or nil.
-	task *taskRun
+	task     *taskRun
+	restored bool // the model restored a checkpoint since the last check (keepCheck)
 }
 
 // ranCheck is one command a turn ran and whether it passed.
@@ -120,7 +121,8 @@ type ranCheck struct {
 	passed  bool
 	// edits is how many edits the working copy had when it ran, so a pass can
 	// be told apart from a pass that predates the last change (finishRefusal).
-	edits int
+	edits     int
+	judgedRun // what the run itself said, for a long task's judge (correction.go)
 }
 
 // editCount is how many edits this turn has made: in the working copy, or
@@ -174,16 +176,14 @@ func stageFromCtx(ctx context.Context) *stagedWorkspace {
 	return st
 }
 
-// recordCheck remembers a command that ran in the working copy.
-func (p *proposalSink) recordCheck(command string, res mcp.Result) {
+// recordCheck remembers a command that ran in the working copy (newCheck).
+func (p *proposalSink) recordCheck(command string, raw json.RawMessage, res mcp.Result, out execOutcome) {
 	if p == nil || res.IsError {
 		return
 	}
-	p.checked = command
-	p.checkPassed = !strings.HasPrefix(res.Content, "Command exited with error") &&
-		!strings.HasPrefix(res.Content, "Command timed out")
-	p.checkOutput = lastNLines(res.Content, 12)
-	p.checks = append(p.checks, ranCheck{command: command, passed: p.checkPassed, edits: p.editCount()})
+	c := p.newCheck(command, raw, res.Content, out)
+	p.checked, p.checkPassed, p.checkOutput = command, c.passed, c.tail
+	p.keepCheck(c)
 }
 
 // absorbText brings edit blocks the model wrote in its ANSWER into the working
@@ -1028,8 +1028,10 @@ func applyInWorkingCopy(proposals *proposalSink, block editapply.EditBlock) (mcp
 	prepared, err := st.apply(block)
 	if err != nil {
 		res, _ := editFailure(shown, st.toReal(err.Error()), err)
+		proposals.task.editRefused(filepath.ToSlash(rel), st.toReal(err.Error()))
 		return res, true
 	}
+	proposals.task.editApplied(filepath.ToSlash(rel), block.Search, block.Replace)
 	what := fmt.Sprintf("changed lines %d-%d of %s", prepared.StartLine, prepared.EndLine, shown)
 	if prepared.Creates {
 		what = "created " + shown

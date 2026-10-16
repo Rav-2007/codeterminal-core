@@ -219,6 +219,24 @@ func TestAStaleTaskCheckIsNeverATick(t *testing.T) {
 	}
 }
 
+// WHAT THE JUDGE DID IS ON THE METER: a user whose files were put back by the
+// daemon sees that it happened, not only that they changed. A daemon's words
+// are sanitized like every other field; nothing is drawn when it did nothing.
+//
+// Neuter check: drop the judge line from renderTaskMeter.
+func TestTheMeterSaysWhatTheJudgeDid(t *testing.T) {
+	st := protocol.TaskStatus{ID: "20261015-093501-5027", Mode: "fix", State: protocol.TaskStateRunning, Segment: 3,
+		Judge: "1 restore · 2 re-checks\x1b[2J"}
+	meter := renderTaskMeter(st)
+	if !strings.Contains(meter, "judge: 1 restore · 2 re-checks") || strings.Contains(meter, "\x1b[2J") {
+		t.Errorf("meter: %q", meter)
+	}
+	st.Judge = ""
+	if meter := renderTaskMeter(st); strings.Contains(meter, "judge") {
+		t.Errorf("a judge that did nothing is drawn: %q", meter)
+	}
+}
+
 // A MISTYPED BUDGET STARTS NOTHING. "/task budget 1 hour" started a paid task
 // whose goal was "budget 1 hour"; it now says what a budget looks like. A goal
 // that merely begins with the word -- no number in it -- is still a goal

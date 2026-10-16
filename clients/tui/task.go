@@ -300,6 +300,9 @@ func renderTaskMeter(st protocol.TaskStatus) string {
 			fmt.Fprintf(&b, " · %d file(s) changed", st.FilesChanged)
 		}
 	}
+	if j := strings.TrimSpace(sanitizeText(st.Judge)); j != "" {
+		b.WriteString("\njudge: " + j)
+	}
 	return helpStyle.Render(b.String())
 }
 

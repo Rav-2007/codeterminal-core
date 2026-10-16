@@ -74,9 +74,8 @@ type stagedWorkspace struct {
 	backupDir  string
 	// applied is every edit made in the copy, so an answer that restates one
 	// word for word is recognised as the same edit (see absorbText).
-	applied []editapply.EditBlock
-	// checkpoints are the long task's named snapshots (checkpoint.go).
-	checkpoints []*stageCheckpoint
+	applied     []editapply.EditBlock
+	checkpoints []*stageCheckpoint // the long task's named snapshots (checkpoint.go)
 	// byCommand is every file a COMMAND changed in the copy, and the first
 	// command that did (noteCommandChanges). Kept because of what netChanges
 	// offers: a file a command changed is offered like the agent's own edit.
@@ -84,6 +83,7 @@ type stagedWorkspace struct {
 	// offeredByCommand is netChanges' account of it: the offered files a
 	// command changed, each with its command, for WorkingCopyInfo.ByCommand.
 	offeredByCommand []string
+	reshaped         int // deletes, moves and restores of the real project followed (stage_fileops.go)
 }
 
 // stagedState is what fileStates records of one file: enough to tell that a

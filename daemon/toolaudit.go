@@ -97,7 +97,14 @@ type toolAuditEvent struct {
 	// carries (protocol.ToolActivity.CallID) and the daemon log names on a
 	// failure: the thread from what the user saw to what was recorded.
 	CallID string `json:"call_id,omitempty"`
+	// Initiator is set when the daemon ran the call itself rather than the
+	// model asking for it: "judge" for a long task's re-check (recheck.go).
+	// Source still says what made it allowed -- config, or the user's grant.
+	Initiator string `json:"initiator,omitempty"`
 }
+
+// auditInitiatorJudge marks a call the long task's judge made itself.
+const auditInitiatorJudge = "judge"
 
 // toolAuditMaxBytes bounds the active file before rotation; one rotation keeps
 // a single .1 backup, so on-disk usage stays bounded at ~2x this however long

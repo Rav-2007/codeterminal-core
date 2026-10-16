@@ -290,6 +290,30 @@ func TestUnknownMCPKeysAreReported(t *testing.T) {
 	}
 }
 
+// mcp.correction IS READ AND CHECKED like the rest: a misspelled key under it
+// and a mode that is not one of the three are both said, and the mode falls
+// back to the default rather than to "off" or "on" by accident.
+func TestTheCorrectionSettingIsChecked(t *testing.T) {
+	body := "{" + validTiers + `,"mcp":{"enabled":true,"correction":{"mode":"shadwo","mood":"on"}}}`
+	cfg, err := loadMCPConfig(t, body)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, want := range []string{"mcp.correction.mood", `mcp.correction.mode "shadwo"`} {
+		if !mentions(cfg, want) {
+			t.Errorf("%q was not reported; warnings were %v", want, cfg.Warnings())
+		}
+	}
+	if got := cfg.MCP.Correction.resolvedMode(); got != correctionShadow {
+		t.Errorf("a misspelled mode resolved to %q, want the default %q", got, correctionShadow)
+	}
+	for _, mode := range []string{correctionOff, correctionShadow, correctionOn} {
+		if got := (MCPCorrectionConfig{Mode: mode}).resolvedMode(); got != mode {
+			t.Errorf("mode %q resolved to %q", mode, got)
+		}
+	}
+}
+
 // Legal-but-loud configuration. The user is allowed to make these choices; they
 // are not allowed to make them invisibly.
 func TestPolicySurfaceIsReported(t *testing.T) {
@@ -379,8 +403,10 @@ func TestEmptyMCPSectionMarshalsInertlyLikeItsNeighbours(t *testing.T) {
 	got := string(b)
 
 	// The section is present-but-inert, in the same shape as the two sections
-	// that already behave this way.
-	for _, want := range []string{`"retrieval":{}`, `"zdr":{}`, `"mcp":{"builtin":{},"budget":{},"web":{}}`} {
+	// that already behave this way. "correction":{} joined it 2026-10-15
+	// (correction.go); re-checked then that nothing writes Config back to disk
+	// -- no json.Marshal of a Config outside the tests.
+	for _, want := range []string{`"retrieval":{}`, `"zdr":{}`, `"mcp":{"builtin":{},"budget":{},"web":{},"correction":{}}`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("marshalled config %s does not contain %s; if the shape of these sections "+
 				"changed, re-check whether Config is now written back to disk anywhere", got, want)

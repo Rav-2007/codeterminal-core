@@ -286,11 +286,58 @@ type searchMatch struct {
 // of duplication and the unit of insertion are both "a function", so the two
 // quantities are routinely equal. A refusal that a user can act on beats a
 // guess that is usually right.
-func errAmbiguousMatch(count int, relPath string, tier MatchTier) error {
-	if tier == MatchExact {
-		return fmt.Errorf("search text found %d times in %s; ambiguous, refusing. %s", count, relPath, ambiguityRemedy)
+//
+// IT SAYS WHERE. Each occurrence's line goes into the refusal, so the retry
+// widens the passage that was meant, not whichever one the model reads first
+// -- the line numbers name places; no file text is quoted.
+func errAmbiguousMatch(count int, relPath string, tier MatchTier, lines []int) error {
+	where := ""
+	if len(lines) > 0 {
+		where = " (" + linesPhrase(lines, count) + ")"
 	}
-	return fmt.Errorf("search text found %d times in %s once %s differences are ignored; ambiguous, refusing. %s", count, relPath, tier, ambiguityRemedy)
+	if tier == MatchExact {
+		return fmt.Errorf("search text found %d times in %s%s; ambiguous, refusing. %s", count, relPath, where, ambiguityRemedy)
+	}
+	return fmt.Errorf("search text found %d times in %s once %s differences are ignored%s; ambiguous, refusing. %s",
+		count, relPath, tier, where, ambiguityRemedy)
+}
+
+// maxNamedLines is how many occurrences an ambiguity names by line.
+const maxNamedLines = 8
+
+// linesPhrase is "at lines 12 and 40", "at lines 3, 9 and 15", or the first
+// maxNamedLines and how many more.
+func linesPhrase(lines []int, count int) string {
+	parts := make([]string, len(lines))
+	for i, l := range lines {
+		parts[i] = fmt.Sprint(l)
+	}
+	switch {
+	case count > len(lines):
+		return fmt.Sprintf("at lines %s and %d more", strings.Join(parts, ", "), count-len(lines))
+	case len(parts) == 1:
+		return "at line " + parts[0]
+	}
+	return "at lines " + strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+}
+
+// matchLines is the line of original where each of the first limit occurrences
+// of needle in haystack begins, counted as strings.Count counts them: without
+// overlap.
+func matchLines(original string, haystack mapped, needle string, limit int) []int {
+	var lines []int
+	for from := 0; len(lines) < limit; {
+		i := strings.Index(haystack.text[from:], needle)
+		if i < 0 {
+			break
+		}
+		at := from + i
+		if start := haystack.off[at]; start >= 0 && start <= len(original) {
+			lines = append(lines, strings.Count(original[:start], "\n")+1)
+		}
+		from = at + len(needle)
+	}
+	return lines
 }
 
 // ambiguityRemedy is worded to be correct whichever way the block was authored:
@@ -335,7 +382,7 @@ func findSearch(original, search, relPath string) (searchMatch, error) {
 			continue
 		}
 		if count > 1 {
-			return searchMatch{}, errAmbiguousMatch(count, relPath, tier)
+			return searchMatch{}, errAmbiguousMatch(count, relPath, tier, matchLines(original, haystack, needle, maxNamedLines))
 		}
 
 		idx := strings.Index(haystack.text, needle)
@@ -349,5 +396,64 @@ func findSearch(original, search, relPath string) (searchMatch, error) {
 		return searchMatch{Start: start, End: end, Tier: tier}, nil
 	}
 
+	if first, last, same, of := closestPassage(original, search); first > 0 {
+		return searchMatch{}, fmt.Errorf("search text not found in %s; the closest passage is lines %d-%d, where %d "+
+			"of its %d lines match: read those lines and re-send the SEARCH as they are now", relPath, first, last, same, of)
+	}
 	return searchMatch{}, fmt.Errorf("search text not found in %s", relPath)
+}
+
+// Bounds on the closest-passage search: a SEARCH longer than this, or a file
+// so long the comparison would cost more than the hint is worth, gets the
+// plain refusal.
+const (
+	maxHintSearchLines = 400
+	maxHintComparisons = 4_000_000
+)
+
+// closestPassage is where a SEARCH that matched nowhere most likely meant: the
+// lines of original that agree with most of its lines, each compared with
+// surrounding space ignored. A SEARCH goes stale when the file moved on --
+// another edit landed, the model remembered a line wrong -- and "not found" on
+// its own sends the model back to read the whole file, or to guess again.
+// Saying where costs a line number. Only a passage that agrees with at least
+// half of the SEARCH's non-blank lines is named: fewer is not where it meant.
+// first is 0 when nothing is close enough.
+func closestPassage(original, search string) (first, last, same, of int) {
+	want := trimmedLines(search)
+	for _, w := range want {
+		if w != "" {
+			of++
+		}
+	}
+	have := trimmedLines(original)
+	if of == 0 || len(want) > maxHintSearchLines || len(have)*len(want) > maxHintComparisons {
+		return 0, 0, 0, 0
+	}
+	at := -1
+	for i := range have {
+		n := 0
+		for j, w := range want {
+			if i+j < len(have) && w != "" && have[i+j] == w {
+				n++
+			}
+		}
+		if n > same {
+			same, at = n, i
+		}
+	}
+	if at < 0 || 2*same < of {
+		return 0, 0, 0, 0
+	}
+	return at + 1, min(at+len(want), len(have)), same, of
+}
+
+// trimmedLines is text's lines with surrounding space -- and so any \r --
+// removed, without the empty line a final newline leaves.
+func trimmedLines(text string) []string {
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimSpace(l)
+	}
+	return lines
 }

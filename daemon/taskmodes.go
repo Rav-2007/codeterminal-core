@@ -188,14 +188,44 @@ var nonVerifyingSubcommands = map[string]bool{
 	"version": true, "env": true, "help": true, "doc": true, "list": true, "--version": true, "-v": true,
 }
 
+// testRunners are the programs that run tests with no subcommand at all --
+// "pytest", "tox", "ctest" -- each with the flags that only describe it and
+// run nothing: `pytest --collect-only` passes without running a test, which
+// is the false pass the finish gate is there to refuse. (-V is ctest's
+// verbose but pytest's version, so the lists are per runner.) MEASURED
+// 2026-10-16: with projecttoolchain.go letting sandbox_exec run pytest, a bare
+// `pytest` -- and `pytest -v`, read as a version -- was refused as "does not
+// check the work", so a Python task could not finish on a passing run.
+var testRunners = map[string]map[string]bool{
+	"pytest": {"--version": true, "-V": true, "--help": true, "-h": true, "--collect-only": true, "--co": true,
+		"--fixtures": true, "--fixtures-per-test": true, "--markers": true},
+	"tox":   {"--version": true, "--help": true, "-h": true, "-l": true, "--listenvs": true, "-a": true, "--listenvs-all": true},
+	"ctest": {"--version": true, "--help": true, "-N": true, "--show-only": true},
+}
+
 // isVerifyingCommand reports whether a command could have checked the work: a
 // build, a test, a vet or lint, a make target. The verdict is only as good as
 // the command, and the user sees which one it was.
 func isVerifyingCommand(command string) bool {
 	fields := strings.Fields(command)
-	if len(fields) < 2 {
+	// "python -m pytest" is pytest.
+	if len(fields) >= 3 && (fields[0] == "python" || fields[0] == "python3") && fields[1] == "-m" {
+		fields = fields[2:]
+	}
+	if len(fields) == 0 {
+		return false
+	}
+	if describes, ok := testRunners[fields[0]]; ok {
+		for _, f := range fields[1:] {
+			if describes[f] {
+				return false
+			}
+		}
+		return true
+	}
+	if len(fields) == 1 {
 		// A bare "make" runs the default target, which is usually the build.
-		return len(fields) == 1 && fields[0] == "make"
+		return fields[0] == "make"
 	}
 	return !nonVerifyingSubcommands[fields[1]]
 }

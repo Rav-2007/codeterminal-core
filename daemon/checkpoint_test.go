@@ -131,3 +131,42 @@ func TestACheckpointNeverWritesThroughALink(t *testing.T) {
 		t.Errorf("the refused file was not reported as a non-regular file: %q", out)
 	}
 }
+
+// A CHECKPOINT NEVER BRINGS BACK WHAT THE PROJECT DELETED OR MOVED. A file
+// edited and saved in a checkpoint, then deleted or moved in the project
+// (delete_path, move_path, which the user agreed to), was written back into
+// the copy by a restore -- and offered for review as a new file, beside the
+// moved one. Restoring past a delete or a move is refused.
+//
+// Neuter checks: drop the reshaped stamp check in restore; drop the count in
+// mirrorDelete; drop it in mirrorMove.
+func TestACheckpointNeverUndoesADeleteOrMove(t *testing.T) {
+	for _, op := range []string{"delete", "move"} {
+		s, dir := stageProject(t, map[string]string{"old.go": "package m\n\nvar Old = 1\n"})
+		p := stagedSink(t, s)
+		if msg, isErr := propose(t, s, p, "old.go", "var Old = 1", "var Old = 2"); isErr {
+			t.Fatal(msg)
+		}
+		if msg, ok := checkpointCall(t, s, p, "save", "mine"); !ok {
+			t.Fatal(msg)
+		}
+		var err error
+		if op == "delete" {
+			err = os.Remove(filepath.Join(dir, "old.go"))
+			p.mirrorDelete("old.go")
+		} else {
+			err = os.Rename(filepath.Join(dir, "old.go"), filepath.Join(dir, "new.go"))
+			p.mirrorMove("old.go", "new.go")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if msg, ok := checkpointCall(t, s, p, "restore", "mine"); ok || !strings.Contains(msg, "deleted or moved") {
+			t.Errorf("%s: the checkpoint was restored past it: %v %q", op, ok, msg)
+		}
+		st, _ := p.workingCopy()
+		if _, err := os.Lstat(filepath.Join(st.root, "old.go")); !os.IsNotExist(err) {
+			t.Errorf("%s: old.go is back in the copy (%v)", op, err)
+		}
+	}
+}

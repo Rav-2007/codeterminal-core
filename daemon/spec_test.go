@@ -220,6 +220,43 @@ func TestMetNeedsVerifiableEvidence(t *testing.T) {
 	}
 }
 
+// A PASS VOUCHES FOR "MET" ONLY AS A REAL CHECK OF THE CODE AS IT NOW IS: not
+// `go version`, which passes whatever the code does, and not a test run from
+// before the last edit -- the finish gate's rule (finishRefusal), held here too.
+//
+// Neuter checks: drop isVerifyingCommand (`go version` vouches); drop the
+// edits comparison (the stale run vouches).
+func TestAMetNeedsACurrentRealCheck(t *testing.T) {
+	s, dir := stageProject(t, map[string]string{"specs/v.md": sampleSpec})
+	sp, err := loadSpec(dir, "specs/v.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &proposalSink{spec: sp, checking: true}
+	sink.blocks = []editapply.EditBlock{{FilePath: "cmd/v.go", Search: "a", Replace: "b"}} // one edit made
+	sink.checks = []ranCheck{
+		{command: "go version", passed: true, edits: 1},
+		{command: "go test ./cmd -run TestVerbose", passed: true, edits: 0}, // before the edit
+	}
+	record := func(evidence string) string {
+		args, _ := json.Marshal(map[string]string{"id": "C1", "status": "met", "evidence": evidence})
+		if _, err := s.builtinRecordCriterion(context.Background(), args, sink); err != nil {
+			t.Fatal(err)
+		}
+		return sink.verdicts["C1"].Status
+	}
+	if got := record("`go version` passed"); got != protocol.SpecUnknown {
+		t.Errorf("a passing `go version` recorded met as %s, want unknown", got)
+	}
+	if got := record("`go test ./cmd -run TestVerbose` passed"); got != protocol.SpecUnknown {
+		t.Errorf("a pass from before the last edit recorded met as %s, want unknown", got)
+	}
+	sink.checks = append(sink.checks, ranCheck{command: "go test ./cmd -run TestVerbose", passed: true, edits: 1})
+	if got := record("`go test ./cmd -run TestVerbose` passed"); got != protocol.SpecMet {
+		t.Errorf("a current passing test recorded met as %s, want met", got)
+	}
+}
+
 // The report covers every criterion, and the spec's boxes follow the verdicts
 // through a reviewed edit: met ticked, unmet unticked, unknown left alone.
 func TestTheCheckReportsAndTicksTheSpec(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -287,7 +288,7 @@ func TestTheLedgerCannotForgeItsFence(t *testing.T) {
 		Notes:     []string{evil},
 		LastCheck: &taskCheck{Command: "go test", Passed: false, Output: evil},
 	}
-	out := l.renderTaskState(taskBudget{calls: 10, usd: 1, minutes: 5}, taskSpend{}, 2)
+	out := l.renderTaskState(taskBudget{calls: 10, usd: 1, minutes: 5}, taskSpend{}, 2, false)
 	for tag, want := range map[string]int{taskStateOpenTag: 1, taskStateCloseTag: 1, userRequestOpenTag: 0, userRequestCloseTag: 0} {
 		if n := strings.Count(out, tag); n != want {
 			t.Errorf("%s appears %d times in the rendered ledger, want %d:\n%s", tag, n, want, out)
@@ -323,6 +324,102 @@ func TestTwoSegmentsWithoutProgressStopAsStuck(t *testing.T) {
 	done := lastDone(t, msgs)
 	if done.Incomplete == nil || !strings.Contains(done.Incomplete.Detail, "moved nothing forward") {
 		t.Errorf("the Done does not say the task was stuck: %+v", done.Incomplete)
+	}
+}
+
+// textFromSSE is a reply of text alone from a named host: what DigitalOcean
+// sent in Round 4 when it dropped the tool call that followed the text.
+func textFromSSE(provider, text string) []string {
+	escaped, _ := json.Marshal(text)
+	return []string{
+		fmt.Sprintf(`data: {"provider":%q,"choices":[{"delta":{"content":%s}}]}`, provider, string(escaped)),
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}
+}
+
+// A SEGMENT THAT WAS ONLY TALK RUNS AGAIN, THEN MOVES HOST -- IT IS NOT STUCK.
+// Round 4's two stuck trials were exactly this: a sentence of intent, no tool
+// call, from a host that drops the call after the text. The first such segment
+// runs again where it was; the second moves the rest of the task elsewhere; and
+// the task, served properly, finishes instead of ending stuck after two calls.
+//
+// Neuter checks: count a talk-only segment toward quiet like any other (the
+// task ends stuck after two calls); drop the avoidProvider in the second case
+// (the third request still goes to FlakyHost).
+func TestATalkOnlySegmentRunsAgainThenMovesHost(t *testing.T) {
+	base, calls, bodies := agentUpstream(t,
+		textFromSSE("FlakyHost", "I'll start by understanding the project structure."),
+		textFromSSE("FlakyHost", "I'll start by reading the main package."),
+		toolCallSSE("c1", "builtin__finish_task", `{"status":"done","summary":"Nothing needed changing."}`),
+	)
+	s := loopServer(t, base, taskPolicies())
+	run, _, runIt := directTaskRun(t, s, modeTask)
+	if _, err := runIt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if run.ledger.State != protocol.TaskStateFinished || calls.Load() != 3 {
+		t.Fatalf("state %q after %d calls; want finished after 3", run.ledger.State, calls.Load())
+	}
+	for i, want := range [][]string{nil, nil, {"FlakyHost"}} {
+		if got := sentIgnore(t, (*bodies)[i]); !reflect.DeepEqual(got, want) {
+			t.Errorf("request %d ignored %v, want %v", i+1, got, want)
+		}
+	}
+}
+
+// A MODEL THAT ONLY TALKS STILL STOPS. The two retries are the whole of the
+// allowance: the third talk-only segment in a row counts like any other, so
+// two more of them end the task as stuck rather than spending its budget.
+//
+// Neuter check: retry every talk-only segment (drop the counting after the
+// second), and the task runs to its call budget instead of stopping stuck.
+func TestAModelThatOnlyTalksStillStopsAsStuck(t *testing.T) {
+	base, calls, bodies := agentUpstream(t,
+		textFromSSE("FlakyHost", "I'll look at the project."),
+		textFromSSE("FlakyHost", "I'll look at the project now."),
+		textFromSSE("OtherHost", "Let me look at the project."),
+		textFromSSE("OtherHost", "Looking at the project."),
+	)
+	cfg := taskPolicies()
+	cfg.Budget.Task = &MCPTaskBudgetConfig{MaxCalls: 8}
+	s := loopServer(t, base, cfg)
+	run, _, runIt := directTaskRun(t, s, modeTask)
+	if _, err := runIt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if run.ledger.State != protocol.TaskStateStuck || calls.Load() != 4 {
+		t.Fatalf("state %q after %d calls; want stuck after 4", run.ledger.State, calls.Load())
+	}
+	if got := sentIgnore(t, (*bodies)[3]); !reflect.DeepEqual(got, []string{"FlakyHost"}) {
+		t.Errorf("the fourth request ignored %v; the move to another host must last the rest of the task", got)
+	}
+}
+
+// A SEGMENT WHOSE TOOL CALL WAS REFUSED CALLED A TOOL. Nothing was dropped:
+// the host delivered the call, and the policy said no. So it is counted like
+// any other segment that moved nothing -- not run again as a dropped call --
+// and two of them stop the task as stuck, as before.
+//
+// Neuter check: decide "talk-only" by the tools that RAN (res.ToolNames), and
+// the refused calls are taken for dropped ones: the task runs on, retried.
+func TestASegmentWhoseCallWasRefusedIsNotADroppedCall(t *testing.T) {
+	base, calls, _ := agentUpstream(t,
+		toolCallSSE("c1", "builtin__sandbox_exec", `{"command":"go test ./..."}`),
+		textSSE("I could not run the tests."),
+		toolCallSSE("c2", "builtin__sandbox_exec", `{"command":"go test ./..."}`),
+		textSSE("Still could not run them."),
+	)
+	cfg := taskPolicies()
+	cfg.Budget.Task = &MCPTaskBudgetConfig{MaxCalls: 12}
+	s := loopServer(t, base, cfg)
+	run, _, runIt := directTaskRun(t, s, modeTask) // no approver: an "ask" tool is refused
+	if _, err := runIt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if run.ledger.State != protocol.TaskStateStuck || calls.Load() != 4 || run.talkRetries != 0 {
+		t.Fatalf("state %q after %d calls, %d talk retries; want stuck after 4, none retried",
+			run.ledger.State, calls.Load(), run.talkRetries)
 	}
 }
 
@@ -493,7 +590,7 @@ func TestTheLedgerKeepsNoSecretFromACommandsOutput(t *testing.T) {
 	p := &proposalSink{checkOutput: "--- FAIL: TestUpload\n    upload_test.go:9: key " + secret + " rejected"}
 	p.checks = []ranCheck{{command: "go test ./upload", passed: false}}
 	run := &taskRun{ledger: &taskLedger{}}
-	run.absorbSegment(p, false)
+	run.absorbSegment(p, (&Server{cfg: &Config{}}).cleanForLedger)
 	if c := run.ledger.LastCheck; c == nil || strings.Contains(c.Output, secret) || !strings.Contains(c.Output, "FAIL") {
 		t.Errorf("the ledger's check output = %+v; want the failure kept and the key scrubbed", c)
 	}
@@ -689,5 +786,64 @@ func TestAStaleCheckIsReportedAsStaleNotFailed(t *testing.T) {
 	}
 	if st := l.status(taskBudget{}, l.Spent, l.Segments); !st.LastCheckPassed || !st.LastCheckStale {
 		t.Errorf("status = passed %v, stale %v; want both true", st.LastCheckPassed, st.LastCheckStale)
+	}
+}
+
+// THE CALL BUDGET IS THE NUMBER OF CALLS, the handoffs among them, though the
+// provider reports no usage. A run that reaches its budget mid-segment keeps
+// its last call for the report it ends on. A segment opened with one call left
+// takes its step and then reports, one past -- as a turn's ceiling of one bills
+// two (agentloop.go): a step has to be taken before it can be summed up.
+//
+// Neuter checks: drop the reserved last call; leave the handoffs uncounted.
+func TestTheCallBudgetIsTheNumberOfCalls(t *testing.T) {
+	read := func(n int) []string {
+		return toolCallSSE(fmt.Sprintf("r%d", n), "builtin__read_file", fmt.Sprintf(`{"path":"f%d.txt"}`, n))
+	}
+	for _, c := range []struct {
+		name         string
+		calls, asked int
+		script       [][]string
+	}{
+		{"mid-segment", 5, 5, [][]string{read(1), read(2), read(3), read(4), read(5), read(6)}},
+		{"one call left", 4, 5, [][]string{read(1), read(2), textSSE("Read two."), read(3), read(4), read(5)}},
+	} {
+		base, asked, bodies := agentUpstream(t, c.script...)
+		cfg := taskPolicies()
+		cfg.Budget.Task = &MCPTaskBudgetConfig{MaxCalls: c.calls}
+		run, _, runIt := directTaskRun(t, loopServer(t, base, cfg), modeFix)
+		if _, err := runIt(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		n := int(asked.Load())
+		sent := sentMessages(t, (*bodies)[n-1])
+		reported := sent[len(sent)-1].Content == taskBudgetWrapUpNote
+		if run.ledger.State != protocol.TaskStateBudget || n != c.asked || run.spent().Calls != n || !reported {
+			t.Errorf("%s: state %q, %d calls asked on a budget of %d (want %d), %d counted, ended on the report %v",
+				c.name, run.ledger.State, n, c.calls, c.asked, run.spent().Calls, reported)
+		}
+	}
+}
+
+// A CHECK THAT TESTS IS ONE, HOWEVER IT IS SPELLED; ONE THAT ONLY DESCRIBES
+// ITSELF IS NOT. A bare `pytest` and `pytest -v` run the tests (and were
+// refused at the finish as not checking the work); `pytest --collect-only`
+// passes without running one, and `go version` whatever the code does.
+//
+// Neuter checks: drop pytest from testRunners; drop --collect-only from its
+// flags; drop the python -m unwrapping.
+func TestWhatCountsAsACheck(t *testing.T) {
+	for _, c := range []string{"make", "go test ./...", "go vet ./...", "cargo test", "npm test", "npx jest",
+		"pytest", "pytest -v", "pytest -q tests/", "python -m pytest", "python3 -m pytest -x", "tox", "tox -e py312",
+		"ctest", "ctest -V"} {
+		if !isVerifyingCommand(c) {
+			t.Errorf("%q does check the work", c)
+		}
+	}
+	for _, c := range []string{"", "go", "python", "go version", "npm -v", "pytest --version", "pytest --collect-only",
+		"python -m pytest --co", "tox -l", "ctest -N"} {
+		if isVerifyingCommand(c) {
+			t.Errorf("%q does not check the work", c)
+		}
 	}
 }

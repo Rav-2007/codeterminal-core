@@ -78,6 +78,14 @@ type taskLedger struct {
 	Summary string    `json:"summary,omitempty"`
 	Created time.Time `json:"created"`
 	Updated time.Time `json:"updated"`
+	// Correction is what the convergence judge made of the task's checks
+	// (correction.go). An added field, not a new format: a ledger saved before
+	// it loads with none, and the version stays, because a version the loader
+	// does not know is refused -- which would strand every saved task.
+	Correction *taskCorrection `json:"correction,omitempty"`
+	// PriorStop is how the run before this one ended -- its state and why --
+	// kept when a resume clears State and Detail.
+	PriorStop string `json:"prior_stop,omitempty"`
 }
 
 type taskFinding struct {
@@ -347,12 +355,20 @@ func (l *taskLedger) setHandoff(text string) {
 // renderTaskState is the <task_state> block a segment starts from. Every piece
 // the model or a tool wrote goes through neutralizeDelimiters, so none of it
 // can close the block, forge the user's request or open a fence of its own.
-func (l *taskLedger) renderTaskState(b taskBudget, run taskSpend, segment int) string {
+//
+// correcting is the run's judge speaking to the model (mcp.correction.mode
+// "on"): then the state also says how the last run ended and what the judge
+// measured of the task's attempts. Otherwise none of that is shown, however
+// much of it the ledger holds -- in "shadow" it is kept and never sent.
+func (l *taskLedger) renderTaskState(b taskBudget, run taskSpend, segment int, correcting bool) string {
 	var s strings.Builder
 	s.WriteString(taskStateOpenTag + "\n")
 	fmt.Fprintf(&s, "Task %s (%s), segment %d. This run has used %d of %d model calls, $%.2f of $%.2f, "+
 		"and %d of %d minutes.\n", l.ID, l.Mode, segment, run.Calls, b.calls, run.USD, b.usd,
 		run.Seconds/60, b.minutes)
+	if correcting && l.PriorStop != "" {
+		s.WriteString("The run before this one ended " + neutralizeDelimiters(l.PriorStop) + "\n")
+	}
 
 	if len(l.Plan) > 0 {
 		s.WriteString("\nPlan:\n")
@@ -389,6 +405,9 @@ func (l *taskLedger) renderTaskState(b taskBudget, run taskSpend, segment int) s
 		if c.Output != "" && !c.Passed {
 			s.WriteString("Its last lines:\n" + neutralizeDelimiters(c.Output) + "\n")
 		}
+	}
+	if correcting {
+		l.Correction.render(&s)
 	}
 	if len(l.Notes) > 0 {
 		s.WriteString("\nWhat the user added since the task began:\n")
