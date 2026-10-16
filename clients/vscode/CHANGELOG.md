@@ -3,11 +3,14 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
-## [1.0.0] - Unreleased
+## [1.0.1] - 2026-10-16
 
 The first non-preview release. Everything since 0.1.1 (PRs #23–#40), plus the
-1.0.0 fixes below. A 0.1.1 install updates in place: no setting was renamed or
-removed, and the chat's view ids are unchanged.
+1.0 fixes below. It is the code tagged v1.0.0, renumbered: that version never
+reached the Marketplace, because its upload stalled in verification and was
+deleted, and the Marketplace does not let a deleted version number be reused.
+A 0.1.1 install updates in place: no setting was renamed or removed, and the
+chat's view ids are unchanged.
 
 ### Added
 
