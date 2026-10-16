@@ -15,9 +15,11 @@ import (
 // a "deleted in the copy" note for something the user agreed to delete.
 // Every method is a no-op without a copy.
 //
-// Each of the three mirror methods counts in st.reshaped: a checkpoint taken
-// before one is never restored (checkpoint.go), as it would put back what the
-// user agreed to remove.
+// Each of the three mirror methods counts in st.reshaped: an edit's hash
+// cannot see what they did -- a file that was never edited is simply gone --
+// so the judge's state hash takes the count in (correction.go), and a
+// checkpoint taken before one is never restored (checkpoint.go): it would put
+// back what the user agreed to remove.
 
 // stageKey is rel as the copy keys its files: the native, cleaned form
 // filepath.Rel gives. The tools' paths are the model's, with forward slashes,

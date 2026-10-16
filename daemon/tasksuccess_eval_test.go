@@ -43,7 +43,9 @@
 // run), TASK_EVAL_PROVIDER_SORT (e.g. throughput: the tier's provider_sort),
 // TASK_EVAL_MAX_USD (stop starting trials once the run's measured bill passes
 // this many dollars -- the budget is money, and tokens are a poor proxy for it
-// across models priced 7x apart).
+// across models priced 7x apart), TASK_EVAL_CORRECTION (off|shadow|on: a long
+// task's mcp.correction.mode -- the arms of the self-correction rounds),
+// TASK_EVAL_APPROVE (once|turn: how each approval is answered).
 //
 // Cost is the provider's own bill, not a price list: each call's usage chunk
 // carries its dollar cost, and on OpenRouter the key's total usage is read
@@ -490,10 +492,18 @@ func TestTaskFixturesAreValid(t *testing.T) {
 
 // approveAll says yes to every question, as a user pressing y would, and
 // counts them: how often a real user would have been asked is part of the cost.
-type approveAll struct{ asked int }
+type approveAll struct {
+	asked int
+	// forTurn answers "yes for this task" (TASK_EVAL_APPROVE=turn), the answer
+	// that lets the judge run a stale check again (recheck.go).
+	forTurn bool
+}
 
 func (a *approveAll) Ask(context.Context, protocol.ToolApprovalRequest) approvalDecision {
 	a.asked++
+	if a.forTurn {
+		return approvalDecision{Decision: protocol.ApprovalApproveForTurn}
+	}
 	return approvalDecision{Decision: protocol.ApprovalApprove}
 }
 
@@ -526,6 +536,18 @@ type taskTrial struct {
 	// Each call in order: which phase made it and how much of its prompt the
 	// provider served from its cache.
 	PhaseCalls []phaseCall `json:"phase_calls,omitempty"`
+	// A long task's judge, verdict by verdict (correction.go), and the
+	// talk-only segments it ran again rather than counted as stuck.
+	Verdicts    map[string]int `json:"verdicts,omitempty"`
+	TalkRetries int            `json:"talk_retries,omitempty"`
+	// What the judge did, when it acts (mode "on"): code put back, stale
+	// checks run again and the seconds they took.
+	Restores       int     `json:"restores,omitempty"`
+	Rechecks       int     `json:"rechecks,omitempty"`
+	RecheckSeconds float64 `json:"recheck_seconds,omitempty"`
+	// FalseFinish is a task that said it was finished while the hidden tests
+	// fail: what the finish gate's passing run was worth.
+	FalseFinish bool `json:"false_finish,omitempty"`
 }
 
 // phaseOpenings renders, for each phase after the first, its first call's
@@ -672,6 +694,25 @@ func TestTaskSuccess(t *testing.T) {
 	if longMode != "" && (len(phases) > 0 || withSpec) {
 		t.Fatal("TASK_EVAL_LONG runs on its own: no pipeline, no spec")
 	}
+	// TASK_EVAL_CORRECTION=off|shadow|on is a long task's judge (correction.go):
+	// the same trials with its verdicts kept, acted on, or not made at all.
+	if v := strings.TrimSpace(os.Getenv("TASK_EVAL_CORRECTION")); v != "" {
+		if (MCPCorrectionConfig{Mode: v}).resolvedMode() != v {
+			t.Fatalf("TASK_EVAL_CORRECTION=%q: want off, shadow or on", v)
+		}
+		mcpCfg.Correction.Mode = v
+	}
+	// TASK_EVAL_APPROVE=once|turn is how the patient user answers: "yes" to
+	// each call (the default, as every round so far), or "yes for this task",
+	// which the judge's re-check needs. Both arms of a round get the same.
+	approveForTurn := false
+	switch v := strings.TrimSpace(os.Getenv("TASK_EVAL_APPROVE")); v {
+	case "", "once":
+	case "turn":
+		approveForTurn = true
+	default:
+		t.Fatalf("TASK_EVAL_APPROVE=%q: want once or turn", v)
+	}
 	taskBudgetReq := &protocol.TaskBudget{Calls: envInt(t, "TASK_EVAL_TASK_CALLS", 0),
 		Minutes: envInt(t, "TASK_EVAL_TASK_MINUTES", 0)}
 	if v := strings.TrimSpace(os.Getenv("TASK_EVAL_TASK_USD")); v != "" {
@@ -760,7 +801,7 @@ func TestTaskSuccess(t *testing.T) {
 				run = &taskRun{budget: resolveTaskBudget(mcpCfg.Budget.Task, taskBudgetReq)}
 				system += "\n\n" + longTaskDirective(longMode, run.budget.segmentCalls) // as server.go adds it
 			}
-			appr := &approveAll{}
+			appr := &approveAll{forTurn: approveForTurn}
 
 			rec.reset()
 			start := time.Now()
@@ -834,6 +875,11 @@ func TestTaskSuccess(t *testing.T) {
 				PhaseCalls: got.perCall, Turns: turns}
 			if run != nil {
 				tr.TaskState = run.ledger.State
+				tr.TalkRetries = run.talkRetries
+				tr.Restores, tr.Rechecks, tr.RecheckSeconds = run.restores, run.rechecks, run.recheckTime.Seconds()
+				if c := run.ledger.Correction; c != nil {
+					tr.Verdicts = c.Counts
+				}
 			}
 			if err != nil {
 				tr.Why = "TRANSPORT: " + err.Error()
@@ -850,12 +896,14 @@ func TestTaskSuccess(t *testing.T) {
 			tr.Refused = refused
 			tr.Why = gradeTask(spec, dir)
 			tr.Pass = tr.Why == ""
+			tr.FalseFinish = tr.TaskState == protocol.TaskStateFinished && !tr.Pass
 			results = append(results, tr)
 			t.Logf("%-24s trial %d  %-4s  calls=%2d tools=%2d edits=%d/%d refused  %5.0fs  $%.4f  %s",
 				spec.name, trial, passWord(tr.Pass), tr.Calls, tr.ToolCalls, tr.Refused, tr.Proposed,
 				tr.Seconds, tr.CostUSD, tr.Why)
 			if tr.Turns > 1 || tr.TaskState != "" {
-				t.Logf("    turns=%d  task=%s", tr.Turns, tr.TaskState)
+				t.Logf("    turns=%d  task=%s  talk_retries=%d  false_finish=%v  restores=%d  rechecks=%d  verdicts=%v",
+					tr.Turns, tr.TaskState, tr.TalkRetries, tr.FalseFinish, tr.Restores, tr.Rechecks, tr.Verdicts)
 			}
 			t.Logf("    tools: %s", strings.Join(tr.Tools, " "))
 			if o := phaseOpenings(tr.PhaseCalls); o != "" {
@@ -930,7 +978,8 @@ func reportTaskSuccess(t *testing.T, run runInfo, results []taskTrial) {
 	if len(results) == 0 {
 		t.Fatal("VOID: no trials ran")
 	}
-	passed, transport, budget := 0, 0, 0
+	passed, transport, budget, falseFinish, talkRetries := 0, 0, 0, 0, 0
+	verdicts := map[string]int{}
 	var calls, tokens []int
 	var seconds, costs []float64
 	totalCost := 0.0
@@ -949,6 +998,13 @@ func reportTaskSuccess(t *testing.T, run runInfo, results []taskTrial) {
 		byTask[r.Task] = c
 		if r.BudgetStop {
 			budget++
+		}
+		if r.FalseFinish {
+			falseFinish++
+		}
+		talkRetries += r.TalkRetries
+		for v, n := range r.Verdicts {
+			verdicts[v] += n
 		}
 		calls = append(calls, r.Calls)
 		tokens = append(tokens, r.Tokens)
@@ -982,6 +1038,7 @@ func reportTaskSuccess(t *testing.T, run runInfo, results []taskTrial) {
 		"median_calls": calls[len(calls)/2], "median_tokens": tokens[len(tokens)/2],
 		"median_seconds": seconds[len(seconds)/2],
 		"total_cost_usd": totalCost, "median_cost_usd": costs[len(costs)/2], "trials": results,
+		"false_finishes": falseFinish, "talk_retries": talkRetries, "verdicts": verdicts,
 	}
 	perSolved := "n/a"
 	if passed > 0 {
@@ -996,6 +1053,9 @@ func reportTaskSuccess(t *testing.T, run runInfo, results []taskTrial) {
 		seconds[len(seconds)/2], budget, transport)
 	t.Logf("=== COST $%.4f total (key delta %v), $%.4f median per trial, %s per solved task ===",
 		totalCost, keyDeltaText(run), costs[len(costs)/2], perSolved)
+	if len(verdicts) > 0 || falseFinish > 0 || talkRetries > 0 {
+		t.Logf("=== JUDGE false finishes %d  talk retries %d  verdicts %v ===", falseFinish, talkRetries, verdicts)
+	}
 	if out := os.Getenv("TASK_EVAL_OUT"); out != "" {
 		line, _ := json.Marshal(summary)
 		f, err := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)

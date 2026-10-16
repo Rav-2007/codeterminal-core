@@ -735,6 +735,8 @@ type TaskStatus struct {
 	LastCheckStale bool `json:"last_check_stale,omitempty"`
 	// Detail says why a task that is no longer running stopped.
 	Detail string `json:"detail,omitempty"`
+	// Judge is what a long task's judge has done, when it acts (daemon correction.go).
+	Judge string `json:"judge,omitempty"`
 }
 
 // TaskStatus.State values.

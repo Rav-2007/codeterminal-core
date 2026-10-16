@@ -128,6 +128,9 @@ type MCPConfig struct {
 	// run in the project itself. Off by default because the copy is what lets
 	// the agent test its own changes before the user reviews them.
 	NoWorkingCopy bool `json:"no_working_copy,omitempty"`
+
+	// Correction is how a long task judges the checks it runs (correction.go).
+	Correction MCPCorrectionConfig `json:"correction,omitempty"`
 }
 
 // resolvedPipeline returns the configured phases, or nil for the unorchestrated
@@ -656,13 +659,14 @@ const (
 )
 
 var (
-	knownMCPKeys        = []string{"enabled", "builtin", "servers", "budget", "pipeline", "no_working_copy"}
+	knownMCPKeys        = []string{"enabled", "builtin", "servers", "budget", "pipeline", "no_working_copy", "correction"}
 	knownMCPBuiltinKeys = []string{"disabled", "tools", "extra_programs"}
 	knownMCPServerKeys  = []string{"command", "args", "env", "env_map", "tools", "acknowledged_unconfined", "disabled", "cwd", "connect_timeout_seconds", "type", "url", "headers"}
 	knownMCPBudgetKeys  = []string{"max_iterations", "turn_timeout_seconds", "max_tool_result_bytes",
 		"max_total_tool_bytes", "max_advertised_tools", "max_message_bytes",
 		"connect_timeout_seconds", "max_turn_iterations", "task"}
 	knownMCPTaskBudgetKeys = []string{"max_minutes", "max_usd", "max_calls", "segment_calls", "exec_seconds"}
+	knownMCPCorrectionKeys = []string{"mode", "attempts", "escalate_to"}
 )
 
 // The resolved* accessors apply the "0 means default" convention. All are
@@ -885,6 +889,13 @@ func validateToolPolicies(where string, tools map[string]string) error {
 // A zero is left alone: it means "use the default" and is resolved by the
 // resolved* accessors, not here.
 func (c *Config) clampMCPRanges() {
+	if m := c.MCP.Correction.Mode; m != "" && m != c.MCP.Correction.resolvedMode() {
+		c.warnf("mcp.correction.mode %q is not one of off, shadow, on; using %q", m, correctionShadow)
+	}
+	if a := c.MCP.Correction.Attempts; a != 0 && a != c.MCP.Correction.resolvedAttempts() {
+		c.warnf("mcp.correction.attempts %d is outside %d-%d; using %d", a, minCorrectionAttempts, maxCorrectionAttempts,
+			c.MCP.Correction.resolvedAttempts())
+	}
 	b := &c.MCP.Budget
 	clamp := func(field string, v *int, max int) {
 		if *v < 0 {

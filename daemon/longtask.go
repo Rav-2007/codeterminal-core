@@ -63,6 +63,29 @@ type taskRun struct {
 	investigate func(ctx context.Context, question string) (string, error)
 	// budgetStop is the run's budget verdict once there is one; it sticks.
 	budgetStop *protocol.IncompleteInfo
+	// judge compares each check with the ones before it (correction.go); nil
+	// when mcp.correction.mode is "off".
+	judge *correctionJudge
+	// talkRetries counts the talk-only segments run again rather than
+	// counted toward stuck (runLongTask).
+	talkRetries int
+	// What the judge's control did (correction.go): cut ends the running
+	// segment and says why, stopWhy stops the task. mayRestore is whether it
+	// may put code back unasked -- the checkpoint tool's policy is "allow".
+	// restores counts the times it did; escalate, when set, moves the next
+	// segments to a stronger model and reports whether it did.
+	cut, stopWhy string
+	mayRestore   bool
+	restores     int
+	escalate     func() bool
+	// rechecks counts the stale checks the daemon ran again (recheck.go),
+	// and recheckTime what they took of the run's minutes.
+	rechecks    int
+	recheckTime time.Duration
+	// escalated is the tier the run moved to, once it did; reflections
+	// counts the calls that asked the model why a failure keeps coming back.
+	escalated   string
+	reflections int
 }
 
 // spent is what this run has used so far.
@@ -83,6 +106,12 @@ func (r *taskRun) check(segmentCalls int) *protocol.IncompleteInfo {
 	}
 	if r.budgetStop != nil {
 		return r.budgetStop
+	}
+	// THE JUDGE ENDED THE SEGMENT: the code it put back, or a failure that
+	// keeps coming back, is better met from the task state -- which records
+	// what failed -- than from the transcript of the attempts that led there.
+	if r.cut != "" || r.stopWhy != "" {
+		return &protocol.IncompleteInfo{Reason: protocol.IncompleteAgentBudget, Detail: "the judge ended this segment"}
 	}
 	// THE CALL THAT ENDS A SEGMENT IS ONE OF THE RUN'S N, as a turn's is
 	// (agentloop.go budgetStop): once the segment has made a call, a stop is
@@ -147,7 +176,9 @@ func (r *taskRun) closed() bool {
 func (r *taskRun) wrapUpNote(*protocol.IncompleteInfo) string {
 	note := segmentCheckpointNote
 	switch {
-	case r.closed():
+	case r.closed(), r.cut != "", r.stopWhy != "":
+		// A cut asks for nothing: the judge has said why, and the task
+		// state carries it.
 		return ""
 	case r.budgetStop != nil:
 		note = taskBudgetWrapUpNote
@@ -175,6 +206,8 @@ const (
 		"that verifies it and call finish_task; if not, continue from your handoff."
 	taskResumeNote = "The user resumed this task. Continue from your handoff, and take account of anything " +
 		"they added."
+	taskCutNote = "The judge ended your last segment (see your handoff). Continue from the code as it is now, " +
+		"and do not repeat what your task state shows failed."
 )
 
 // segmentMessages is one segment's whole context.
@@ -189,7 +222,7 @@ func (r *taskRun) segmentMessages(system string, history []chatMessage, segment 
 	// opening the provider has cached. The ledger changes every segment.
 	b.WriteString(fenceUserRequest(r.ledger.Goal))
 	b.WriteString("\n\n")
-	b.WriteString(r.ledger.renderTaskState(r.budget, r.spent(), segment))
+	b.WriteString(r.ledger.renderTaskState(r.budget, r.spent(), segment, r.correcting()))
 	b.WriteString("\n\n" + closing)
 	return append(msgs, chatMessage{Role: "user", Content: b.String()})
 }
@@ -201,6 +234,13 @@ func (r *taskRun) progressMark(p *proposalSink) string {
 	for _, t := range r.ledger.Plan {
 		b.WriteString(t.ID + "=" + t.Status + ";")
 	}
+	if r.correcting() && p.stage != nil {
+		fmt.Fprintf(&b, "|f%d%s", len(r.ledger.Findings), r.judge.progress(p.stage.stateHash()))
+		if c := p.lastCheck(); c != nil {
+			fmt.Fprintf(&b, "|c%s:%v", c.command, c.passed)
+		}
+		return b.String()
+	}
 	fmt.Fprintf(&b, "|f%d|e%d", len(r.ledger.Findings), p.editCount())
 	if c := p.lastCheck(); c != nil {
 		fmt.Fprintf(&b, "|c%s:%v:%d", c.command, c.passed, c.edits)
@@ -210,12 +250,15 @@ func (r *taskRun) progressMark(p *proposalSink) string {
 
 // absorbSegment copies what the daemon knows first-hand into the ledger.
 //
-// THE CHECK'S OUTPUT IS SCRUBBED HERE, because nothing upstream of this did it.
+// THE CHECK'S OUTPUT IS CLEANED HERE, because nothing upstream of this did it.
 // The sink keeps a command's output as the tool returned it, before the scrub
 // every tool result gets on its way to the model -- and the ledger sends it to
 // the model again in every later segment. A test that prints a token would
 // otherwise reach the model through the one path that skipped the scrub.
-func (r *taskRun) absorbSegment(p *proposalSink, noScrub bool) {
+// clean is cleanForLedger: the scrub AND the daemon's own credentials, which
+// a tool result always has removed and which the scrub, switched off with
+// --no-scrub, would not catch.
+func (r *taskRun) absorbSegment(p *proposalSink, clean func(string) string) {
 	if p.tasks != nil {
 		r.ledger.Plan = append([]protocol.TaskItem(nil), p.tasks...)
 	}
@@ -223,7 +266,7 @@ func (r *taskRun) absorbSegment(p *proposalSink, noScrub bool) {
 		r.ledger.FilesChanged = changedFiles(p.stage)
 	}
 	if c := p.lastCheck(); c != nil {
-		output, _ := scrub(p.checkOutput, noScrub)
+		output := clean(p.checkOutput)
 		r.ledger.LastCheck = &taskCheck{
 			Command:       c.command,
 			Passed:        c.passed,
@@ -231,6 +274,15 @@ func (r *taskRun) absorbSegment(p *proposalSink, noScrub bool) {
 			Output:        truncateRunes(output, maxTaskOutputRunes),
 		}
 	}
+}
+
+// cleanForLedger is what a command's output, or a model's words about it, goes
+// through before a ledger may hold it: the scrub every tool result gets, and
+// the daemon's own live credentials, removed whether or not the scrub is on.
+func (s *Server) cleanForLedger(text string) string {
+	cleaned, _ := scrub(text, s.noScrub())
+	cleaned, _ = s.credRedact(cleaned)
+	return cleaned
 }
 
 // save writes the ledger and the working copy's diff. A failure is logged, not
@@ -298,6 +350,11 @@ func (s *Server) runLongTask(
 ) (agentResult, error) {
 	run := proposals.task
 	run.usage = usageTallyFrom(ctx)
+	if mode := s.cfg.MCP.Correction.resolvedMode(); mode != correctionOff && run.judge == nil {
+		run.judge = newCorrectionJudge(mode)
+		run.judge.attempts = s.cfg.MCP.Correction.resolvedAttempts()
+	}
+	run.mayRestore = s.cfg.MCP.Builtin.policyFor("checkpoint") == PolicyAllow
 	// Released the moment the runner is done, not when the request is: the
 	// ledger and diff are saved by then, and a /task review sent the instant
 	// the Done arrives must not find the task still claimed.
@@ -308,6 +365,27 @@ func (s *Server) runLongTask(
 	grants := map[string]bool{}
 	run.investigate = s.newInvestigator(run, turnStart, registry, model, system, routing, appr, grants,
 		onActivity, onProvider)
+	// A STRONGER MODEL, WHEN THE USER NAMED ONE (mcp.correction.escalate_to):
+	// the judge's ladder moves the next segments to it when a failure keeps
+	// coming back, and a provider that keeps failing moves the task to it
+	// rather than ending it. Off unless named; once per run; the same
+	// provider and key, because a tier is a model of the provider in use.
+	if tier := s.cfg.MCP.Correction.EscalateTo; tier != "" && run.correcting() {
+		if strong, strongRouting, why := s.escalationTarget(tier, model); why != "" {
+			s.logger.Printf("task %s: mcp.correction.escalate_to %q is not used: %s", run.ledger.ID, tier, why)
+		} else {
+			run.escalate = func() bool {
+				if run.escalated != "" {
+					return false
+				}
+				model, routing, run.escalated = strong, strongRouting, tier
+				run.investigate = s.newInvestigator(run, turnStart, registry, model, system, routing, appr, grants,
+					onActivity, onProvider)
+				s.logger.Printf("task %s: the next segments run on %s (%s)", run.ledger.ID, tier, strong)
+				return true
+			}
+		}
+	}
 
 	closing := taskBeginNote
 	if run.resumed {
@@ -332,7 +410,18 @@ func (s *Server) runLongTask(
 		combined agentResult
 		text     strings.Builder
 		quiet    int
+		// talkOnly counts the segments in a row that ended on text alone, and
+		// servedBy is the host that answered the running segment's last call:
+		// together they tell a dropped tool call from a task going in circles.
+		talkOnly int
+		servedBy string
 	)
+	segmentProvider := func(provider string) {
+		servedBy = provider
+		if onProvider != nil {
+			onProvider(provider)
+		}
+	}
 	finish := func(state, detail string) {
 		run.ledger.State, run.ledger.Detail = state, detail
 	}
@@ -356,7 +445,7 @@ func (s *Server) runLongTask(
 			break
 		}
 		run.ledger.Segments = segment
-		onStatus(run.ledger.status(run.budget, run.spent(), segment))
+		onStatus(run.status(segment))
 		before := run.progressMark(proposals)
 		s.logger.Printf("task %s: segment %d (%s)", run.ledger.ID, segment, run.ledger.Mode)
 
@@ -365,10 +454,21 @@ func (s *Server) runLongTask(
 			closed: run.closed,
 			// Time at an approval prompt is the user's, not the run's.
 			waited: func(d time.Duration) { run.deadline = run.deadline.Add(d) },
+			// What the model says before its next call, after a failed
+			// check, is its own word on why the check failed (correction.go).
+			said: func(text string) {
+				if run.correcting() {
+					run.judge.said(text)
+				}
+			},
 		}}
+		servedBy = ""
+		if run.judge != nil {
+			run.judge.segment = segment
+		}
 		res, err := s.runAgentLoop(ctx, turnStart, registry, model, run.ledger.Mode,
 			s.withRulesBesideTheQuestion(run.segmentMessages(system, history, segment, closing)), routing, appr,
-			onToken, onActivity, onProvider, onReasoning, onDegraded, nil, ledger)
+			onToken, onActivity, segmentProvider, onReasoning, onDegraded, nil, ledger)
 
 		combined.ToolNames = append(combined.ToolNames, res.ToolNames...)
 		combined.ToolSignatures = append(combined.ToolSignatures, res.ToolSignatures...)
@@ -380,11 +480,32 @@ func (s *Server) runLongTask(
 			}
 			text.WriteString(res.FinalText)
 		}
-		run.absorbSegment(proposals, s.noScrub())
+		// THE BOUNDARY IS MEASURED: code edited after the last check is
+		// checked again before the next segment opens on it (recheck.go).
+		if err == nil && run.budgetStop == nil && (res.Incomplete == nil || res.Incomplete.Reason == protocol.IncompleteAgentBudget) {
+			s.recheck(ctx, run, proposals, registry, grants)
+		}
+		run.absorbSegment(proposals, s.cleanForLedger)
+		for _, ev := range run.flushCorrection(s.cleanForLedger) {
+			s.logger.Printf("task %s: correction (%s): segment %d, check %d `%s`: %s %s",
+				run.ledger.ID, run.judge.mode, ev.Segment, ev.Check, ev.Command, ev.Verdict, ev.Detail)
+		}
+		if err == nil {
+			s.reflect(ctx, run, system, history, segment, model, routing)
+		}
 
 		if err != nil {
 			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 				return stopped(err)
+			}
+			// A PROVIDER THAT KEEPS FAILING is not the end of a task that has a
+			// stronger model to go to: its retries are spent, the next segment
+			// runs there instead.
+			if run.escalate != nil && providerTrouble(err) && run.escalate() {
+				s.logger.Printf("task %s: the model provider failed (%s); the task goes on", run.ledger.ID, asModelError(err).Class)
+				closing = taskContinueNote
+				run.save(proposals, s.logger.Printf)
+				continue
 			}
 			finish(protocol.TaskStateFailed, "the model provider failed: "+asModelError(err).Detail()+
 				". The task is saved; /task resume carries on from here.")
@@ -395,6 +516,7 @@ func (s *Server) runLongTask(
 			break
 		}
 
+		talked := false
 		switch {
 		case run.closed():
 			// finish_task was accepted during this segment, and its summary IS
@@ -411,6 +533,13 @@ func (s *Server) runLongTask(
 			finish(protocol.TaskStateStopped, res.Incomplete.Detail)
 		case res.Incomplete != nil && res.Incomplete.Reason == protocol.IncompleteProviderError:
 			finish(protocol.TaskStateFailed, res.Incomplete.Detail)
+		case run.stopWhy != "":
+			finish(protocol.TaskStateStuck, run.stopWhy+". The task is saved: resume it with a hint, "+
+				"for example /task resume look at the parser first.")
+		case run.cut != "":
+			run.ledger.setHandoff("The judge ended this segment: " + run.cut + ". " + res.FinalText)
+			closing = taskCutNote
+			run.cut = ""
 		case run.budgetStop != nil:
 			run.ledger.setHandoff(res.FinalText)
 			finish(protocol.TaskStateBudget, run.budgetStop.Detail)
@@ -424,18 +553,55 @@ func (s *Server) runLongTask(
 			// finish is a gate, and ending a reply is not passing it.
 			run.ledger.setHandoff(res.FinalText)
 			closing = taskUnfinishedNote
+			talked = ledger.asked == 0
 		}
 		if run.ledger.State != protocol.TaskStateRunning {
 			break
+		}
+
+		// A SEGMENT THAT WAS ONLY TALK MAY BE A DROPPED TOOL CALL, NOT A TASK
+		// GOING IN CIRCLES. MEASURED in Round 4 (2026-10-04): two /debug and
+		// /refactor trials ended stuck after two calls and no tool call at all;
+		// each reply was a sentence of intent ("I'll start by understanding the
+		// project structure...") and nothing else, every one from the
+		// DigitalOcean host -- the host that sends the text before a tool call
+		// and drops the call. The empty-reply retry in runAgentLoop never saw
+		// them, because they were not empty. So the first such segment is not
+		// counted and runs again where it was (the drop is intermittent, and
+		// that host's cache holds the prompt -- 114397d); a second in a row
+		// moves the REST OF THE TASK to another host, not counted either; a
+		// third counts like any other, so a model that only talks still stops.
+		retried := false
+		if talked {
+			talkOnly++
+			switch talkOnly {
+			case 1:
+				retried = true
+				run.talkRetries++
+				s.logger.Printf("task %s: segment %d ended on text alone (served by %q); running the next on the same host",
+					run.ledger.ID, segment, servedBy)
+			case 2:
+				retried = true
+				run.talkRetries++
+				routing = avoidProvider(routing, servedBy)
+				run.investigate = s.newInvestigator(run, turnStart, registry, model, system, routing, appr, grants,
+					onActivity, onProvider)
+				s.logger.Printf("task %s: segment %d ended on text alone again (served by %q); the task moves to another host",
+					run.ledger.ID, segment, servedBy)
+			}
+		} else {
+			talkOnly = 0
 		}
 
 		// TWO SEGMENTS IN A ROW THAT CHANGE NOTHING -- no plan step moved, no
 		// finding, no edit, no new verdict from a check -- is a task going in
 		// circles. It stops and says so rather than spending the rest of the
 		// budget on the same circle.
-		if run.progressMark(proposals) == before {
+		switch {
+		case retried:
+		case run.progressMark(proposals) == before:
 			quiet++
-		} else {
+		default:
 			quiet = 0
 		}
 		if quiet >= 2 {
@@ -448,7 +614,7 @@ func (s *Server) runLongTask(
 	}
 
 	run.save(proposals, s.logger.Printf)
-	onStatus(run.ledger.status(run.budget, run.spent(), run.ledger.Segments))
+	onStatus(run.status(run.ledger.Segments))
 	s.logger.Printf("task %s: %s after %d segment(s): %s", run.ledger.ID, run.ledger.State, run.ledger.Segments, run.ledger.Detail)
 
 	combined.FinalText = text.String()
@@ -522,6 +688,14 @@ func (s *Server) openTaskRun(req protocol.PromptRequest, goal string, now time.T
 		}
 		if note := strings.TrimSpace(goal); note != "" && !strings.EqualFold(note, "continue") {
 			l.addNote(note)
+		}
+		// HOW THE LAST RUN ENDED is kept before it is cleared: a run that
+		// resumes a stuck task should know it was stuck, and why.
+		if l.State != "" && l.State != protocol.TaskStateRunning {
+			l.PriorStop = l.State
+			if l.Detail != "" {
+				l.PriorStop += ": " + truncateRunes(l.Detail, 300)
+			}
 		}
 		l.State, l.Detail, l.Summary = protocol.TaskStateRunning, "", ""
 		run.ledger, run.resumed, run.prior = l, true, l.Spent
@@ -695,6 +869,9 @@ func (s *Server) builtinFinishTask(raw json.RawMessage, p *proposalSink) (mcp.Re
 	l := p.task.ledger
 	if status == "done" {
 		if why := finishRefusal(l.Mode, l, p); why != "" {
+			if p.task.judging() {
+				p.task.judge.noteTried("finish_task was refused: " + why)
+			}
 			return toolError("not finished: %s", why)
 		}
 		l.State, l.Detail = protocol.TaskStateFinished, ""

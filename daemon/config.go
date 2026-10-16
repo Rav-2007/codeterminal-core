@@ -470,6 +470,9 @@ func (c *Config) checkUnknownKeys(data []byte) {
 			if builtin, ok := mcp["builtin"]; ok {
 				c.warnNested(builtin, knownMCPBuiltinKeys, "mcp.builtin")
 			}
+			if correction, ok := mcp["correction"]; ok {
+				c.warnNested(correction, knownMCPCorrectionKeys, "mcp.correction")
+			}
 			if servers, ok := mcp["servers"]; ok {
 				var byName map[string]json.RawMessage
 				if err := json.Unmarshal(servers, &byName); err == nil {

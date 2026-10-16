@@ -68,7 +68,11 @@ func (s *Server) builtinCheckpoint(raw json.RawMessage, p *proposalSink) (mcp.Re
 		if cp == nil {
 			return toolError("there is no checkpoint %q; saved: %s", name, st.checkpointNames())
 		}
-		return st.restoreCheckpoint(cp)
+		res, err := st.restoreCheckpoint(cp)
+		if err == nil && !res.IsError {
+			p.restored = true // the model's own way back (correction.go)
+		}
+		return res, err
 	case "list", "":
 		return mcp.Result{Content: st.listCheckpoints()}, nil
 	}
@@ -120,6 +124,17 @@ func (st *stagedWorkspace) saveCheckpoint(name string) (mcp.Result, error) {
 			cp.bytes += len(*content)
 		}
 	}
+	return st.keepCheckpoint(cp)
+}
+
+// autoRestoreName is the checkpoint the judge saves before it puts back the
+// best code (correction.go): the model's way to undo the judge.
+const autoRestoreName = "before-auto-restore"
+
+// keepCheckpoint adds cp to the run's checkpoints, replacing one of the same
+// name, within the limits on how many and how large.
+func (st *stagedWorkspace) keepCheckpoint(cp *stageCheckpoint) (mcp.Result, error) {
+	name := cp.name
 	total := cp.bytes
 	kept := st.checkpoints[:0]
 	for _, old := range st.checkpoints {
@@ -143,6 +158,57 @@ func (st *stagedWorkspace) saveCheckpoint(name string) (mcp.Result, error) {
 // stood then: a file changed since is written back, one the checkpoint did not
 // hold returns to the project's version, and one created since is removed.
 func (st *stagedWorkspace) restoreCheckpoint(cp *stageCheckpoint) (mcp.Result, error) {
+	return st.restore(cp, false)
+}
+
+// restoreSnapshot is restoreCheckpoint for a snapshot, which holds the files
+// commands changed as well: those come back too.
+func (st *stagedWorkspace) restoreSnapshot(cp *stageCheckpoint) (mcp.Result, error) {
+	return st.restore(cp, true)
+}
+
+// snapshot is a checkpoint of every file an edit OR a command changed -- the
+// judge's (correction.go), where the model's own holds the files it edited.
+// It refuses to hold more than the checkpoints may.
+func (st *stagedWorkspace) snapshot(name string) (*stageCheckpoint, error) {
+	cp := &stageCheckpoint{name: name, files: map[string]*string{}, at: time.Now(), reshaped: st.reshaped}
+	for _, rel := range st.changedPaths() {
+		content, err := st.readStageFile(rel)
+		if err != nil {
+			return nil, err
+		}
+		cp.files[rel] = content
+		if content != nil {
+			cp.bytes += len(*content)
+		}
+		if cp.bytes > maxCheckpointBytes {
+			return nil, fmt.Errorf("the changed files hold more than %d MB", maxCheckpointBytes>>20)
+		}
+	}
+	return cp, nil
+}
+
+// changedPaths is every file an edit or a command changed in the copy, sorted.
+func (st *stagedWorkspace) changedPaths() []string {
+	seen := map[string]bool{}
+	var paths []string
+	for rel := range st.touched {
+		if !seen[rel] {
+			seen[rel] = true
+			paths = append(paths, rel)
+		}
+	}
+	for rel := range st.byCommand {
+		if !seen[rel] {
+			seen[rel] = true
+			paths = append(paths, rel)
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func (st *stagedWorkspace) restore(cp *stageCheckpoint, commands bool) (mcp.Result, error) {
 	if cp.reshaped != st.reshaped {
 		return toolError("files were deleted or moved in the project since checkpoint %q was saved, and restoring it "+
 			"would bring back what was removed; save a new checkpoint from here instead", cp.name)
@@ -153,6 +219,11 @@ func (st *stagedWorkspace) restoreCheckpoint(cp *stageCheckpoint) (mcp.Result, e
 	}
 	for rel := range st.touched {
 		paths[rel] = true
+	}
+	if commands {
+		for rel := range st.byCommand {
+			paths[rel] = true
+		}
 	}
 	sorted := make([]string, 0, len(paths))
 	for rel := range paths {

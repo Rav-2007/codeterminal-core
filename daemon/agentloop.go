@@ -245,6 +245,10 @@ type turnLedger struct {
 	// N x max_iterations is what a pipeline can actually spend and nothing
 	// bounds it. See MCPBudgetConfig.MaxTurnIterations.
 	iterations int
+	// asked is every tool call the model asked for, run or refused: what
+	// tells a reply that called a tool -- even one it may not run -- from one
+	// that called none, which is how a dropped call looks (runLongTask).
+	asked int
 
 	// toolByteCap lets the ORCHESTRATOR reserve part of the turn's tool-byte
 	// budget for the phase that will actually answer. Zero means "no phase cap"
@@ -324,6 +328,8 @@ type segmentBudget struct {
 	closed func() bool
 	// waited gives the run back time spent at an approval prompt.
 	waited func(time.Duration)
+	// said, when set, hears the text of each step that calls a tool.
+	said func(text string)
 }
 
 func newTurnLedger() *turnLedger {
@@ -842,6 +848,10 @@ func (s *Server) runAgentLoop(
 		// five steps, and 141 KB of a 16-step turn's 297 KB last request, all of
 		// it re-sent (and re-billed) on every call after it.
 		turn.messages = append(turn.messages, assistantToolCallMessage(full.String()[textBefore:], calls))
+		ledger.asked += len(calls)
+		if seg := ledger.segment; seg != nil && seg.said != nil {
+			seg.said(full.String()[textBefore:])
+		}
 
 		for _, call := range calls {
 			// Checked between every call, not just between iterations: a

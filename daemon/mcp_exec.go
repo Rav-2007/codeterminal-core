@@ -528,7 +528,7 @@ func (s *Server) builtinSandboxExecStaged(ctx context.Context, raw json.RawMessa
 		root = st.root
 		before = st.fileStates()
 	}
-	res, err := s.builtinSandboxExecIn(ctx, raw, root, execTimeoutFor(proposals))
+	res, out, err := s.runSandboxExec(ctx, raw, root, execTimeoutFor(proposals))
 	if st != nil {
 		// What the command changed in the copy is offered for review at the
 		// end of the turn like the agent's own edits -- so it is recorded as
@@ -537,7 +537,12 @@ func (s *Server) builtinSandboxExecStaged(ctx context.Context, raw json.RawMessa
 		res.Content = st.toReal(res.Content)
 	}
 	if command != "" {
-		proposals.recordCheck(command, res)
+		proposals.recordCheck(command, raw, res, out)
+		// THE JUDGE SPEAKS UNDER THE RESULT, on lines of its own after the
+		// command's output, when it speaks at all (mcp.correction.mode "on").
+		if note := proposals.task.checkNote(); note != "" && !res.IsError {
+			res.Content += "\n\n" + note
+		}
 	}
 	return res, err
 }
@@ -546,23 +551,50 @@ func (s *Server) builtinSandboxExecStaged(ctx context.Context, raw json.RawMessa
 // directory it starts in and the one the sandbox lets it write. Its HOME (and
 // so its build caches) stays the project's, so a working copy builds warm.
 func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, root string, timeout time.Duration) (mcp.Result, error) {
+	res, _, err := s.runSandboxExec(ctx, raw, root, timeout)
+	return res, err
+}
+
+// execOutcome is how a command ended, as the daemon saw it rather than as its
+// output says -- a program can print "Command exited with error" and exit 0.
+// The long task's judge reads it (correction.go); the model reads the result.
+type execOutcome struct {
+	// ran is false when the command was refused or never started.
+	ran bool
+	// exit is its exit status: -1 when it was killed or reported none.
+	exit     int
+	timedOut bool
+	elapsed  time.Duration
+	// output is everything it printed, bounded at the source
+	// (execMaxOutputBytes) -- before the digest the model is shown, so the
+	// judge counts every failure a long output reports, not the ones kept.
+	output string
+}
+
+// notRun is runSandboxExec's answer for a command that never started.
+func notRun(res mcp.Result, err error) (mcp.Result, execOutcome, error) {
+	return res, execOutcome{exit: -1}, err
+}
+
+// runSandboxExec is builtinSandboxExecIn with the command's outcome as well.
+func (s *Server) runSandboxExec(ctx context.Context, raw json.RawMessage, root string, timeout time.Duration) (mcp.Result, execOutcome, error) {
 	var args struct {
 		Command        string `json:"command"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
-		return toolError("arguments were not a valid JSON object: %v", err)
+		return notRun(toolError("arguments were not a valid JSON object: %v", err))
 	}
 	timeout = withinDeadline(ctx, execTimeoutArg(args.TimeoutSeconds, timeout))
 
 	parts := strings.Fields(strings.TrimSpace(args.Command))
 	if len(parts) == 0 {
-		return toolError("command cannot be empty")
+		return notRun(toolError("command cannot be empty"))
 	}
 
 	bin := parts[0]
 	if why := s.execRefusal(bin); why != "" {
-		return toolError("%s", why)
+		return notRun(toolError("%s", why))
 	}
 
 	// Ask for a sandbox; take what the host can give. The SAME cfg the approval
@@ -609,7 +641,7 @@ func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, 
 
 	execBin, execArgs, err := mcp.WrapCommand(bin, parts[1:], cfg)
 	if err != nil {
-		return toolError("preparing a sandbox for %q: %v", bin, err)
+		return notRun(toolError("preparing a sandbox for %q: %v", bin, err))
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -630,7 +662,7 @@ func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, 
 			s.logger.Printf("mcp: sandbox home %s: %v (falling back to an ephemeral HOME)", cfg.HomeDir, err)
 			cfg.HomeDir = ""
 			if execBin, execArgs, err = mcp.WrapCommand(bin, parts[1:], cfg); err != nil {
-				return toolError("preparing a sandbox for %q: %v", bin, err)
+				return notRun(toolError("preparing a sandbox for %q: %v", bin, err))
 			}
 			cmd = exec.CommandContext(execCtx, execBin, execArgs...)
 			cmd.Dir = root
@@ -683,7 +715,7 @@ func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, 
 	if cfg.HomeDir != "" && mcp.ResolveMode(cfg) == mcp.SandboxLandlock {
 		tmp, err := sandboxCallTempDir(cfg.HomeDir)
 		if err != nil {
-			return toolError("preparing a temporary directory for %q: %v", bin, err)
+			return notRun(toolError("preparing a temporary directory for %q: %v", bin, err))
 		}
 		defer func() { _ = os.RemoveAll(tmp) }()
 		cmd.Env = append(cmd.Env, "TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp)
@@ -705,15 +737,21 @@ func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, 
 	if f := egress.extraFile(); f != nil {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, f)
 	}
+	started := time.Now()
 	err = cmd.Run()
+	out := execOutcome{ran: true, exit: -1, elapsed: time.Since(started), output: buf.String()}
+	if cmd.ProcessState != nil {
+		out.exit = cmd.ProcessState.ExitCode()
+	}
 	// A long output keeps its failures and its end (execdigest.go): clipped
 	// later to its first bytes, it would keep only the banner.
-	result := commandDigest(buf.String(), s.execDigestLimit())
+	result := commandDigest(out.output, s.execDigestLimit())
 
 	if err != nil {
 		switch {
 		case execCtx.Err() == context.DeadlineExceeded:
-			return mcp.Result{Content: fmt.Sprintf("Command timed out after %s. Output so far:\n%s", humanDuration(timeout), result)}, nil
+			out.timedOut = true
+			return mcp.Result{Content: fmt.Sprintf("Command timed out after %s. Output so far:\n%s", humanDuration(timeout), result)}, out, nil
 		case cmd.ProcessState != nil && cmd.ProcessState.Success():
 			// The command exited 0; the only reason Run returned an error is
 			// WaitDelay closing pipes a backgrounded process held open past that
@@ -723,14 +761,14 @@ func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, 
 			// A compiler error or a failing test is a RESULT, not a tool failure:
 			// the whole point is to hand the output back so the model can read it
 			// and fix what it wrote.
-			return mcp.Result{Content: fmt.Sprintf("Command exited with error: %v\nOutput:\n%s", err, result)}, nil
+			return mcp.Result{Content: fmt.Sprintf("Command exited with error: %v\nOutput:\n%s", err, result)}, out, nil
 		}
 	}
 
 	if result == "" {
 		result = "(no output)"
 	}
-	return mcp.Result{Content: result}, nil
+	return mcp.Result{Content: result}, out, nil
 }
 
 // sandboxCallTempDir makes one command's private temporary directory, under
