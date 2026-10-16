@@ -727,3 +727,26 @@ func TestTheCallBudgetIsTheNumberOfCalls(t *testing.T) {
 		}
 	}
 }
+
+// A CHECK THAT TESTS IS ONE, HOWEVER IT IS SPELLED; ONE THAT ONLY DESCRIBES
+// ITSELF IS NOT. A bare `pytest` and `pytest -v` run the tests (and were
+// refused at the finish as not checking the work); `pytest --collect-only`
+// passes without running one, and `go version` whatever the code does.
+//
+// Neuter checks: drop pytest from testRunners; drop --collect-only from its
+// flags; drop the python -m unwrapping.
+func TestWhatCountsAsACheck(t *testing.T) {
+	for _, c := range []string{"make", "go test ./...", "go vet ./...", "cargo test", "npm test", "npx jest",
+		"pytest", "pytest -v", "pytest -q tests/", "python -m pytest", "python3 -m pytest -x", "tox", "tox -e py312",
+		"ctest", "ctest -V"} {
+		if !isVerifyingCommand(c) {
+			t.Errorf("%q does check the work", c)
+		}
+	}
+	for _, c := range []string{"", "go", "python", "go version", "npm -v", "pytest --version", "pytest --collect-only",
+		"python -m pytest --co", "tox -l", "ctest -N"} {
+		if isVerifyingCommand(c) {
+			t.Errorf("%q does not check the work", c)
+		}
+	}
+}
