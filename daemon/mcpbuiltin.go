@@ -112,7 +112,7 @@ type proposalSink struct {
 
 	// task is the long task this request is running (longtask.go), or nil.
 	task     *taskRun
-	restored bool // the model restored a checkpoint since the last check (judgeRecorded)
+	restored bool // the model restored a checkpoint since the last check (keepCheck)
 }
 
 // ranCheck is one command a turn ran and whether it passed.
@@ -183,8 +183,7 @@ func (p *proposalSink) recordCheck(command string, raw json.RawMessage, res mcp.
 	}
 	c := p.newCheck(command, raw, res.Content, out)
 	p.checked, p.checkPassed, p.checkOutput = command, c.passed, c.tail
-	p.checks = append(p.checks, c)
-	p.judgeRecorded(c)
+	p.keepCheck(c)
 }
 
 // absorbText brings edit blocks the model wrote in its ANSWER into the working

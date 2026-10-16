@@ -810,11 +810,13 @@ func (p *proposalSink) newCheck(command string, raw json.RawMessage, shown strin
 	return c
 }
 
-// judgeRecorded hands a recorded check to the judge and lets it act. restored
-// -- the model put back one of its own checkpoints since the last check, so
-// returning to code it had is its method, not the circle the judge looks for
-// -- is cleared before control, which may restore code and set it again.
-func (p *proposalSink) judgeRecorded(c ranCheck) {
+// keepCheck adds a recorded check to the run's, then hands it to the judge
+// and lets it act. restored -- the model put back one of its own checkpoints
+// since the last check, so returning to code it had is its method, not the
+// circle the judge looks for -- is cleared before control, which may restore
+// code and set it again.
+func (p *proposalSink) keepCheck(c ranCheck) {
+	p.checks = append(p.checks, c)
 	judged := p.stage != nil && p.task.judging()
 	if judged {
 		p.task.judgeCheck(c, p.restored, p.stage.definesTest)
