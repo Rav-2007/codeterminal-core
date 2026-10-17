@@ -44,6 +44,21 @@ set -uo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 
+# NOTHING BELOW MAY FIND THIS REPOSITORY THROUGH THE ENVIRONMENT.
+#
+# git exports GIT_DIR (and its siblings) to every hook. In a linked worktree it
+# is ABSOLUTE, and `go test` below runs tests that start their own git in a
+# temp directory -- which then obeys the inherited GIT_DIR instead of the temp
+# repository. On 2026-10-16 one push from a worktree let those tests set
+# core.bare=true, core.fsmonitor and user=test in the shared .git/config, which
+# stopped the main checkout working, and commit onto the branch being pushed.
+# githooks(5): a hook that runs git elsewhere must clear these first. From the
+# worktree root, plain discovery finds the same repository, so every check that
+# follows sees exactly what it saw before.
+# shellcheck disable=SC2046 # one variable name per word, split on purpose
+unset $(git rev-parse --local-env-vars)
+cd "$repo_root" || exit 1
+
 # git runs hooks with a STRIPPED environment -- notably not the PATH from an
 # interactive shell's profile. A Go toolchain installed anywhere other than a
 # system directory is therefore invisible here, and the hook fails every push
