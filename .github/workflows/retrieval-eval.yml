@@ -7,7 +7,9 @@ name: retrieval eval
 # filtering lives on the workflow TRIGGER -- so a job inside build.yml cannot be
 # path-scoped without either a third-party action or a hand-rolled `git diff`
 # step whose failure mode is silently running nothing. A second workflow file
-# with its own trigger is the mechanism the platform actually provides.
+# with its own trigger is the mechanism the platform actually provides. Since
+# 2026-10-16 only the push trigger is path-scoped; every pull request runs it
+# (the comment on `pull_request` below says why).
 #
 # WHY IT EXISTS AT ALL. On 2026-08-27 a chunking change took real-repo
 # chunk-level recall from 8/9 to 4/9 and shipped, because `make check` was green
@@ -16,17 +18,41 @@ name: retrieval eval
 # build.yml is kept for drift; this one exists so the person who changed
 # retrieval is the person who learns it broke.
 #
-# COST. Roughly one ubuntu runner for 15-20 minutes, and only when the paths
-# below change -- perhaps a handful of runs a month, against the ~60 billable
-# minutes a single build.yml matrix run already costs. The model download is not
+# COST. Roughly one ubuntu runner for 8-20 minutes on each pull request push,
+# plus each branch push that touches the paths below. Hosted Linux minutes are
+# free since the repository went public (2026-10-12), and the job is not a
+# required check, so a merge never waits on it. The model download is not
 # cached deliberately: a cache key that goes stale against a model change would
 # fail by quietly measuring the wrong embedder, which is precisely the class of
 # silent-wrong-answer this whole workflow is being added to prevent.
 
 on:
+  # EVERY PULL REQUEST, NOT ONLY RETRIEVAL ONES. Widened 2026-10-16.
+  #
+  # The corpus this job scores is the whole repository (evalcorpus_test.go),
+  # so a change to ANY indexed file can move the score. Lines added above an
+  # answer push it across a 40-line chunk boundary, and a new file can outrank
+  # it. Neither touches a path on the list below. main fell from 30/49
+  # retrieved at 9e9a3b8 to 29/49 at dac2f6c, under the 61% floor, and this
+  # job never ran: c3dc5ea added lines above the turn's step ceiling in
+  # agentloop.go, which moved the answer to "where does the agent loop stop
+  # iterating" out of the overlap of two chunks and into one chunk that ranks
+  # below the top 10. The first PR to touch a listed path then inherited a red
+  # it did not cause. gates.yml moved the answer-key guard to every push for the
+  # same reason on 2026-08-28: the hazard is what changes the CORPUS.
+  #
+  # Running on every PR is only half of it: a fixed floor would then turn
+  # main's own 29/49 into a red on every PR. So each change is measured against
+  # its own base, on the same runner -- see "Choose the base" below.
   pull_request:
     branches: [main]
-    paths: &retrieval_paths
+  # Pushes keep the filter. A branch that changes retrieval gets the signal
+  # before its PR exists (build.yml's comment records why waiting for a PR
+  # inverts the order you want), and every other change is measured once, by
+  # its PR, rather than twice.
+  push:
+    branches: ["**"]
+    paths:
       # The retrieval path proper: anything that changes what gets indexed, how
       # it is embedded, how it is searched, or how results are ranked and cut.
       - "daemon/chunker.go"
@@ -93,12 +119,15 @@ on:
       - "testdata/queries.json"
       # And this file.
       - ".github/workflows/retrieval-eval.yml"
-  # Same filter on push, so a branch gets the signal before the PR exists --
-  # build.yml's comment records why waiting for a PR inverts the order you want.
-  push:
-    branches: ["**"]
-    paths: *retrieval_paths
   workflow_dispatch:
+    inputs:
+      aa:
+        # The precondition for gating on a base-vs-change delta: the SAME tree
+        # measured twice on one runner must flip nothing. Any flip it reports
+        # is noise, and the delta rule has to be widened by it.
+        description: "A/A check: measure this tree against itself on one runner"
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -109,18 +138,55 @@ env:
 
 jobs:
   locate-eval:
-    name: locate eval (retrieval paths changed)
+    name: locate eval (whole-repo corpus)
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     # Generous, and explicit. build.yml's eval job died twice on `go test`'s
     # DEFAULT 10-minute timeout with the panic sitting underneath a separate
     # real failure -- a job red for two reasons teaches you about one of them.
-    timeout-minutes: 45
+    # 75 since 2026-10-16: a change is now measured twice (its base, then
+    # itself), and one measurement alone took 12-20 minutes on PR #44.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The base below is found with merge-base, which needs main's history.
+          fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: "**/go.sum"
+
+      # WHAT THIS CHANGE IS MEASURED AGAINST. Since 2026-10-16 a change is not
+      # judged by fixed floors: the corpus is the whole repository, so a fixed
+      # floor moves with every commit and cannot tell a loss this change caused
+      # from one main already had. On 2026-10-16 main sat at 29/49 against a
+      # floor of 30 and every PR that ran this job inherited the red.
+      #
+      # So the change's merge-base with main -- for a PR's merge commit, the
+      # main it merges into -- is measured first, on THIS runner, and then the
+      # change. One machine embeds identical text to identical vectors, so
+      # every question that flips between the two was flipped by the change;
+      # two runners differ by up to three (see evalFusionLossSlack).
+      # scripts/eval-delta.sh is then the verdict: red on a NET loss, every flip
+      # listed by name (owner decision, 2026-10-17).
+      #
+      # `single` when there is nothing to compare (a run on main itself): one
+      # measurement, judged by the fixed floors, exactly as before. `aa` when
+      # dispatched with aa=true: the tree against itself.
+      - name: Choose the base this change is measured against
+        id: base
+        env:
+          AA: ${{ inputs.aa }}
+        run: |
+          if [ "$AA" = "true" ]; then
+            base=$(git rev-parse HEAD) mode=aa
+          else
+            base=$(git merge-base HEAD origin/main) mode=delta
+            [ "$base" = "$(git rev-parse HEAD)" ] && mode=single
+          fi
+          echo "base $base, mode $mode"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
       # THE DATUM THIS JOB WAS MISSING WHILE ITS NUMBERS DEPENDED ON IT.
       # build.yml has recorded this since 2026-08-30; this job, whose entire
@@ -169,7 +235,32 @@ jobs:
       # TestEditShapedRetrievalEval is excluded for the reason build.yml's eval
       # job documents at length: its harness cannot build three of its four
       # fixtures. See daemon/edit_eval_test.go's header.
+      # The base, from `git archive` so it is exactly the committed tree, with
+      # its OWN eval code: its ranker, its questions, its corpus. Only the
+      # ranking eval runs here -- the embedder and deadline tests below are
+      # about this runner, not about either tree. Its exit status is ignored
+      # (its fixed floors are main's business, not this change's), but a base
+      # that never reached its summary line fails the job: a comparison against
+      # half a measurement is no comparison.
+      - name: Locate eval, the base
+        if: steps.base.outputs.mode != 'single'
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+          EVAL_GATE: delta
+        run: |
+          mkdir -p "$RUNNER_TEMP/base"
+          git archive "$BASE" | tar -x -C "$RUNNER_TEMP/base"
+          cd "$RUNNER_TEMP/base/daemon"
+          go test -tags eval -count=1 -timeout 40m -v -run 'TestRerankEvalRetrievalRanking' ./ \
+            > "$RUNNER_TEMP/base.log" 2>&1 || true
+          grep -E '^EVALTREND ' "$RUNNER_TEMP/base.log" \
+            || { tail -40 "$RUNNER_TEMP/base.log"; echo "the base eval did not reach its summary line"; exit 1; }
+
       - name: Locate eval (real BGE model, whole-repo corpus)
+        env:
+          # Measured against its base: the fixed floors report, and the step
+          # after this one decides. A run on main alone keeps them as gates.
+          EVAL_GATE: ${{ steps.base.outputs.mode == 'single' && 'absolute' || 'delta' }}
         # TestFirstEmbedBatchFitsItsDeadline is here because it is CHEAP (~5s
         # once the model is cached, which the steps above have already done) and
         # because it guards the failure that took this job down on 2026-08-30:
@@ -199,6 +290,33 @@ jobs:
             ./ 2>&1 | tee "$RUNNER_TEMP/eval.log"
         working-directory: daemon
 
+      # The verdict for a change measured against its base. `always()` so a
+      # change whose eval run failed for another reason still shows what it did
+      # to the questions. A missing or unfinished log is eval-delta.sh's exit 2,
+      # never a pass.
+      - name: What this change did, question by question
+        if: always() && steps.base.outputs.mode != 'single'
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+          MODE: ${{ steps.base.outputs.mode }}
+        run: |
+          {
+            echo "### What this change did to the locate eval"
+            echo "Measured against \`${BASE:0:7}\` on this runner ($MODE)."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          rc=0
+          ./scripts/eval-delta.sh "$RUNNER_TEMP/base.log" "$RUNNER_TEMP/eval.log" > "$RUNNER_TEMP/delta.md" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/delta.md"
+          cat "$RUNNER_TEMP/delta.md" >> "$GITHUB_STEP_SUMMARY"
+          # A/A: the same tree twice. Netting out is not enough here -- any flip
+          # at all is noise this rule has not accounted for.
+          if [ "$MODE" = aa ] && ! grep -q '^No question changed\.' "$RUNNER_TEMP/delta.md"; then
+            echo "A/A FAILED: the same tree measured twice on one runner flipped questions" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          exit $rc
+
       # The one line worth carrying out of a 20-minute log, promoted to the
       # job summary so the series in docs/RETRIEVAL_EVAL_TREND.md can be
       # appended by copying rather than by re-reading the whole run.
@@ -213,4 +331,10 @@ jobs:
           grep -E '^EVALTREND ' "$RUNNER_TEMP/eval.log" >> "$GITHUB_STEP_SUMMARY" \
             || echo 'no EVALTREND line (the ranking eval did not reach its summary)' >> "$GITHUB_STEP_SUMMARY"
           grep -E 'vector fingerprint:' "$RUNNER_TEMP/eval.log" >> "$GITHUB_STEP_SUMMARY" || true
+          if [ -f "$RUNNER_TEMP/base.log" ]; then
+            echo "base:" >> "$GITHUB_STEP_SUMMARY"
+            grep -E '^EVALTREND ' "$RUNNER_TEMP/base.log" >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+          # The fixed floors, reported rather than gating when there was a base.
+          grep -E '^GATE\(report\): ' "$RUNNER_TEMP/eval.log" | cut -c1-240 >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"

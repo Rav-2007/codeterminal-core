@@ -232,6 +232,7 @@ soak:
 evalguard:
 	@out="$$(cd daemon && go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery|TestEvalGroundTruthResolvesWithoutTheModel' -v ./ 2>&1)" || { printf '%s\n' "$$out" >&2; exit 1; }
 	@echo "evalguard: no committed file echoes a retrieval-eval query, and the eval's ground truth still resolves"
+	@./scripts/eval-delta.sh --self-test
 
 # THE FUZZ GATE'S CLASSIFIER, and the full fuzz run stays out of `check`.
 #
