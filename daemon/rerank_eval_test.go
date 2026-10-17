@@ -112,6 +112,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -1304,12 +1305,12 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 		}
 		// Two different failures wear the same red. Say which.
 		if hybridHits[i] {
-			t.Errorf("query %d (%q) — one of the measured live failures this feature exists to fix — "+
+			evalScoreGate(t, "query %d (%q) — one of the measured live failures this feature exists to fix — "+
 				"IS retrieved but does not survive the %d-char budget, so the model never sees it",
 				i+1, rerankEvalQueries[i].query, defaultContextBudgetChars)
 			continue
 		}
-		t.Errorf("query %d (%q) — one of the two measured live failures this feature exists to fix — is still MISS under hybrid retrieval", i+1, rerankEvalQueries[i].query)
+		evalScoreGate(t, "query %d (%q) — one of the two measured live failures this feature exists to fix — is still MISS under hybrid retrieval", i+1, rerankEvalQueries[i].query)
 	}
 
 	// A floor on overall recall, so a regression that spares the three gated
@@ -1323,7 +1324,7 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// add queries does not have to remember to raise an integer.
 	retrievedRate := float64(hybridCount) / float64(total)
 	if deliveredRate < evalChunkRecallFloor {
-		t.Errorf("DELIVERED chunk-level recall %d/%d = %.1f%% is below the floor of %.1f%% measured on "+
+		evalScoreGate(t, "DELIVERED chunk-level recall %d/%d = %.1f%% is below the floor of %.1f%% measured on "+
 			"2026-08-28. Read resolveExactChunks' output first. If it reported an anchor that "+
 			"appears in no chunk of its expectedFiles, the DECLARED half of the ground truth "+
 			"has gone stale (code was moved or renamed) and retrieval is fine. If it reported "+
@@ -1371,7 +1372,7 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// budget that grows with the corpus would make this eval green by measuring
 	// a configuration that never ships.
 	if retrievedRate < evalChunkRetrievedFloor {
-		t.Errorf("RETRIEVED chunk-level recall %d/%d = %.1f%% is below the ranker floor of %.1f%%. "+
+		evalScoreGate(t, "RETRIEVED chunk-level recall %d/%d = %.1f%% is below the ranker floor of %.1f%%. "+
 			"This gate takes NO budget input -- it asks only whether the answer chunk reached the "+
 			"top %d -- so this is a ranking or indexing regression, not a budget one. Compare with "+
 			"the DELIVERED floor: if that is green and this is red, something is scoring worse and "+
@@ -1379,7 +1380,7 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 			hybridCount, total, 100*retrievedRate, 100*evalChunkRetrievedFloor, defaultK)
 	}
 	if retrievedButBudgeted > evalBudgetedOutCeiling {
-		t.Errorf("%d of %d queries RETRIEVED the answer chunk and then lost it to the %d-char "+
+		evalScoreGate(t, "%d of %d queries RETRIEVED the answer chunk and then lost it to the %d-char "+
 			"budget, above the ceiling of %d. Retrieval is not the problem: the ranker found "+
 			"these and the budget threw them away. This is the corpus outgrowing the context "+
 			"budget, which is what this eval's own history predicts will keep happening -- the "+
@@ -1708,6 +1709,27 @@ const evalFusionLossSlack = 3
 // it. A ceiling that fails the moment the budget is anything less than today's
 // best is a ceiling that fails on ordinary churn.
 const evalBudgetedOutCeiling = 4
+
+// evalScoreGate fails the run on a SCORE GATE: one that compares this run with
+// a fixed number (the two floors, the budgeted-out ceiling, the must-hit
+// queries), as opposed to one that compares two numbers from this same run
+// (the fusion check), which stays a plain t.Errorf.
+//
+// With EVAL_GATE=delta it prints the same message as "GATE(report): ..." and
+// does not fail. retrieval-eval.yml sets that on a change it is also running
+// against the change's own base, on the same runner, and there
+// scripts/eval-delta.sh is the verdict: a fixed floor cannot tell a loss the
+// change caused from one its base already had. Added 2026-10-16, when main
+// sat at 29/49 against a floor of 30 and every PR inherited the red. The
+// floors still fail the scheduled run and any run without the variable.
+func evalScoreGate(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("EVAL_GATE") == "delta" {
+		fmt.Printf("GATE(report): "+format+"\n", args...)
+		return
+	}
+	t.Errorf(format, args...)
+}
 
 func truncateEval(s string, n int) string {
 	if len(s) <= n {

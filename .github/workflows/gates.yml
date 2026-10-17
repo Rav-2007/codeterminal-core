@@ -57,6 +57,7 @@ jobs:
         run: |
           ./scripts/docs-claims.sh --self-test
           ./scripts/go-toolchain-pinned.sh --self-test
+          ./scripts/eval-delta.sh --self-test
 
       - name: Doc links resolve
         run: ./scripts/docs-links.sh
