@@ -13,19 +13,44 @@
 # matrix must stay a literal. That is precisely why the parity gate exists:
 # a mirror that cannot be eliminated has to be checked instead.
 #
-# FORMAT:  <vsce-target>  <signing>  <runner>
+# FORMAT:  <vsce-target>  <signing>  <runner>  <ships>
 #
 # signing is `required` or `none`, and there is no default. A target with an
 # unrecognised or missing value is a FAILURE rather than an assumption -- adding
 # a platform means deciding whether it must be signed, even if the decision is
 # "no". One field per target, so a target cannot be in two lists or in neither,
 # which is the failure the previous two-list arrangement could express.
+#
+# ships is `vsix+bin` (a VS Code package AND the terminal app) or `bin` (the
+# terminal app only: the install archive and its binaries, no .vsix). Same rule:
+# no default. target-parity.sh checks the .vsix loop and stage-runtime.js against
+# the vsix+bin targets, and the binary and archive loops against all of them.
 
-linux-x64    none    ubuntu-latest
-win32-x64    none    windows-latest
+linux-x64     none    ubuntu-latest       vsix+bin
+win32-x64     none    windows-latest      vsix+bin
+darwin-arm64  none    macos-latest        bin
+linux-arm64   none    ubuntu-24.04-arm    bin
 
 # ------------------------------------------------------------------------------
-# darwin-arm64 IS DELIBERATELY ABSENT, and this paragraph is the record.
+# darwin-arm64 IS BACK SINCE 2026-10-17 -- AS THE TERMINAL APP ONLY, UNSIGNED.
+#
+# The owner amended R1.15 on 2026-10-17 for the terminal app. The ruling's
+# stated reason was that Gatekeeper puts com.apple.quarantine on a DOWNLOADED
+# unsigned binary and kills it. That is true of a browser download and of the
+# files a .vsix carries; it is not true of what the one-line installer fetches
+# with curl, which sets no quarantine attribute (the installer also clears it,
+# belt and braces), and Go signs darwin/arm64 binaries ad hoc, which is all an
+# unquarantined Apple Silicon binary needs to run. The install smoke test runs
+# the installed app on a macOS runner on every release to keep that claim true.
+#
+# The VS CODE PACKAGE for darwin stays deferred until the signing secrets exist:
+# that is the case the ruling was about, so this target ships `bin`, never
+# `vsix+bin`, and signing stays `none` because nothing built here is a signed
+# artifact. Bringing the .vsix back is still the route described below.
+#
+# THE RECORD OF 2026-09-17, kept as it was:
+#
+# darwin-arm64 WAS DELIBERATELY ABSENT, and this paragraph is the record.
 #
 # REMOVED 2026-09-17, finishing the founder ruling of 2026-09-05 recorded at
 # docs/RESIDUAL_RISKS.md R1.15: "the first release ships Linux and Windows only;
@@ -70,7 +95,9 @@ win32-x64    none    windows-latest
 # retires it.
 #
 # RETIRES WHEN: any target above is classified `required` -- which today means
-# darwin-arm64 returning, or win32-x64 moving to `required` when an Authenticode
-# certificate exists. Windows binaries ship unsigned today and SmartScreen warns
-# on them; that is a known, accepted cost and not an oversight.
+# darwin-arm64's .vsix returning, signed, or win32-x64 moving to `required` when
+# an Authenticode certificate exists. Windows binaries ship unsigned today and
+# SmartScreen warns on a downloaded one; that is a known, accepted cost and not an
+# oversight. (The one-line installer's downloads carry no mark of the web, so
+# SmartScreen does not stop them.)
 signing-required: none

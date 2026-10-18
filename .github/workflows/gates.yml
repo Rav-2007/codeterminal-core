@@ -59,6 +59,26 @@ jobs:
           ./scripts/go-toolchain-pinned.sh --self-test
           ./scripts/eval-delta.sh --self-test
 
+      # THE ONE-LINE INSTALLERS, on every push (2026-10-17). install.sh runs on
+      # dash, bash and macOS's sh through `curl | sh`, so it is linted as POSIX
+      # sh, with the scripts that build and test it; the PowerShell ones must
+      # parse. Behaviour is release.yml's job: its smoke job runs the real
+      # installer on five platforms before any release is drafted.
+      - name: Installers lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v shellcheck >/dev/null || { echo "::error::shellcheck is not on this runner"; exit 1; }
+          shellcheck -s sh install/install.sh install/build-archive.sh install/check-notices.sh install/smoke/run-smoke.sh
+          pwsh -NoProfile -Command '
+            $bad = 0
+            foreach ($f in "install/install.ps1", "install/smoke/run-smoke.ps1") {
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path, [ref]$null, [ref]$errors) | Out-Null
+              foreach ($e in $errors) { Write-Host "${f}:$($e.Extent.StartLineNumber): $($e.Message)"; $bad++ }
+            }
+            exit $bad'
+
       - name: Doc links resolve
         run: ./scripts/docs-links.sh
 

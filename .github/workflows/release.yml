@@ -118,6 +118,12 @@ jobs:
             target: linux-x64
           - os: windows-latest
             target: win32-x64
+          # Terminal app only (scripts/release-targets.txt says `bin`): no .vsix
+          # is packaged for these two, only their install archives.
+          - os: macos-latest
+            target: darwin-arm64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -166,13 +172,13 @@ jobs:
       # checkout path. scripts/supply-chain.sh fails if any main package
       # produces a binary carrying one.
       - name: Build daemon (pure Go)
-        run: go build -trimpath -ldflags "-X main.daemonVersion=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii-daemon${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        run: go build -trimpath -ldflags "-X main.daemonVersion=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii-daemon${{ startsWith(matrix.target, 'win32') && '.exe' || '' }}" .
         working-directory: daemon
         env:
           CGO_ENABLED: 0
 
       - name: Build embedder helper (CGO)
-        run: go build -trimpath -o "${{ github.workspace }}/dist/mochiii-embedder-helper${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        run: go build -trimpath -ldflags "-X main.version=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii-embedder-helper${{ startsWith(matrix.target, 'win32') && '.exe' || '' }}" .
         working-directory: helper
         env:
           CGO_ENABLED: 1
@@ -189,7 +195,7 @@ jobs:
       # It ships as a standalone download, attached to the Release below, which
       # is why it is also in the macOS signing list.
       - name: Build terminal client (pure Go)
-        run: go build -trimpath -o "${{ github.workspace }}/dist/mochiii-tui${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        run: go build -trimpath -ldflags "-X main.version=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii-tui${{ startsWith(matrix.target, 'win32') && '.exe' || '' }}" .
         working-directory: clients/tui
         env:
           CGO_ENABLED: 0
@@ -197,14 +203,17 @@ jobs:
       # NO SIGNING STEP, and its absence is a decision rather than an omission.
       #
       # Every target in scripts/release-targets.txt is classified `none`, so
-      # there is nothing here to sign. darwin-arm64 was the only target that
-      # ever required it, and it left the set on 2026-09-17 -- see that file's
-      # own record, and docs/RESIDUAL_RISKS.md R1.15.
+      # there is nothing here to sign. darwin-arm64 left the set on 2026-09-17
+      # and came back on 2026-10-17 as the terminal app only, delivered by the
+      # one-line installer, whose curl download Gatekeeper does not quarantine
+      # -- see that file's own record, and docs/RESIDUAL_RISKS.md R1.15. Its
+      # .vsix stays deferred until it can be signed.
       #
       # WINDOWS IS NOT SIGNED EITHER, and that is the live cost of this shape:
-      # SmartScreen warns on an unsigned .exe. It WARNS, where Gatekeeper
-      # KILLS -- which is why an unsigned Windows build is shippable and an
-      # unsigned macOS one was not. When an Authenticode certificate exists,
+      # SmartScreen warns on an unsigned .exe a browser downloaded. It WARNS,
+      # where Gatekeeper KILLS a quarantined binary -- which is why an unsigned
+      # Windows build is shippable everywhere and an unsigned macOS one only
+      # through the installer. When an Authenticode certificate exists,
       # win32-x64 moves to `required` in that file and the signing guard starts
       # enforcing it with no change here.
       #
@@ -230,8 +239,25 @@ jobs:
     name: package
     needs: binaries
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The same version the binaries job stamped, by the same rule, handed to
+      # the smoke job so it can check every installed program reports it.
+      - name: Resolve the version the binaries carry
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+          else
+            V="0.0.0-dev.${GITHUB_SHA::7}"
+          fi
+          echo "value=$V" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
@@ -262,7 +288,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           mkdir -p ../../out-vsix
 
-          for TARGET in linux-x64 win32-x64; do
+          for TARGET in linux-x64 win32-x64; do # targets: vsix
             echo "::group::$TARGET"
             rm -rf daemon && mkdir -p daemon
             # NAMED, NOT `cp -a .`, since 2026-09-04. The build artifact now
@@ -337,7 +363,7 @@ jobs:
           set -euo pipefail
           mkdir -p out-bin
           EXPECT=0
-          for TARGET in linux-x64 win32-x64; do
+          for TARGET in linux-x64 win32-x64 darwin-arm64 linux-arm64; do # targets: all
             EXE=""
             [ "$TARGET" = "win32-x64" ] && EXE=".exe"
             for BIN in mochiii-tui mochiii-daemon mochiii-embedder-helper; do
@@ -362,6 +388,48 @@ jobs:
         with:
           name: terminal-client
           path: out-bin/
+          retention-days: 30
+          if-no-files-found: error
+
+      # THE INSTALL ARCHIVES, since 2026-10-17: what the one-line installers
+      # download. One per target, every target -- the three binaries, the
+      # terminal's models.json and the licences -- built by
+      # install/build-archive.sh, the same script a local rehearsal uses.
+      # Their checksums and the installers' go in SHA256SUMS-archives, which
+      # the installers check before installing anything. The count is
+      # accumulated per archive, for the reason the staging step gives.
+      - name: Build the install archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out-dist
+          EXPECT=0
+          for TARGET in linux-x64 win32-x64 darwin-arm64 linux-arm64; do # targets: all
+            sh install/build-archive.sh "$TARGET" "artifacts/binaries-$TARGET" out-dist
+            EXPECT=$((EXPECT + 1))
+          done
+          N=$(find out-dist -name 'mochiii-*' -type f | wc -l)
+          [ "$N" -eq "$EXPECT" ] || { echo "::error::built $N archives, expected $EXPECT"; exit 1; }
+          cp install/install.sh install/install.ps1 out-dist/
+          (cd out-dist && sha256sum mochiii-* install.sh install.ps1 | tee SHA256SUMS-archives)
+
+      # EVERY MODULE IN EVERY SHIPPED BINARY HAS ITS NOTICE, on the platforms no
+      # .vsix carries too. verify-vsix.js checks the two .vsix targets; this
+      # runs the same rule over all four targets' binaries, so a module that is
+      # linked only on macOS or ARM cannot ship without its licence. `go version
+      # -m` reads a binary built for any platform.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Every shipped binary's modules are in THIRD_PARTY_LICENSES.txt
+        shell: bash
+        run: sh install/check-notices.sh THIRD_PARTY_LICENSES.txt artifacts/binaries-*/mochiii-*
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: install-dist
+          path: out-dist/
           retention-days: 30
           if-no-files-found: error
 
@@ -409,15 +477,98 @@ jobs:
             --vsix-dir out-vsix \
             --bin-dir out-bin
 
+      # What the release gets, exactly as the guard left it, handed to the
+      # attach job -- which runs only after every platform's install smoke test
+      # has passed.
+      - name: Collect the release's files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cp out-vsix/*.vsix out-vsix/SHA256SUMS release-assets/
+          cp out-bin/mochiii-* out-bin/SHA256SUMS-bin release-assets/
+          cp out-dist/* release-assets/
+          ls -l release-assets
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: release-assets/
+          retention-days: 30
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # THE ONE-LINE INSTALL, RUN FOR REAL ON EVERY PLATFORM IT PROMISES, before any
+  # release is drafted (2026-10-17).
+  #
+  # Each runner serves this run's archives on 127.0.0.1 and runs the real
+  # installer against them, then install/smoke/run-smoke.sh (or .ps1) checks,
+  # in an isolated home: the versions, the code-search model download, a real
+  # index (the embedder helper and onnxruntime running on that OS), `mochiii`
+  # starting its own background service and answering through a stand-in
+  # provider that must receive the project's code, a tampered archive being
+  # refused, an upgrade over a running service, and uninstall.
+  #
+  # windows-11-arm runs the win32-x64 build under Windows' emulation, which is
+  # what the installer gives Windows on ARM. Intel Macs are not here because
+  # there is no build for them: onnxruntime ships none.
+  #
+  # The matrix key is `runner`, not `os`: target-parity.sh reads `- os:` lines
+  # in this file as the binaries matrix.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: install smoke (${{ matrix.label }})
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            label: linux-x64
+          - runner: ubuntu-24.04-arm
+            label: linux-arm64
+          - runner: macos-latest
+            label: darwin-arm64
+          - runner: windows-latest
+            label: win32-x64
+          - runner: windows-11-arm
+            label: win32-x64 on Windows ARM
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: install-dist
+          path: dist
+      - name: Install, index, answer, refuse a tampered download, upgrade, uninstall
+        if: runner.os != 'Windows'
+        shell: bash
+        run: sh install/smoke/run-smoke.sh dist "${{ needs.package.outputs.version }}"
+      - name: Install, index, answer, refuse a tampered download, upgrade, uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./install/smoke/run-smoke.ps1 -Dist dist -Version "${{ needs.package.outputs.version }}"
+
+  # Only a tag drafts a release, and only after every platform's smoke test
+  # passed: a release whose install command fails anywhere it promises to work
+  # is never drafted at all.
+  attach:
+    name: attach to the draft release
+    needs: [package, smoke]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: release-assets
       - name: Attach to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          files: |
-            out-vsix/*.vsix
-            out-vsix/SHA256SUMS
-            out-bin/mochiii-*
-            out-bin/SHA256SUMS-bin
+          files: release-assets/*
           draft: true # a human decides when it is public
           generate_release_notes: true
 
