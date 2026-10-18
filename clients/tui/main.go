@@ -31,10 +31,23 @@ func main() {
 
 	promptFlag := flag.String("prompt", "", "prompt text to send (reads stdin if omitted); with this flag (or piped stdin), runs one-shot instead of launching the chat UI")
 	workspaceFlag := flag.String("workspace", ".", "workspace to ground chat against; sent to the daemon so it can confirm this matches its own configured grounding workspace (one-shot mode ignores this — it predates grounding and stays unchanged)")
+	versionFlag := flag.Bool("version", false, "print this client's version and exit")
+	indexFlag := flag.Bool("index", false, "index (or re-index) this folder for code search, then open the chat")
+	noIndexFlag := flag.Bool("no-index", false, "do not offer to index this folder (also MOCHIII_NO_INDEX=1)")
+	stopFlag := flag.Bool("stop", false, "stop Mochiii's background service for this folder, then exit")
 	flag.Parse()
 
+	if *versionFlag {
+		fmt.Println("mochiii", version)
+		return
+	}
+	launch := launchOptions{forceIndex: *indexFlag, noIndex: *noIndexFlag || os.Getenv("MOCHIII_NO_INDEX") == "1"}
+	if *stopFlag {
+		os.Exit(runStop(*workspaceFlag))
+	}
+
 	if *promptFlag == "" && isatty.IsTerminal(os.Stdin.Fd()) {
-		runChat(*workspaceFlag)
+		runChat(*workspaceFlag, launch)
 		return
 	}
 
@@ -59,6 +72,7 @@ func main() {
 	// fallback rather than a reason to refuse to run.
 	if realRoot, err := editapply.ResolveRealWorkspaceRoot(*workspaceFlag); err == nil {
 		setDaemonWorkspaceRoot(realRoot)
+		prepareDaemon(realRoot, launch, false)
 	}
 	os.Exit(runOneShotPrompt("mochiii-tui", prompt, oneShotIO{
 		in: os.Stdin, out: os.Stdout, err: os.Stderr, interactive: interactive,
@@ -78,7 +92,7 @@ func main() {
 // resolution) for display/grounding purposes, so the daemon's own absolute
 // grounding workspace (see daemon/main.go) can be compared against it
 // meaningfully — see protocol.GroundingInfo.WorkspaceMismatch.
-func runChat(workspace string) {
+func runChat(workspace string, launch launchOptions) {
 	// RESOLVED BEFORE THE PREFLIGHT, not after. The daemon's lockfile is named
 	// from this root, so connecting without it looks for a file nothing writes.
 	// It used to sit below the connection, where it served only to fail fast on
@@ -89,6 +103,7 @@ func runChat(workspace string) {
 		os.Exit(1)
 	}
 	setDaemonWorkspaceRoot(workspaceRoot)
+	prepareDaemon(workspaceRoot, launch, true)
 
 	preflight, err := connectToDaemon("mochiii-tui")
 	if err != nil {

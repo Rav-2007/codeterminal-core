@@ -42,7 +42,20 @@ var subcommands = []subcommand{
 	{"trash", "list or restore what the agent deleted (delete_path)", runTrashCommand},
 	{"download-model", "fetch the embedding model this machine needs", runDownloadModelCommand},
 	{"helper-smoketest", "check that the embedder helper runs here", runHelperSmoketestCommand},
+	{"version", "print this daemon's version (also --version)", runVersionCommand},
 }
+
+// runVersionCommand prints the version release.yml stamped into daemonVersion.
+// The installers run it to check that the binary they unpacked runs and is the
+// release they meant.
+func runVersionCommand(args []string, logger *log.Logger) error {
+	_, err := fmt.Println("mochiii-daemon", daemonVersion)
+	return err
+}
+
+// versionFlags are the spellings of `version` people type out of habit. They
+// are exact names too, so they keep the no-prefix rule below.
+var versionFlags = map[string]bool{"--version": true, "-version": true}
 
 // findSubcommand resolves a name to its entry.
 //
@@ -51,6 +64,9 @@ var subcommands = []subcommand{
 // command that writes a credential file, and an abbreviation that works today
 // becomes ambiguous the moment a second subcommand shares its prefix.
 func findSubcommand(name string) (subcommand, bool) {
+	if versionFlags[name] {
+		name = "version"
+	}
 	for _, sc := range subcommands {
 		if sc.name == name {
 			return sc, true

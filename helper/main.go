@@ -57,7 +57,13 @@ func main() {
 	// falsify that. Zero means "say nothing to ONNX Runtime", which is what
 	// production does and what this binary did before the flag existed.
 	intraOpThreads := flag.Int("intra-op-threads", 0, "diagnostic: pin ONNX Runtime's intra-op thread count (0 = library default, and the only value production uses)")
+	showVersion := flag.Bool("version", false, "print this helper's version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("mochiii-embedder-helper", version)
+		return
+	}
 
 	if *socketPath == "" {
 		logger.Fatal("--socket is required")
