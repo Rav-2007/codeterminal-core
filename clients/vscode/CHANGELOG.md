@@ -3,6 +3,37 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [1.1.0] - 2026-10-18
+
+One command installs Mochiii on macOS, Linux and Windows, and installs this
+extension too when VS Code is present. Code search now works on Windows, and long
+tasks judge every check.
+
+### Added
+
+- **One-line install** (`install.sh` / `install.ps1`, attached to every release).
+  It covers Linux x64 and ARM64, Apple Silicon Macs, Windows x64 and Windows on
+  ARM. It checks the release's checksums, needs no administrator rights, and runs
+  `code --install-extension MochiiiAIAgent.mochiii-vscode` when VS Code is
+  installed on Linux x64 or Windows x64.
+- **The terminal app starts its own background service**, and on the first run
+  in a folder offers to download the code-search model and index the folder
+  (`--index`, `--no-index`, `--stop`, `--version`).
+- **Long tasks judge every check** against the last and the best, and remember
+  what failed across segments (#43). This is recorded by default
+  (`mcp.correction.mode: shadow`); `on` lets a task act on it.
+- Release builds for **macOS on Apple Silicon** and **Linux ARM64** (the terminal
+  app), and the code-search runtime for Linux ARM64.
+
+### Fixed
+
+- **Code search was off on every Windows install**, this extension's included:
+  the daemon looked for `mochiii-embedder-helper` without its `.exe` and never
+  found it.
+- A long task counts every model call against its budget; restoring a checkpoint
+  never brings back a deleted file; a Python `/fix` can finish on a plain
+  `pytest` (#43).
+
 ## [1.0.1] - 2026-10-16
 
 The first non-preview release. Everything since 0.1.1 (PRs #23–#40), plus the

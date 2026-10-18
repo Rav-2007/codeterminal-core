@@ -5,7 +5,70 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
-## Unreleased
+## v1.1.0 — 2026-10-18
+
+### One command installs Mochiii, on macOS, Linux and Windows
+
+**What changed.** The terminal app used to be built from source, on Linux only.
+Now one command installs it: `curl -fsSL …/install.sh | sh` on macOS and Linux,
+or `irm …/install.ps1 | iex` in PowerShell. The full commands are on the
+[front page](../README.md#install).
+
+- It runs on Linux x64 and ARM64, Apple Silicon Macs, Windows x64, and Windows on
+  ARM (the x64 build, under Windows' emulation).
+- It checks every download against the release's checksums, needs no
+  administrator rights, and downloads the code-search model.
+- It adds the VS Code extension when VS Code is installed.
+- Running it again updates; `--uninstall` removes Mochiii and keeps your keys,
+  models and chats.
+
+Before any release is drafted, CI runs the real installer on all five platforms.
+Intel Macs are not supported: onnxruntime, which runs the code-search model, has
+no Intel Mac build.
+
+### `mochiii` starts its own background service, and sets a folder up the first time
+
+**What changed.** `mochiii` used to fail with "daemon not found" unless something
+else had started the daemon. Now it starts the background service for the folder
+itself. It only ever starts the one installed beside it, never one found on
+`PATH` or in the project.
+
+The first time it runs in a folder, it offers to download the code-search model
+and index the folder, so answers are grounded in your code. Answer `never` and it
+stops asking for that folder. New options:
+
+- `--index` re-indexes the folder;
+- `--no-index` skips the offer;
+- `--stop` stops the folder's service;
+- `--version` prints the version.
+
+### Code search works on Windows
+
+**What changed.** On Windows the daemon looked for its embedder helper without
+the `.exe` extension, so it never found it, and code search was silently off on
+every Windows install, the VS Code extension's included. It now finds it.
+
+### Long tasks judge every check, and remember what failed
+
+**What changed.** `/fix`, `/debug` and `/refactor` now judge each build or test
+run against the last one and the best one, and carry what failed from one segment
+to the next. By default this is recorded, not acted on (`mcp.correction.mode:
+shadow`). Setting `on` lets a task restore its best state, change strategy when
+it is stuck, and re-run an approved check itself.
+
+Three fixes came with it:
+
+- A task counts every model call it makes against its budget.
+- Restoring a checkpoint never brings back a file the task deleted.
+- A Python `/fix` can finish on a plain `pytest`.
+
+---
+
+## Before v1.1.0 — shipped in the 0.1.x and 1.0.x releases
+
+Written while unreleased, and shipped by 0.1.0 through 1.0.1. The extension's
+[CHANGELOG](../clients/vscode/CHANGELOG.md) lists those releases version by
+version.
 
 ### The approval prompt says which program starts, and only when it does
 
