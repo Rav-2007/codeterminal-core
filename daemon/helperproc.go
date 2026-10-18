@@ -217,7 +217,7 @@ func (h *HelperProcess) spawnLocked() error {
 	cmd.Env = append(helperEnv(), h.extraEnv...)
 	cmd.Stdout = &prefixedWriter{prefix: "[embedder-helper] ", out: os.Stderr}
 	cmd.Stderr = &prefixedWriter{prefix: "[embedder-helper] ", out: os.Stderr}
-	if err := cmd.Start(); err != nil {
+	if err := startHelperProcess(cmd, h.logger); err != nil {
 		return fmt.Errorf("starting embedder helper %s: %w", h.binPath, err)
 	}
 	h.cmd = cmd

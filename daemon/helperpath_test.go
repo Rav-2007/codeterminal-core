@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -81,7 +82,9 @@ func TestResolveHelperBinPath_DoesNotDependOnWorkingDirectory(t *testing.T) {
 	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
 		exe = resolved
 	}
-	sibling := filepath.Join(filepath.Dir(exe), helperBinName)
+	// helperFile, not helperBinName: on Windows this plants the .exe a release
+	// ships, which the bare name never matched (see helperFile).
+	sibling := filepath.Join(filepath.Dir(exe), helperFile)
 	if _, err := os.Stat(sibling); err == nil {
 		t.Skip("a real helper already sits beside the test binary; nothing to prove")
 	}
@@ -105,6 +108,25 @@ func TestResolveHelperBinPath_DoesNotDependOnWorkingDirectory(t *testing.T) {
 	}
 }
 
+// TestTheHelperFileIsNamedAsEachPlatformShipsIt pins the name the lookup asks
+// the filesystem for. It runs on every platform, so the Windows answer is
+// checked here on Linux too: the bare name on Windows is what left code search
+// off on every Windows install until 2026-10-17.
+func TestTheHelperFileIsNamedAsEachPlatformShipsIt(t *testing.T) {
+	for goos, want := range map[string]string{
+		"windows": "mochiii-embedder-helper.exe",
+		"linux":   "mochiii-embedder-helper",
+		"darwin":  "mochiii-embedder-helper",
+	} {
+		if got := executableFileName(helperBinName, goos); got != want {
+			t.Errorf("executableFileName(%q, %q) = %q, want %q", helperBinName, goos, got, want)
+		}
+	}
+	if got, want := helperFile, executableFileName(helperBinName, runtime.GOOS); got != want {
+		t.Errorf("helperFile = %q, want %q on %s", got, want, runtime.GOOS)
+	}
+}
+
 // TestResolveHelperBinPath_MissingHelperSaysSo covers the honest-failure half:
 // when the helper genuinely is not there, the error must name the helper and
 // how to get one, not leave the caller to guess.
@@ -116,7 +138,7 @@ func TestResolveHelperBinPath_MissingHelperSaysSo(t *testing.T) {
 	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
 		exe = resolved
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), helperBinName)); err == nil {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), helperFile)); err == nil {
 		t.Skip("a real helper sits beside the test binary; cannot exercise the missing case")
 	}
 
