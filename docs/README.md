@@ -1,6 +1,6 @@
 # Documentation index
 
-**84 documents: 75 in `docs/`, 1 in `docs/ARCHIVE/`, and 8 at the repository root.**
+**85 documents: 76 in `docs/`, 1 in `docs/ARCHIVE/`, and 8 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -76,9 +76,11 @@ second copy of the truth that drifts from the first. When something changes,
 change it in the one document that owns it.
 
 **Coming from outside?** [`../README.md`](../README.md) is the front door — what
-the product is, how to build and run it, and what it does not do. It is written
-for someone evaluating the project; everything in *this* directory is written for
-someone working on it. The four above assume you have read it.
+the product is and how to install it. [`REFERENCE.md`](REFERENCE.md) is the full
+manual behind it: every command, flag and setting, how each subsystem works, and
+what it does not do. Both are written for someone using or evaluating the
+project; everything else in *this* directory is written for someone working on
+it. The four above assume you have read them.
 
 ---
 
@@ -112,6 +114,7 @@ a refactor or fails loudly; a line number silently points at something else.
 | [`VSCODE_UX_OVERHAUL_2026-10-12.md`](VSCODE_UX_OVERHAUL_2026-10-12.md) | **The 0.2.0 plan.** Why the shipped VS Code client is not usable — Windows cannot reach its daemon, there is no way to enter a key, the model never sees your code — with each claim cited to the line, and the seven stages that fix it. |
 | [`PROVIDER_MODEL_FLOW.md`](PROVIDER_MODEL_FLOW.md) | How a client connects Mochiii to a model: provider, then key, then model. The terminal's setup, VS Code's chat popup, and the daemon's connect handler, mapped to each other. |
 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | The bug register, statuses resolved in place. |
+| [`REFERENCE.md`](REFERENCE.md) | **The user manual.** Every command, flag, setting and environment variable, and how each subsystem works. Moved out of the root README on 2026-10-16 so the front door stays short. |
 | [`DECISION_PACK.md`](DECISION_PACK.md) | D1–D8 founder rulings, one page each. |
 | [`../BACKLOG.md`](../BACKLOG.md) | Forward-looking capability work only. |
 | [`../SECURITY_MODEL.md`](../SECURITY_MODEL.md) | The threat model and what each gate actually promises. |

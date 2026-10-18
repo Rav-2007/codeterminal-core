@@ -8,19 +8,16 @@ leaves it is the minimal prompt for a single turn, sent to the model
 provider *you* choose.
 
 **The extension manages the daemon for you.** Open a workspace, run
-**Mochiii: Open Chat**, and it starts one automatically — `src/daemonSupervisor.ts`
-probes for an existing daemon first, so a second window on the same folder
-shares it rather than racing to start its own.
+**Mochiii: Open Chat**, and it starts one automatically. A second window on the
+same folder shares it.
 
 ## Why Mochiii
 
 - **Your code stays yours.** Indexing, embedding, and retrieval all happen
   on-device. No telemetry, no silent uploads.
-- **Review every edit.** A model-proposed change renders as a red/green diff
-  — Apply or Skip, one block at a time, each matched against what is
-  actually on disk after the block before it — routed through a five-gate
-  safety engine before anything touches your files. One click (**Undo this
-  apply**) reverts a whole batch from its backup.
+- **Review every edit.** A proposed change renders as a red/green diff. Apply
+  or Skip, one block at a time; nothing touches your files until you do. One
+  click (**Undo this apply**) reverts a whole batch from its backup.
 - **Bring your own model.** `/connect` takes an API key for 17+ providers
   (OpenRouter, Groq, Anthropic, Google Gemini, and more), or point it at a
   local server (Ollama, LM Studio) and keep inference on-device too.
@@ -99,9 +96,9 @@ to choose them — the same reasoning as `mochiii.apiBase`, and why the path mus
 be absolute.
 
 Once on, a tool the model calls appears as an **approval card** naming the
-server, the tool and the exact arguments, and — for an external (Lane B)
-server — that it is **not sandboxed** and runs with your full privileges;
-nothing runs until you approve it.
+server, the tool and the exact arguments, and, for an external server, that it
+is **not sandboxed** and runs with your full privileges. Nothing runs until you
+approve it.
 
 To add a server, type **`/mcp`** in the chat (or `/mcp-server postgres` to
 search), or open **Customize → MCP → Marketplace**. The marketplace lists
@@ -136,11 +133,8 @@ The terminal client shares the same saved chats through `/history`.
 - **Model chip** shows the model actually answering (e.g. `qwen3.8-27b`), not the
   tier name; click it for `/model`.
 - **Effort** sets how long the model reasons before it answers, per prompt:
-  Auto (the model's default), Low, Medium, High. It is sent as
-  `reasoning_effort`; Auto sends nothing. Measured on Groq: `qwen3.8-27b` does
-  not reason at all on Auto, and `gpt-oss` accepts only low/medium/high. If a
-  model refuses the field, the daemon asks again without it and remembers that
-  for that model, so a refused effort never costs the turn.
+  Auto (the model's default), Low, Medium, High. If a model does not support
+  it, the question is sent again without it, so it never costs you the answer.
 - **Context ring** shows how full the conversation is, with the percentage;
   amber from 60%, red from 80%.
 - Answers render markdown (headings, lists, tables, code, links, and the common
@@ -150,13 +144,10 @@ The terminal client shares the same saved chats through `/history`.
 
 The paperclip opens the editor's file dialog and takes text and code files,
 **PDF (including scanned PDFs), Word (.docx), Excel (.xlsx), PowerPoint (.pptx)
-and images**. Everything is read **on your machine**, by the extension host from
-disk: the files are turned into text by `src/attachmentExtract.ts` (parsers in
-`src/extractors/`, bundled with their libraries into `out/vendor/` by
-`npm run build:extractors`), and only that text is added to your prompt, the same
-way an attached `.txt` always was. Reading a file makes no network connection.
-Whether the prompt itself leaves your machine depends on the model you
-connected, as it always did.
+and images**. Everything is read **on your machine** and turned into text, and
+only that text is added to your prompt. Reading a file makes no network
+connection. Whether the prompt itself leaves your machine depends on the model
+you connected.
 
 What is and is not read:
 
@@ -170,65 +161,14 @@ What is and is not read:
 
 Limits: 8 files per message, 80,000 characters per file, and by size: text 10 MB,
 images 20 MB, PDF 100 MB, Office files 200 MB (they are mostly pictures, which are
-never opened; only the text parts are inflated, and those are capped). Anything
-read by OCR is labelled as such to the model, with how OCR typically fails
-(symbols read as digits, URLs losing dots) and an instruction not to guess
-corrections -- added after a model "corrected" OCR'd figures into invented ones.
-Old `.doc`/`.xls`/`.ppt` files are refused with a message asking for the modern
-format. An image with no readable text is refused rather than sent as noise.
-The first image read starts an OCR worker (about 100-300 MB) that is released
-after 30 seconds idle. An image is never *described*: that needs a vision model,
-which this does not include.
+never opened). Text read by OCR is marked as such to the model, so it does not
+treat a misread character as fact. Old `.doc`/`.xls`/`.ppt` files are refused
+with a message asking for the modern format, and an image with no readable text
+is refused. An image is never *described*: that needs a vision model, which
+this does not include.
 
-## Architecture
+## More
 
-- `src/daemonClient.ts` — extension-host-only module that owns the Unix
-  socket: reads the daemon's lockfile, connects, frames/parses newline-
-  delimited JSON, and exposes a small async interface
-  (`preflightHandshake`, `streamPrompt`, `applyEdit`). This is a straight
-  TypeScript reimplementation of `clients/tui/daemonconn.go` + `stream.go`
-  (and, for `applyEdit`, of the daemon's `ApplyEditRequest` handler) — the
-  wire format is already JSON, so no new dependency and no Go sidecar is
-  needed. `streamPrompt`'s final `TokenResponse` may carry `edit_proposals`;
-  `applyEdit` sends the accepted block back verbatim on its own connection
-  and relays the daemon's `ApplyEditResponse` (applied + backup dir, or the
-  exact gate-refusal string) — no gate is reimplemented in TypeScript.
-- `src/chatPanel.ts` — creates the webview panel, keeps the conversation
-  transcript (source of truth for building `PromptRequest.History`, mirrors
-  `buildHistory` in `clients/tui/chat.go`), tracks the single pending edit
-  proposal (cleared on apply, skip, or a new prompt so a lagging click can
-  never target a stale block), and relays daemon events to the webview via
-  `postMessage`. The webview cannot open a socket itself — all daemon I/O
-  lives here.
-- `media/main.js` — runs inside the sandboxed webview: renders the
-  transcript, a grounding indicator, the edit-proposal diff (whole-block
-  red/green, matching the TUI's non-LCS rendering) with Apply/Skip buttons,
-  the apply result (applied + backup-dir hint, or the refusal reason), and
-  forwards user input up via `postMessage`. No daemon access.
-
-## Try it
-
-```bash
-# Terminal 1: start the daemon as usual (see repo root README)
-cd /path/to/repo
-set -a && source .env && set +a
-./daemon/mochiii-daemon
-
-# In this directory:
-npm install
-npm run compile
-```
-
-Then open this `clients/vscode` folder as a VS Code workspace and press
-`F5` to launch an Extension Development Host. Run the command
-**"Mochiii: Open Chat"** (Ctrl/Cmd+Shift+P). Any cross-session history
-the daemon has for its workspace renders before you type anything; sending
-a prompt streams the grounded answer back token-by-token.
-
-If the model's answer includes a SEARCH/REPLACE edit block, the panel
-renders it as a diff with **Apply**/**Skip** buttons right below the
-answer. Apply sends the block to the daemon as-is; the daemon runs it
-through `editapply.PrepareEdit` (exact-match, ambiguity-refuse, workspace
-confinement, secret-file refusal, syntax gate) before writing + backing it
-up, and the panel shows whatever the daemon reports — a success line with
-the backup dir, or the exact refusal string, file untouched either way.
+- [Mochiii on GitHub](https://github.com/Rav-2007/codeterminal-core): the terminal app, and how to build from source
+- [Full reference](https://github.com/Rav-2007/codeterminal-core/blob/main/docs/REFERENCE.md): every command and setting
+- [Report a bug](https://github.com/Rav-2007/codeterminal-core/issues)
