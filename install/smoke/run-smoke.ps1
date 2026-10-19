@@ -90,6 +90,125 @@ function Get-Ours([string]$name) {
         })
 }
 
+# WHO HAS THESE FILES OPEN, from the Windows Restart Manager -- the system's own
+# answer, which names services (Windows Defender, the x64 emulator's cache) as
+# well as programs. Compiled here, once, so a lock that lasts only moments is
+# still there when it is asked about. C# 5, which Windows PowerShell 5.1 compiles.
+$rmSource = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace MochiiiSmoke {
+    public static class FileHolders {
+        [StructLayout(LayoutKind.Sequential)]
+        struct RmUniqueProcess { public int ProcessId; public System.Runtime.InteropServices.ComTypes.FILETIME StartTime; }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct RmProcessInfo {
+            public RmUniqueProcess Process;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string AppName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string ServiceShortName;
+            public int ApplicationType;
+            public uint AppStatus;
+            public uint TSSessionId;
+            [MarshalAs(UnmanagedType.Bool)] public bool Restartable;
+        }
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        static extern int RmStartSession(out uint session, int flags, StringBuilder key);
+        [DllImport("rstrtmgr.dll")]
+        static extern int RmEndSession(uint session);
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        static extern int RmRegisterResources(uint session, uint nFiles, string[] files, uint nApps, RmUniqueProcess[] apps, uint nServices, string[] services);
+        [DllImport("rstrtmgr.dll")]
+        static extern int RmGetList(uint session, out uint needed, ref uint count, [In, Out] RmProcessInfo[] infos, ref uint rebootReasons);
+
+        // One entry per holder: "process id|name|service short name".
+        public static string[] Of(string[] files) {
+            uint session;
+            int rc = RmStartSession(out session, 0, new StringBuilder(33));
+            if (rc != 0) { throw new System.ComponentModel.Win32Exception(rc); }
+            try {
+                rc = RmRegisterResources(session, (uint)files.Length, files, 0, null, 0, null);
+                if (rc != 0) { throw new System.ComponentModel.Win32Exception(rc); }
+                for (int attempt = 0; attempt < 3; attempt++) {
+                    uint needed, count = 0, reasons = 0;
+                    rc = RmGetList(session, out needed, ref count, null, ref reasons);
+                    if (rc == 0) { return new string[0]; }
+                    if (rc != 234) { throw new System.ComponentModel.Win32Exception(rc); }
+                    RmProcessInfo[] infos = new RmProcessInfo[needed];
+                    count = needed;
+                    rc = RmGetList(session, out needed, ref count, infos, ref reasons);
+                    if (rc == 234) { continue; }
+                    if (rc != 0) { throw new System.ComponentModel.Win32Exception(rc); }
+                    List<string> result = new List<string>();
+                    for (int i = 0; i < count; i++) {
+                        result.Add(infos[i].Process.ProcessId + "|" + infos[i].AppName + "|" + infos[i].ServiceShortName);
+                    }
+                    return result.ToArray();
+                }
+                throw new InvalidOperationException("the list of holders kept changing");
+            } finally {
+                RmEndSession(session);
+            }
+        }
+    }
+}
+'@
+$rmReady = $false
+try { Add-Type -TypeDefinition $rmSource -Language CSharp; $rmReady = $true } catch { Write-Host "note - the Restart Manager lookup did not compile: $($_.Exception.Message)" }
+
+# The holders of every file in $bin, as "name (process N[, service S])".
+function Get-FileHolders {
+    if (-not $rmReady) { return @("(Restart Manager unavailable)") }
+    $files = @(Get-ChildItem -LiteralPath $bin -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    if ($files.Count -eq 0) { return @() }
+    $raw = try { [MochiiiSmoke.FileHolders]::Of($files) } catch { return @("(Restart Manager failed: $($_.Exception.Message))") }
+    @($raw | ForEach-Object {
+            $id, $app, $svc = $_ -split '\|', 3
+            $image = try { (Get-Process -Id $id -ErrorAction Stop).ProcessName } catch { $app }
+            if ($svc) { "$image (process $id, service $svc)" } else { "$image (process $id)" }
+        })
+}
+
+# Stops this install's daemon and helper exactly as install.ps1's Stop-Ours does,
+# then measures how long until $bin can be renamed -- the upgrade's own move --
+# and records who held it at the first refusal.
+function Measure-FolderRelease {
+    $procs = @(Get-Ours "mochiii-daemon") + @(Get-Ours "mochiii-embedder-helper")
+    $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+    $procs | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
+    $probeLeaf = (Split-Path $bin -Leaf) + ".probe"
+    $probe = Join-Path (Split-Path $bin -Parent) $probeLeaf
+    $r = [ordered]@{ stopped = $procs.Count; ms = $null; failures = 0; error = $null; holders = @(); survivors = @() }
+    $moved = $false
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt 60) {
+        try {
+            if (-not $moved) { Rename-Item -LiteralPath $bin -NewName $probeLeaf -ErrorAction Stop; $moved = $true }
+            Rename-Item -LiteralPath $probe -NewName (Split-Path $bin -Leaf) -ErrorAction Stop
+            $r.ms = [int]$sw.Elapsed.TotalMilliseconds
+            break
+        } catch {
+            if ($r.failures -eq 0) {
+                $r.error = $_.Exception.Message
+                $r.holders = @(Get-FileHolders)
+                $r.survivors = @(@(Get-Ours "mochiii-daemon") + @(Get-Ours "mochiii-embedder-helper") | ForEach-Object { "$($_.ProcessName) (process $($_.Id))" })
+            }
+            $r.failures++
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    $r
+}
+
+function Format-Release($r) {
+    $free = if ($null -ne $r.ms) { "free after $($r.ms) ms" } else { "NOT free after 60 s" }
+    if ($r.failures -eq 0) { return "$free (stopped $($r.stopped) processes; the first rename succeeded)" }
+    $held = if ($r.holders.Count) { $r.holders -join "; " } else { "no process, by Restart Manager" }
+    $surv = if ($r.survivors.Count) { $r.survivors -join "; " } else { "none" }
+    "$free ($($r.failures) renames refused first; stopped $($r.stopped) processes); first refusal: $($r.error) | held by: $held | our processes still running: $surv"
+}
+
 # Runs install.ps1 the way a user does: in Windows PowerShell, a fresh process.
 function Invoke-Installer([string]$base, [string]$log) {
     $env:MOCHIII_DOWNLOAD_BASE = $base
@@ -153,6 +272,47 @@ $out = (& (Join-Path $bin "mochiii.exe") --workspace $project --prompt "where is
 if ($out -notmatch "SMOKE-ANSWER-OK") { Fail ("the answer did not come back: $out`n" + (Get-Content -Raw (Join-Path $work "client.err"))) }
 if (-not (Select-String -Path $requests -Pattern "quokkaChecksum" -Quiet)) { Fail "the project's code never reached the provider: code search did not run" }
 Pass "mochiii started its own background service, searched the project and answered"
+
+# LOCK PROBE (2026-10-19). What holds the install folder just after its programs
+# are stopped, and for how long: on Windows on ARM an upgrade once could not
+# rename it after stopping them, where x64 could. Measured as is, then with
+# Windows Defender told to skip the folder, which says whether Defender is the
+# holder. A report for the record: it never fails the run.
+$label = "LOCK PROBE ($env:PROCESSOR_ARCHITECTURE)"
+function Write-Probe([string]$line) {
+    Write-Host $line
+    if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "``$line``" }
+}
+try {
+    Write-Probe "${label}: $(Format-Release (Measure-FolderRelease))"
+} catch {
+    Write-Probe "${label}: could not run: $($_.Exception.Message)"
+}
+try {
+    $rt = $null
+    if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
+        $rt = try { (Get-MpComputerStatus).RealTimeProtectionEnabled } catch { $null }
+    }
+    if ($rt) {
+        # Excluded BEFORE the programs start, since Defender looks at a program as
+        # it is launched; by the long path, which is the one Defender sees.
+        $excluded = Get-LongPath $work
+        Add-MpPreference -ExclusionPath $excluded
+        try {
+            $null = & (Join-Path $bin "mochiii.exe") --workspace $project --prompt "probe?" 2>$null
+            Write-Probe "$label with Defender excluding the folder: $(Format-Release (Measure-FolderRelease))"
+        } finally {
+            Remove-MpPreference -ExclusionPath $excluded
+        }
+    } else {
+        Write-Probe "$label`: Defender real-time protection is off or absent here ($rt), so it cannot be the holder"
+    }
+} catch {
+    Write-Probe "$label with Defender excluding the folder: could not run: $($_.Exception.Message)"
+}
+# The probe stopped the background service; the steps below need one running.
+$out = (& (Join-Path $bin "mochiii.exe") --workspace $project --prompt "after the probe?" 2>$null | Out-String)
+if ($out -notmatch "SMOKE-ANSWER-OK") { Fail "no answer after the lock probe: $out" }
 
 # 5. a tampered download is refused
 $bad = Join-Path $work "bad"
