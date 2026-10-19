@@ -294,15 +294,28 @@ jobs:
       # helper/internal/ort test that loads ONNX Runtime -- the golden vectors,
       # teardown in either order, the thread count -- skips in every other job,
       # because no other job has the model. This one has just downloaded it into
-      # ~/.mochiii/models, so it runs them here. The golden vectors were written
-      # on another CPU, so this checks them to goldenCosine, not bit for bit. A
-      # skipped vector test fails the step: green must mean they ran.
+      # ~/.mochiii/models, so it runs them here.
+      #
+      # The golden vectors were written on another CPU, and ONNX Runtime picks
+      # its int8 kernels by CPU, so here they only catch a gross error. The
+      # precise check is the base tree's own helper -- the binding main ships --
+      # built on this runner and compared with this change's, bit for bit
+      # (TestAnotherHelperBuildComputesTheSameBits). A skipped check fails the
+      # step: green must mean they ran.
       - name: The embedder helper's tests, against the real model
         run: |
           set -o pipefail
-          go test -count=1 -v ./... 2>&1 | tee "$RUNNER_TEMP/helper.log" | grep -E '^(--- |ok|FAIL|panic)'
+          if [ -d "$RUNNER_TEMP/base/helper" ]; then
+            (cd "$RUNNER_TEMP/base/helper" && go build -o "$RUNNER_TEMP/base-helper" .)
+            export MOCHIII_OTHER_HELPER="$RUNNER_TEMP/base-helper"
+          fi
+          go test -count=1 -v ./... 2>&1 | tee "$RUNNER_TEMP/helper.log" | grep -vE '^=== (RUN|PAUSE|CONT)'
           grep -q -- '--- PASS: TestTheBindingComputesTheGoldenVectors' "$RUNNER_TEMP/helper.log" \
             || { echo "the golden-vector test did not run: the model is not where the helper's tests look"; exit 1; }
+          if [ -n "${MOCHIII_OTHER_HELPER:-}" ]; then
+            grep -q -- '--- PASS: TestAnotherHelperBuildComputesTheSameBits' "$RUNNER_TEMP/helper.log" \
+              || { echo "the base helper was built but the bit-for-bit comparison did not pass"; exit 1; }
+          fi
         working-directory: helper
 
       # The verdict for a change measured against its base. `always()` so a

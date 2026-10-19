@@ -40,10 +40,11 @@ cp "$here/fixture/quokka.go" "$work/project/"
 HOME="$work/home" "$work/bin/mochiii-daemon" download-model >/dev/null 2>&1 ||
 	fail "downloading the code-search model on the runner failed"
 
-# in <image> <command...> runs a command in a container that sees the install,
-# the model cache and the project at the same paths, as this runner's user, so
-# every directory is owned by the uid that uses it.
-in() {
+# inside <image> <command...> runs a command in a container that sees the
+# install, the model cache and the project at the same paths, as this runner's
+# user, so every directory is owned by the uid that uses it. (Not `in`: that is
+# a reserved word, and dash refuses the function -- found on the first CI run.)
+inside() {
 	image=$1
 	shift
 	docker run --rm --user "$(id -u):$(id -g)" -v "$work:$work" \
@@ -51,19 +52,19 @@ in() {
 		"$image" "$@"
 }
 
-glibc_of() { in "$1" ldd --version 2>&1 | head -n 1; }
+glibc_of() { inside "$1" ldd --version 2>&1 | head -n 1; }
 
 for image in ubuntu:18.04 centos:7; do
 	echo "== $image: $(glibc_of "$image")"
 	for bin in mochiii mochiii-daemon mochiii-embedder-helper; do
-		in "$image" "$work/bin/$bin" --version >/dev/null 2>"$work/err" ||
+		inside "$image" "$work/bin/$bin" --version >/dev/null 2>"$work/err" ||
 			fail "$bin does not start on $image: $(cat "$work/err")"
 	done
 	pass "all three programs start on $image"
 done
 
 rm -rf "$work/project/.mochiii"
-in ubuntu:18.04 "$work/bin/mochiii-daemon" index "$work/project" >"$work/index.log" 2>&1 ||
+inside ubuntu:18.04 "$work/bin/mochiii-daemon" index "$work/project" >"$work/index.log" 2>&1 ||
 	fail "indexing on ubuntu:18.04 (glibc 2.27) failed: $(tail -n 20 "$work/index.log")"
 [ -f "$work/project/.mochiii/index/embedder_stamp.json" ] ||
 	fail "indexing on ubuntu:18.04 finished without its stamp: $(tail -n 20 "$work/index.log")"
