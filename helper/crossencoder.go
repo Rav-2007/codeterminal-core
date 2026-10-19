@@ -6,7 +6,8 @@ import (
 
 	"github.com/sugarme/tokenizer"
 	"github.com/sugarme/tokenizer/pretrained"
-	ort "github.com/yalue/onnxruntime_go"
+
+	"mochiii/helper/internal/ort"
 )
 
 // CrossEncoder scores how well each passage answers a query, reading the two
@@ -19,7 +20,7 @@ import (
 // would put another model download on every user, which is the owner's call.
 type CrossEncoder struct {
 	tokenizer *tokenizer.Tokenizer
-	session   *ort.DynamicAdvancedSession
+	session   *ort.Session
 }
 
 // crossEncoderModelFile is the ONNX file NewCrossEncoder opens in its model
@@ -33,19 +34,8 @@ func NewCrossEncoder(modelDir string, intraOpThreads int) (*CrossEncoder, error)
 	if err != nil {
 		return nil, fmt.Errorf("loading the cross-encoder's tokenizer.json: %w", err)
 	}
-	var opts *ort.SessionOptions
-	if intraOpThreads > 0 {
-		opts, err = ort.NewSessionOptions()
-		if err != nil {
-			return nil, fmt.Errorf("creating ONNX session options: %w", err)
-		}
-		defer func() { _ = opts.Destroy() }()
-		if err := opts.SetIntraOpNumThreads(intraOpThreads); err != nil {
-			return nil, fmt.Errorf("setting intra-op thread count to %d: %w", intraOpThreads, err)
-		}
-	}
-	session, err := ort.NewDynamicAdvancedSession(filepath.Join(modelDir, crossEncoderModelFile),
-		[]string{"input_ids", "attention_mask", "token_type_ids"}, []string{"logits"}, opts)
+	session, err := ort.NewSession(filepath.Join(modelDir, crossEncoderModelFile),
+		[]string{"input_ids", "attention_mask", "token_type_ids"}, []string{"logits"}, intraOpThreads)
 	if err != nil {
 		return nil, fmt.Errorf("opening ONNX session for %s: %w", crossEncoderModelFile, err)
 	}
@@ -109,11 +99,10 @@ func (c *CrossEncoder) scoreOne(t tokenized) (float32, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = out.Destroy() }()
-	if shape := out.GetShape(); len(shape) != 2 || shape[0] != 1 || shape[1] != 1 {
+	if shape := out.Shape; len(shape) != 2 || shape[0] != 1 || shape[1] != 1 {
 		return 0, fmt.Errorf("unexpected logits shape %v, want [1 1]", shape)
 	}
-	data := out.GetData()
+	data := out.Data
 	if len(data) != 1 {
 		return 0, fmt.Errorf("the cross-encoder returned %d scores for one pair", len(data))
 	}

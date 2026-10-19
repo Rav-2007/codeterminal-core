@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/sugarme/tokenizer/pretrained"
-	ort "github.com/yalue/onnxruntime_go"
 
 	"mochiii/helper/helperproto"
+	"mochiii/helper/internal/ort"
 )
 
 // H.1 -- can a secret in a prompt become observable outside the daemon?
@@ -75,8 +75,7 @@ func fullEmbedder(t *testing.T) *OnnxEmbedder {
 	}
 	var initErr error
 	ortOnce.Do(func() {
-		ort.SetSharedLibraryPath(lib)
-		initErr = ort.InitializeEnvironment()
+		initErr = ort.Init(lib)
 	})
 	if initErr != nil {
 		t.Skipf("initializing ONNX Runtime: %v", initErr)

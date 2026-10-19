@@ -3,8 +3,8 @@ module mochiii/helper
 go 1.26.9
 
 require (
+	github.com/ebitengine/purego v0.11.1
 	github.com/sugarme/tokenizer v0.3.0
-	github.com/yalue/onnxruntime_go v1.31.0
 	mochiii/protocol v0.0.0
 )
 

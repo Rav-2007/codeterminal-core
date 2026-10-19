@@ -2,7 +2,8 @@ package main
 
 import (
 	"go/build"
-	"os"
+	"io/fs"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -32,34 +33,45 @@ import (
 // retrieval was simply absent on the platform. It is in the matrix as of that
 // change, and this banner is what stops its coverage going quiet again.
 //
+// EVERY PACKAGE IN THE MODULE, not just this directory: internal/ort joined on
+// 2026-10-19 with a Unix-only test file, and a scan of "." alone would have let
+// Windows lose it in silence -- the exact failure this test exists to prevent.
+//
 // NOTE what this canNOT see: a test that COMPILES here and then skips at
 // runtime. helper/embedleak_test.go skips when the ONNX model is not cached,
 // which on a CI runner is most of the time. Build constraints are visible to
 // this scan; t.Skip is not.
 func TestPlatformCoverageIsStated(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	ctx := build.Default // this GOOS/GOARCH, which is the whole question
 	var total, compiled int
 	var excluded []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, "_test.go") {
-			continue
+	err := filepath.WalkDir(".", func(path string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if e.IsDir() {
+			if e.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, "_test.go") {
+			return nil
 		}
 		total++
-		ok, err := ctx.MatchFile(".", name)
+		ok, err := ctx.MatchFile(filepath.Dir(path), e.Name())
 		if err != nil {
-			t.Fatalf("reading build constraints of %s: %v", name, err)
+			t.Fatalf("reading build constraints of %s: %v", path, err)
 		}
 		if ok {
 			compiled++
 		} else {
-			excluded = append(excluded, name)
+			excluded = append(excluded, filepath.ToSlash(path))
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// A scan that read nothing would report perfect coverage. Measured 5 test

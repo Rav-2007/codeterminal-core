@@ -91,10 +91,13 @@
 # are explicit `_ =` discards -- there is nothing to do about a failed release
 # of a tensor a call is finished with. Six sites became three and the four that
 # were bare are marked; nothing was suppressed.
+# 2026-10-19: helper 6 -> 4. The cgo binding went (helper/internal/ort): its
+# input tensors and output are released inside Session.Run, so runOne's
+# `_ = x.Destroy()` discards are gone with them. Nothing was suppressed.
 #
 daemon         87
 editapply       9
 proxy          25
 protocol        0
-helper          6
+helper          4
 clients/tui     0
