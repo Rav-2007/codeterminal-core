@@ -44,8 +44,8 @@ same folder shares it.
 ## Platform support
 
 Linux x64 and Windows x64 today (no macOS build yet). On Linux the bundled
-runtime needs **glibc 2.34 or newer** — Ubuntu 22.04+, Debian 12+, Fedora 35+,
-RHEL 9+; Ubuntu 20.04, Debian 11 and RHEL 8 are too old. Found a rough edge?
+runtime needs **glibc 2.27 or newer** — Ubuntu 18.04+, Debian 10+, Fedora 28+,
+RHEL 8+; CentOS 7 and Amazon Linux 2 are too old. Found a rough edge?
 [Tell us about it](https://github.com/Rav-2007/codeterminal-core/issues).
 
 Known limits, worth knowing before relying on them: no native VS Code diff

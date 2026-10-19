@@ -94,7 +94,7 @@ being asked for that folder. Other options:
 
 - `mochiii: command not found` right after installing: open a new terminal. The
   installer added `~/.local/bin` to your shell's startup file.
-- Code search is off on Linux: it needs glibc 2.34+ (`ldd --version`). Chat and
+- Code search is off on Linux: it needs glibc 2.27+ (`ldd --version`). Chat and
   agent tools work regardless.
 - Code search is off on Windows: install the Visual C++ runtime from
   <https://aka.ms/vs/17/release/vc_redist.x64.exe>.
@@ -116,8 +116,8 @@ being asked for that folder. Other options:
 
 For working on Mochiii. Everyone else: [install it](#install-update-and-uninstall).
 
-**Requirements:** Go 1.26.9+, and a C compiler for the embedder helper only. The
-daemon and TUI are pure Go and build with `CGO_ENABLED=0`. An older Go (1.21 or
+**Requirements:** Go 1.26.9+, and nothing else: every program is pure Go and
+builds with `CGO_ENABLED=0`, so no C compiler is needed. An older Go (1.21 or
 later) downloads that toolchain by itself on the first build, unless
 `GOTOOLCHAIN=local` is set.
 
@@ -1254,10 +1254,10 @@ itself with one read-only tool, `github`.
 ### Embedding helper
 
 `BAAI/bge-small-en-v1.5`, int8-quantised ONNX, 384 dimensions, run through
-onnxruntime — which needs CGO, while the daemon stays pure Go. So it lives in a
-separate binary the daemon spawns and talks to over its own local socket.
-`CGO_ENABLED=0 go build` still succeeds on `daemon`; `grep -r 'import "C"'` finds
-nothing outside `helper/`.
+onnxruntime in a separate binary the daemon spawns and talks to over its own
+local socket, so the model's memory lives and dies with that process. No CGO:
+`helper/internal/ort` loads onnxruntime at run time and calls its C API through
+the function table, and `grep -r 'import "C"'` finds nothing anywhere.
 
 BGE is asymmetric, and the daemon applies that asymmetry at the boundary:
 documents embed unmodified, queries get BAAI's instruction prefix. The helper
