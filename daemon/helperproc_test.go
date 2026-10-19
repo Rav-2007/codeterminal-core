@@ -31,6 +31,10 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == sandboxReaperArg {
 		os.Exit(sandboxReaperMain(os.Args[2:]))
 	}
+	// And the stand-ins of TestTheHelperEndsWithItsKilledDaemon, which are killed.
+	if len(os.Args) > 1 && os.Args[1] == helperLifetimeRoleArg {
+		os.Exit(helperLifetimeRoleMain(os.Args[2:]))
+	}
 
 	tmpDir, err := os.MkdirTemp("", "fakehelper-build")
 	if err != nil {

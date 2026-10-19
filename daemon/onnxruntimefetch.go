@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -31,7 +32,10 @@ type onnxRuntimePlatform struct {
 	libFileName      string // final filename under the cache dir
 }
 
-// onnxRuntimePlatforms covers the three platforms verified so far. Intel
+// onnxRuntimePlatforms covers the four platforms a release builds the helper
+// for (scripts/release-targets.txt; TestEveryReleaseTargetHasAPinnedONNXRuntime
+// keeps the two lists together). Windows on ARM runs the windows/amd64 build
+// under emulation, so it needs no entry of its own. Intel
 // Mac (darwin/amd64) is deliberately absent: upstream onnxruntime v1.26.0
 // ships no prebuilt binary for it at all. This is a known, open gap — see
 // "Known platform gaps" in README.md — not an oversight; lookupONNXRuntimePlatform
@@ -48,6 +52,21 @@ var onnxRuntimePlatforms = []onnxRuntimePlatform{
 			sha256Hex: "1254da24fb389cf39dc0ff3451ab48301740ffbfcbaf646849df92f80ee92c57",
 		},
 		libPathInArchive: "onnxruntime-linux-x64-1.26.0/lib/libonnxruntime.so.1.26.0",
+		libFileName:      "libonnxruntime.so",
+	},
+	{
+		// Added 2026-10-17 for the linux-arm64 release target. Size and hash
+		// from downloading the archive itself; `file` on the extracted library
+		// says ELF 64-bit ARM aarch64.
+		goos:   "linux",
+		goarch: "arm64",
+		archive: modelAsset{
+			name:      "onnxruntime-linux-aarch64-1.26.0.tgz",
+			url:       "https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-aarch64-1.26.0.tgz",
+			size:      7608947,
+			sha256Hex: "34ff1c2d0f12e2cf3d33a0c5f82e39792e1d581fbd6968fd7c30d173654be01a",
+		},
+		libPathInArchive: "onnxruntime-linux-aarch64-1.26.0/lib/libonnxruntime.so.1.26.0",
 		libFileName:      "libonnxruntime.so",
 	},
 	{
@@ -92,7 +111,7 @@ func lookupONNXRuntimePlatform(goos, goarch string) (onnxRuntimePlatform, error)
 			onnxRuntimeVersion)
 	}
 	return onnxRuntimePlatform{}, fmt.Errorf(
-		"no pinned onnxruntime shared library for %s/%s; supported platforms: linux/amd64, darwin/arm64, windows/amd64",
+		"no pinned onnxruntime shared library for %s/%s; supported platforms: linux/amd64, linux/arm64, darwin/arm64, windows/amd64",
 		goos, goarch)
 }
 
@@ -172,6 +191,16 @@ func extractArchiveMember(archivePath, memberPath, destPath string) error {
 	}
 }
 
+// archiveMemberMatches reports whether the archive entry called name is the
+// pinned member, comparing the two cleaned. Microsoft's macOS archive stores
+// every member as ./onnxruntime-osx-arm64-1.26.0/..., its Linux and Windows
+// ones without the ./, and the byte comparison this replaced therefore never
+// found the Mac library: code search was off on every Mac, first seen by the
+// 1.1.0 release rehearsal, the first run on one (2026-10-18).
+func archiveMemberMatches(name, member string) bool {
+	return path.Clean(name) == path.Clean(member)
+}
+
 func extractFromTarGz(archivePath, memberPath, destPath string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -194,8 +223,11 @@ func extractFromTarGz(archivePath, memberPath, destPath string) error {
 		if err != nil {
 			return fmt.Errorf("reading tar entries: %w", err)
 		}
-		if hdr.Name != memberPath {
+		if !archiveMemberMatches(hdr.Name, memberPath) {
 			continue
+		}
+		if !hdr.FileInfo().Mode().IsRegular() {
+			return fmt.Errorf("member %s is not a regular file in the archive", memberPath)
 		}
 		return writeExtractedFile(destPath, tr)
 	}
@@ -209,8 +241,11 @@ func extractFromZip(archivePath, memberPath, destPath string) error {
 	defer zr.Close()
 
 	for _, f := range zr.File {
-		if f.Name != memberPath {
+		if !archiveMemberMatches(f.Name, memberPath) {
 			continue
+		}
+		if !f.FileInfo().Mode().IsRegular() {
+			return fmt.Errorf("member %s is not a regular file in the archive", memberPath)
 		}
 		rc, err := f.Open()
 		if err != nil {

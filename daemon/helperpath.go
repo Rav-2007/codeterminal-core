@@ -4,12 +4,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
 // helperBinName is the embedder helper's binary name, as produced by
 // `cd helper && go build -o mochiii-embedder-helper .`.
 const helperBinName = "mochiii-embedder-helper"
+
+// helperFile is helperBinName as it exists on disk on this platform. On
+// Windows that is mochiii-embedder-helper.exe -- what `go build` writes and
+// what both the .vsix and the release archive ship -- and the candidates below
+// are checked with os.Stat, which, unlike exec.LookPath, never tries PATHEXT.
+// Until 2026-10-17 they were checked under the bare name, so the helper beside
+// a Windows daemon was never found and code search was off on every Windows
+// install, the VS Code extension's included.
+var helperFile = executableFileName(helperBinName, runtime.GOOS)
+
+// executableFileName is name as an executable file on goos.
+func executableFileName(name, goos string) string {
+	if goos == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
 
 // helperBinEnvVar names an explicit override for the helper binary's location,
 // for deployments whose layout none of the candidates below describe (a package
@@ -27,7 +45,7 @@ const helperBinEnvVar = "MOCHIII_HELPER_BIN"
 //
 // IT IS NOW OFFERED ONLY UNDER `go run` -- see runningFromGoRun for why that is
 // the same rule this comment always described, rather than a new restriction.
-const legacyHelperBinPath = "helper/" + helperBinName
+var legacyHelperBinPath = "helper/" + helperFile
 
 // runningFromGoRun reports whether this binary was built by `go run`, which
 // places it under the system temp directory.
@@ -126,9 +144,9 @@ func resolveHelperBinPath() (string, error) {
 		}
 		exeDir := filepath.Dir(exe)
 		candidates = append(candidates,
-			filepath.Join(exeDir, helperBinName),
-			filepath.Join(exeDir, "helper", helperBinName),
-			filepath.Join(filepath.Dir(exeDir), "helper", helperBinName),
+			filepath.Join(exeDir, helperFile),
+			filepath.Join(exeDir, "helper", helperFile),
+			filepath.Join(filepath.Dir(exeDir), "helper", helperFile),
 		)
 		fallback = candidates[0]
 	}

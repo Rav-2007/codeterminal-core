@@ -1237,6 +1237,36 @@ one. The step is gone at HEAD — `43e17bc` replaced it with a comment block whe
 `darwin-arm64` left the target set — so this is a note for anyone reading the
 three archived fork runs, not a live defect.
 
+### R1.15 AMENDED — 2026-10-17: darwin-arm64 returns as the terminal app only
+
+*Appended, like the section above; nothing earlier is edited.*
+
+**The ruling, amended by the owner on 2026-10-17:** the macOS **terminal app**
+ships, unsigned, through the one-line installer. The macOS **VS Code package**
+stays deferred until the signing secrets exist.
+
+**Why the original reason does not reach the installer.** The ruling rested on
+Gatekeeper killing a *downloaded* unsigned Mach-O, and that kill is keyed on the
+`com.apple.quarantine` attribute. Browsers and apps that opt in set it; `curl`,
+which `install.sh` uses, does not, and the installer clears it from what it
+unpacks anyway. Go signs darwin/arm64 binaries ad hoc, which is all an
+unquarantined binary on Apple Silicon needs to run.
+
+**How it is held to that:** release.yml's `smoke` job installs with the real
+installer on a `macos-latest` runner and runs the app. It checks the version, the
+model download, a real index (the CGO helper and onnxruntime on macOS) and an
+answer through a stand-in provider, before any tag can draft a release. That is
+the first time the helper has run on macOS at all.
+
+**In the machinery:** `scripts/release-targets.txt` gained a fourth column,
+`ships`. darwin-arm64 is `none` for signing and `bin` for ships, so it is built
+into an install archive and never into a `.vsix`. `scripts/target-parity.sh`
+enforces the split: the `.vsix` loop and `stage-runtime.js` against the
+`vsix+bin` targets, everything else against all of them.
+
+**Left open:** the `.vsix` for darwin, Intel Macs (no onnxruntime build exists),
+and the Authenticode question for Windows, all unchanged.
+
 ## R1.16 — A gate whose expected count is derived from the list it validates
 
 **What it is.** SEVEN gates in this repository compute "how many things should I

@@ -64,21 +64,40 @@ say()  { echo "target-parity: $*"; }
 err()  { echo "target-parity: $*" >&2; failures=$((failures + 1)); }
 
 # expected_targets prints the target names from the source of truth, in order.
-expected_targets() { # expected_targets <targets-file>
-  local name signing rest
-  while read -r name signing rest; do
+# With "vsix" it prints only the targets that also ship a .vsix (ships =
+# vsix+bin); the terminal-only ones (ships = bin) are left out.
+expected_targets() { # expected_targets <targets-file> [all|vsix]
+  local name signing runner ships rest
+  while read -r name signing runner ships rest; do
     case "$name" in "" | \#* | "signing-required:") continue ;; esac
+    if [ "${2:-all}" = "vsix" ] && [ "$ships" != "vsix+bin" ]; then continue; fi
     echo "$name"
   done < "$1"
 }
 
 # expected_runners prints "<target> <runner>" pairs from the source of truth.
 expected_runners() { # expected_runners <targets-file>
-  local name signing runner
-  while read -r name signing runner; do
+  local name signing runner rest
+  while read -r name signing runner rest; do
     case "$name" in "" | \#* | "signing-required:") continue ;; esac
     echo "$name $runner"
   done < "$1"
+}
+
+# check_ships fails any target whose fourth column is missing or unknown. There
+# is no default, for the reason the signing column has none: adding a platform
+# means deciding what it ships, and an assumption would be a decision nobody made.
+check_ships() { # check_ships <targets-file>
+  local name signing runner ships rest bad=0
+  while read -r name signing runner ships rest; do
+    case "$name" in "" | \#* | "signing-required:") continue ;; esac
+    case "$ships" in
+      vsix+bin | bin) ;;
+      *) err "FAIL: target $name ships '${ships:-<nothing>}'; the fourth column must be vsix+bin or bin"
+         bad=1 ;;
+    esac
+  done < "$1"
+  return "$bad"
 }
 
 compare() { # compare <what> <expected-newline-list> <actual-newline-list>
@@ -112,14 +131,16 @@ run_check() { # run_check <root>
     fi
   done
 
-  local want want_pairs
+  local want want_vsix want_pairs
   want="$(expected_targets "$tfile")"
+  want_vsix="$(expected_targets "$tfile" vsix)"
   want_pairs="$(expected_runners "$tfile")"
   if [ -z "$want" ]; then
     err "FAIL: $tfile declares no targets; refusing to assert that four mirrors"
     err "      agree with nothing, which they trivially would"
     return 1
   fi
+  check_ships "$tfile" && say "ok -- every target says what it ships"
 
   # 1. the binaries matrix, as `- os: X` / `target: Y` pairs.
   local matrix
@@ -138,11 +159,25 @@ run_check() { # run_check <root>
   # was parsed as a third loop and failed the gate with a mismatch listing the
   # comment's own words as target names. A gate that cannot be described in
   # prose next to the thing it guards gets worked around, not fixed.
-  local n=0 line loop
+  #
+  # EACH LOOP SAYS WHICH SET IT COVERS, since 2026-10-17, when terminal-only
+  # targets arrived: a `# targets: all` or `# targets: vsix` marker on the loop
+  # line itself. The .vsix packaging loop covers only the targets that ship one;
+  # the binary and archive loops cover all. A loop with no marker fails rather
+  # than being guessed at.
+  local n=0 line loop scope expected
   while IFS= read -r line; do
     n=$((n + 1))
     loop="$(echo "$line" | sed 's/.*for TARGET in //; s/;.*//' | tr ' ' '\n' | grep -v '^$')"
-    compare "release.yml \`for TARGET in\` loop #$n" "$want" "$loop"
+    scope="$(echo "$line" | sed -n 's/.*# targets: \([a-z]*\).*/\1/p')"
+    case "$scope" in
+      all) expected="$want" ;;
+      vsix) expected="$want_vsix" ;;
+      *) err "FAIL: release.yml \`for TARGET in\` loop #$n has no '# targets: all' or '# targets: vsix' marker"
+         err "      on its line, so which targets it must cover cannot be checked"
+         continue ;;
+    esac
+    compare "release.yml \`for TARGET in\` loop #$n (targets: $scope)" "$expected" "$loop"
   done < <(grep -h 'for TARGET in' "$rel" | grep -v '^[[:space:]]*#')
   if [ "$n" -eq 0 ]; then
     err "FAIL: found no \`for TARGET in\` loop in release.yml. Either the"
@@ -157,7 +192,7 @@ run_check() { # run_check <root>
     err "FAIL: could not find the target regex in $stage. It is the only thing"
     err "      stopping a typo'd --target from packaging silently."
   else
-    compare "stage-runtime.js target regex" "$want" "$re"
+    compare "stage-runtime.js target regex (the .vsix targets)" "$want_vsix" "$re"
   fi
 
   # 5. NO LITERAL COUNT OF TARGETS ANYWHERE IN release.yml. Not a mirror -- the
@@ -205,12 +240,13 @@ self_test() {
     fi
   }
 
-  # mkfixture builds a miniature repo whose five places all agree.
+  # mkfixture builds a miniature repo whose five places all agree, with one
+  # terminal-only target (ships = bin) beside two that also ship a .vsix.
   mkfixture() { # mkfixture <dir>
     local d="$1"
     rm -rf "$d"
     mkdir -p "$d/scripts" "$d/.github/workflows" "$d/clients/vscode/scripts"
-    printf 'linux-x64    none    ubuntu-latest\nwin32-x64    none    windows-latest\nsigning-required: none\n' \
+    printf 'linux-x64    none    ubuntu-latest    vsix+bin\nwin32-x64    none    windows-latest    vsix+bin\ndarwin-arm64 none    macos-latest     bin\nsigning-required: none\n' \
       > "$d/scripts/release-targets.txt"
     cat > "$d/.github/workflows/release.yml" <<'YAML'
         include:
@@ -218,12 +254,14 @@ self_test() {
             target: linux-x64
           - os: windows-latest
             target: win32-x64
+          - os: macos-latest
+            target: darwin-arm64
       - run: |
-          for TARGET in linux-x64 win32-x64; do
+          for TARGET in linux-x64 win32-x64; do # targets: vsix
             echo "$TARGET"
           done
       - run: |
-          for TARGET in linux-x64 win32-x64; do
+          for TARGET in linux-x64 win32-x64 darwin-arm64; do # targets: all
             echo "$TARGET"
           done
 YAML
@@ -262,7 +300,7 @@ YAML
   run_check "$d" >/dev/null 2>&1; check "the RUNNER drifting is caught -> FAILS" fail $?
 
   d="$tmp/n6"; mkfixture "$d"
-  printf 'linux-x64    none    ubuntu-latest\nwin32-x64    none    windows-latest\ndarwin-arm64 required macos-latest\nsigning-required: none\n' \
+  printf 'linux-x64    none    ubuntu-latest    vsix+bin\nwin32-x64    none    windows-latest    vsix+bin\ndarwin-arm64 none    macos-latest     bin\nlinux-arm64  none    ubuntu-24.04-arm bin\nsigning-required: none\n' \
     > "$d/scripts/release-targets.txt"
   run_check "$d" >/dev/null 2>&1; check "adding a target to the FILE alone -> FAILS" fail $?
 
@@ -306,6 +344,34 @@ YAML
   printf '      # this assertion used to read -eq 3 and nothing noticed\n' \
     >> "$d/.github/workflows/release.yml"
   run_check "$d" >/dev/null 2>&1; check "a COMMENT naming a stale count -> green" pass $?
+
+  # TERMINAL-ONLY TARGETS (ships = bin), since 2026-10-17. Each arm drifts one
+  # way the two sets can be confused.
+  d="$tmp/n14"; mkfixture "$d"
+  sed -i 's/(linux-x64|win32-x64)/(linux-x64|win32-x64|darwin-arm64)/' "$d/clients/vscode/scripts/stage-runtime.js"
+  run_check "$d" >/dev/null 2>&1; check "a terminal-only target in the .vsix regex -> FAILS" fail $?
+
+  d="$tmp/n15"; mkfixture "$d"
+  sed -i 's/linux-x64 win32-x64; do # targets: vsix/linux-x64 win32-x64 darwin-arm64; do # targets: vsix/' \
+    "$d/.github/workflows/release.yml"
+  run_check "$d" >/dev/null 2>&1; check "a terminal-only target in the .vsix loop -> FAILS" fail $?
+
+  d="$tmp/n16"; mkfixture "$d"
+  sed -i 's/linux-x64 win32-x64 darwin-arm64; do # targets: all/linux-x64 win32-x64; do # targets: all/' \
+    "$d/.github/workflows/release.yml"
+  run_check "$d" >/dev/null 2>&1; check "a terminal-only target missing from an all-targets loop -> FAILS" fail $?
+
+  d="$tmp/n17"; mkfixture "$d"
+  sed -i 's/ # targets: all//' "$d/.github/workflows/release.yml"
+  run_check "$d" >/dev/null 2>&1; check "a loop with no targets marker -> FAILS" fail $?
+
+  d="$tmp/n18"; mkfixture "$d"
+  sed -i 's/macos-latest     bin/macos-latest/' "$d/scripts/release-targets.txt"
+  run_check "$d" >/dev/null 2>&1; check "a target that does not say what it ships -> FAILS" fail $?
+
+  d="$tmp/n19"; mkfixture "$d"
+  sed -i 's/macos-latest     bin/macos-latest     vsix/' "$d/scripts/release-targets.txt"
+  run_check "$d" >/dev/null 2>&1; check "an unknown ships value -> FAILS" fail $?
 
   echo "target-parity: $pass passed, $fail failed"
   echo "NOT COVERED HERE: whether the targets are the right ones, whether the"

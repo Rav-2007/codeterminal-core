@@ -94,3 +94,20 @@ func TestFindSubcommandMatchesExactlyAndNothingElse(t *testing.T) {
 		}
 	}
 }
+
+// `--version` is how the installers check that the daemon they unpacked runs
+// and is the release they meant, so every spelling people type must reach the
+// version command -- and nothing merely close to one may.
+func TestVersionAnswersItsSpellingsAndNothingClose(t *testing.T) {
+	for _, name := range []string{"version", "--version", "-version"} {
+		sc, ok := findSubcommand(name)
+		if !ok || sc.name != "version" {
+			t.Errorf("findSubcommand(%q) = %q, %v; want the version command", name, sc.name, ok)
+		}
+	}
+	for _, name := range []string{"--versio", "-v", "--Version", "versions"} {
+		if _, ok := findSubcommand(name); ok {
+			t.Errorf("%q resolved to a subcommand; only exact spellings may", name)
+		}
+	}
+}
