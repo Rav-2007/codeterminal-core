@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -190,6 +191,16 @@ func extractArchiveMember(archivePath, memberPath, destPath string) error {
 	}
 }
 
+// archiveMemberMatches reports whether the archive entry called name is the
+// pinned member, comparing the two cleaned. Microsoft's macOS archive stores
+// every member as ./onnxruntime-osx-arm64-1.26.0/..., its Linux and Windows
+// ones without the ./, and the byte comparison this replaced therefore never
+// found the Mac library: code search was off on every Mac, first seen by the
+// 1.1.0 release rehearsal, the first run on one (2026-10-18).
+func archiveMemberMatches(name, member string) bool {
+	return path.Clean(name) == path.Clean(member)
+}
+
 func extractFromTarGz(archivePath, memberPath, destPath string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -212,8 +223,11 @@ func extractFromTarGz(archivePath, memberPath, destPath string) error {
 		if err != nil {
 			return fmt.Errorf("reading tar entries: %w", err)
 		}
-		if hdr.Name != memberPath {
+		if !archiveMemberMatches(hdr.Name, memberPath) {
 			continue
+		}
+		if !hdr.FileInfo().Mode().IsRegular() {
+			return fmt.Errorf("member %s is not a regular file in the archive", memberPath)
 		}
 		return writeExtractedFile(destPath, tr)
 	}
@@ -227,8 +241,11 @@ func extractFromZip(archivePath, memberPath, destPath string) error {
 	defer zr.Close()
 
 	for _, f := range zr.File {
-		if f.Name != memberPath {
+		if !archiveMemberMatches(f.Name, memberPath) {
 			continue
+		}
+		if !f.FileInfo().Mode().IsRegular() {
+			return fmt.Errorf("member %s is not a regular file in the archive", memberPath)
 		}
 		rc, err := f.Open()
 		if err != nil {
