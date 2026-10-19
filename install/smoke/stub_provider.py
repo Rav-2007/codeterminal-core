@@ -2,7 +2,8 @@
 
 It speaks just enough of the OpenAI-compatible chat API for Mochiii to finish
 one answer: every POST to .../chat/completions gets a short streamed reply
-containing SMOKE-ANSWER-OK. Each request body is appended, one JSON document
+containing SMOKE-ANSWER-OK (two minutes late when the question contains
+SMOKE-SLOW). Each request body is appended, one JSON document
 per line, to the file named by the second argument, so the test can check what
 Mochiii actually sent -- in particular that the fixture project's code reached
 the prompt, which proves retrieval worked end to end.
@@ -14,9 +15,12 @@ Standard library only: it runs on every CI runner as it is.
 
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ANSWER = "SMOKE-ANSWER-OK: the burrow survey is folded into one number by quokkaChecksum."
+# A question containing this is answered two minutes late.
+SLOW = b"SMOKE-SLOW"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -37,6 +41,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.rstrip("/").endswith("/chat/completions"):
             self._json(404, {"error": {"message": "not found"}})
             return
+        if SLOW in body:
+            # Keeps the asking mochiii open, for the smoke test of an upgrade
+            # that must refuse while one is running.
+            time.sleep(120)
         try:
             stream = json.loads(body or b"{}").get("stream", False)
         except ValueError:

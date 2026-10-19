@@ -88,27 +88,130 @@ function Install-Mochiii {
         }
     }
 
-    # Runs $action until it succeeds, for up to 15 seconds, and returns the last
-    # error, or $null. A program that has just exited can keep its files open a
-    # moment longer -- an antivirus scan, or on Windows on ARM the x64 emulator's
-    # translation cache -- and the 1.1.0 rehearsal's Windows on ARM run failed its
-    # upgrade on exactly that, where x64 did not.
-    function Invoke-Retrying([scriptblock]$action) {
-        $last = $null
-        for ($i = 0; $i -lt 30; $i++) {
-            try { & $action; return $null } catch { $last = $_.Exception.Message; Start-Sleep -Milliseconds 500 }
+    # An open mochiii, or any Mochiii program but the background service, running
+    # from $bin. It is not the installer's to stop, and while it runs Windows will
+    # not move the folder, so the install stops before changing anything and
+    # names it.
+    function Assert-NothingElseRunning {
+        $others = @(Get-FromBin | Where-Object { $_.ProcessName -notin "mochiii-daemon", "mochiii-embedder-helper" })
+        if ($others.Count -gt 0) {
+            $names = ($others | ForEach-Object { "$($_.ProcessName) (process $($_.Id))" }) -join ", "
+            throw "Close $names, which is running from $bin, and run this again. Nothing was changed."
         }
-        return $last
     }
 
-    # Why $bin could not be moved: the error, and whatever still runs from it.
-    function Get-Why([string]$err) {
-        $held = @(Get-FromBin | ForEach-Object { "$($_.ProcessName) (process $($_.Id))" })
-        if ($held.Count -gt 0) { return "$err Still running from it: $($held -join ', ')." }
-        return "$err Nothing is running from it any more; try again."
+    # WHO HAS A FOLDER'S FILES OPEN, from the Windows Restart Manager, for the
+    # messages below. Compiled only when a wait happens (C# 5, which Windows
+    # PowerShell 5.1 compiles); where it cannot be, as in Constrained Language
+    # Mode, the names are left out and nothing else changes.
+    $rmSource = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace MochiiiInstall {
+    public static class FileHolders {
+        [StructLayout(LayoutKind.Sequential)]
+        struct RmUniqueProcess { public int ProcessId; public System.Runtime.InteropServices.ComTypes.FILETIME StartTime; }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct RmProcessInfo {
+            public RmUniqueProcess Process;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string AppName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string ServiceShortName;
+            public int ApplicationType;
+            public uint AppStatus;
+            public uint TSSessionId;
+            [MarshalAs(UnmanagedType.Bool)] public bool Restartable;
+        }
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        static extern int RmStartSession(out uint session, int flags, StringBuilder key);
+        [DllImport("rstrtmgr.dll")]
+        static extern int RmEndSession(uint session);
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        static extern int RmRegisterResources(uint session, uint nFiles, string[] files, uint nApps, RmUniqueProcess[] apps, uint nServices, string[] services);
+        [DllImport("rstrtmgr.dll")]
+        static extern int RmGetList(uint session, out uint needed, ref uint count, [In, Out] RmProcessInfo[] infos, ref uint rebootReasons);
+
+        // One entry per holder: "process id|name".
+        public static string[] Of(string[] files) {
+            uint session;
+            int rc = RmStartSession(out session, 0, new StringBuilder(33));
+            if (rc != 0) { throw new System.ComponentModel.Win32Exception(rc); }
+            try {
+                rc = RmRegisterResources(session, (uint)files.Length, files, 0, null, 0, null);
+                if (rc != 0) { throw new System.ComponentModel.Win32Exception(rc); }
+                for (int attempt = 0; attempt < 3; attempt++) {
+                    uint needed, count = 0, reasons = 0;
+                    rc = RmGetList(session, out needed, ref count, null, ref reasons);
+                    if (rc == 0) { return new string[0]; }
+                    if (rc != 234) { throw new System.ComponentModel.Win32Exception(rc); }
+                    RmProcessInfo[] infos = new RmProcessInfo[needed];
+                    count = needed;
+                    rc = RmGetList(session, out needed, ref count, infos, ref reasons);
+                    if (rc == 234) { continue; }
+                    if (rc != 0) { throw new System.ComponentModel.Win32Exception(rc); }
+                    List<string> result = new List<string>();
+                    for (int i = 0; i < count; i++) { result.Add(infos[i].Process.ProcessId + "|" + infos[i].AppName); }
+                    return result.ToArray();
+                }
+                throw new InvalidOperationException("the list of holders kept changing");
+            } finally {
+                RmEndSession(session);
+            }
+        }
+    }
+}
+'@
+    function Get-FileHolders([string]$dir) {
+        if (-not ('MochiiiInstall.FileHolders' -as [type])) {
+            try { Add-Type -TypeDefinition $rmSource -Language CSharp -ErrorAction Stop } catch { return @() }
+        }
+        $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+        if ($files.Count -eq 0) { return @() }
+        $raw = try { [MochiiiInstall.FileHolders]::Of($files) } catch { return @() }
+        @($raw | ForEach-Object {
+                $id, $app = $_ -split '\|', 2
+                $image = try { (Get-Process -Id $id -ErrorAction Stop).ProcessName } catch { $app }
+                "$image (process $id)"
+            })
     }
 
-    $stillRunning = "Mochiii is still running from $bin -- most likely an open mochiii in another window. Close it and run this again"
+    # Runs $action on $dir until it succeeds, waiting out a hold on the folder's
+    # files. WINDOWS DEFENDER holds the files of a program that has just exited
+    # for a moment -- measured 2026-10-19 on GitHub's Windows on ARM runner: the
+    # folder was refused for 287 ms after the service stopped, Restart Manager
+    # saw no process (Defender scans from the kernel), and with the folder
+    # excluded from scanning it was free at once. GitHub's x64 image has Defender
+    # off, which is why only ARM showed it; every real Windows has it on. So a
+    # refusal is waited out, saying what for, for up to 30 seconds -- about a
+    # hundred times the measured hold -- and past that it fails with the error
+    # and whoever holds the files. $after ends that failure message.
+    function Invoke-OnFolder([string]$dir, [scriptblock]$action, [string]$doing, [string]$after) {
+        $deadline = (Get-Date).AddSeconds(30)
+        $waiting = $false
+        while ($true) {
+            try { & $action; return } catch { $err = $_.Exception.Message }
+            if ((Get-Date) -gt $deadline) {
+                $held = @(Get-FileHolders $dir)
+                $who = if ($held.Count) { $held -join ", " } else { "Windows, with no program holding them (usually a security scan)" }
+                throw "$doing failed: the files in $dir were still in use after 30 seconds, by $who. $after ($err)"
+            }
+            if (-not $waiting) {
+                $held = @(Get-FileHolders $dir)
+                if ($held.Count) { Note "waiting for $($held -join ', ') to let go of the files in $dir..." }
+                else { Note "waiting for Windows to let go of the files in $dir (usually a security scan)..." }
+                $waiting = $true
+            }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+
+    # Folders an earlier run could not remove, because their files were still held.
+    function Remove-Leftovers {
+        # -like, not -Filter: Windows wildcards treat a trailing ".*" as optional.
+        Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "bin.old.*" } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 
     function Remove-FromUserPath {
         $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -119,11 +222,12 @@ function Install-Mochiii {
 
     if ($Uninstall) {
         Step "Removing Mochiii"
+        Assert-NothingElseRunning
         Stop-Ours
         if (Test-Path $bin) {
-            $err = Invoke-Retrying { Remove-Item -Recurse -Force $bin }
-            if ($err) { throw "$stillRunning. ($(Get-Why $err))" }
+            Invoke-OnFolder $bin { Remove-Item -LiteralPath $bin -Recurse -Force } "Removing Mochiii" "Run this again to finish removing it."
         }
+        Remove-Leftovers
         if ((Test-Path $root) -and -not (Get-ChildItem $root -Force)) { Remove-Item -Force $root }
         Remove-FromUserPath
         if ($Purge) {
@@ -204,13 +308,15 @@ function Install-Mochiii {
         $installed = "$reported".Substring(8).Trim()
         if ($Version -and $installed -ne $Version) { throw "Asked for $Version but the download says it is $installed." }
 
-        Stop-Ours
-        if (Test-Path $bin) {
-            $err = Invoke-Retrying { Rename-Item -Path $bin -NewName (Split-Path $previous -Leaf) }
-            if ($err) {
-                Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
-                throw "$stillRunning; nothing was changed. ($(Get-Why $err))"
+        try {
+            Assert-NothingElseRunning
+            Stop-Ours
+            if (Test-Path $bin) {
+                Invoke-OnFolder $bin { Rename-Item -LiteralPath $bin -NewName (Split-Path $previous -Leaf) } "Upgrading" "The installed version is unchanged."
             }
+        } catch {
+            Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+            throw
         }
         try {
             Move-Item -Path $staging -Destination $bin
@@ -219,7 +325,16 @@ function Install-Mochiii {
             Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
             throw
         }
-        if (Test-Path $previous) { Remove-Item -Recurse -Force $previous }
+        # The new version is in place. The old one's files can still be held for a
+        # moment, as above; if they stay held, the next run removes the folder.
+        if (Test-Path $previous) {
+            try {
+                Invoke-OnFolder $previous { Remove-Item -LiteralPath $previous -Recurse -Force } "Removing the previous version" ""
+            } catch {
+                Note "the previous version's folder is still in use, and the next install removes it: $previous"
+            }
+        }
+        Remove-Leftovers
         Step "Installed Mochiii $installed in $bin"
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

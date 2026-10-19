@@ -98,6 +98,13 @@ being asked for that folder. Other options:
   agent tools work regardless.
 - Code search is off on Windows: install the Visual C++ runtime from
   <https://aka.ms/vs/17/release/vc_redist.x64.exe>.
+- A Windows upgrade or uninstall says "Close mochiii (process N)": a `mochiii`
+  is still open in another window. Close it and run the command again; nothing
+  was changed.
+- A Windows upgrade or uninstall says it is "waiting for Windows to let go of
+  the files": Windows Defender is still scanning programs that were just
+  stopped. That usually takes under a second, and the installer waits up to 30
+  seconds before giving up with the name of whatever holds the files.
 - An Intel Mac is refused: onnxruntime, which runs the code-search model, has no
   Intel Mac build.
 - No warnings at install time: SmartScreen and Gatekeeper act on files a browser

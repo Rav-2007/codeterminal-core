@@ -328,6 +328,74 @@ if (-not (Select-String -Path (Join-Path $work "bad.log") -Pattern "Checksum mis
 if (((& (Join-Path $bin "mochiii.exe") --version | Out-String).Trim()) -ne "mochiii $Version") { Fail "a refused install broke the installed version" }
 Pass "a tampered archive was refused and the installed version still runs"
 
+# Prints the installer's "waiting for ..." notes from a log, so a run records what
+# an upgrade or uninstall waited on (see the lock probe above).
+function Show-Waits([string]$log, [string]$what) {
+    Select-String -Path $log -Pattern "waiting for" | ForEach-Object { Write-Host "note - ${what}: $($_.Line.Trim())" }
+}
+
+# Whether a log says $pattern. Windows PowerShell word-wraps an error message at
+# its console width (the 1.1.0 rehearsal's logs show it), so line breaks and runs
+# of spaces are collapsed before matching.
+function Test-LogSays([string]$log, [string]$pattern) {
+    ((Get-Content -Raw $log) -replace '\s+', ' ') -match $pattern
+}
+
+# The installer's staging and old-version folders (bin.new.N, bin.old.N) beside
+# $bin. Matched with -like, not -Filter: a Windows filter "bin.*" also matches
+# "bin" itself.
+function Get-Staging {
+    @(Get-ChildItem -LiteralPath (Split-Path $bin -Parent) -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "bin.*" })
+}
+
+# 6a. an open mochiii -- here one waiting on a slow answer -- is not the
+#     installer's to stop. The upgrade must stop before changing anything, and
+#     name it.
+$open = Start-Process -FilePath (Join-Path $bin "mochiii.exe") -ArgumentList @("--workspace", "`"$project`"", "--prompt", "SMOKE-SLOW") `
+    -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $work "open.out") -RedirectStandardError (Join-Path $work "open.err")
+$script:servers += $open
+$deadline = (Get-Date).AddSeconds(60)
+while (-not (Select-String -Path $requests -Pattern "SMOKE-SLOW" -Quiet)) {
+    if ((Get-Date) -gt $deadline) { Fail "the slow question never reached the stand-in provider" }
+    Start-Sleep -Milliseconds 200
+}
+$daemonsBefore = @(Get-Ours "mochiii-daemon" | ForEach-Object { $_.Id })
+$code = Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "open.log")
+Stop-Process -Id $open.Id -Force -ErrorAction SilentlyContinue
+if ($code -eq 0) { Fail "the installer upgraded while a mochiii was open" }
+if (-not (Test-LogSays (Join-Path $work "open.log") "Close mochiii \(process $($open.Id)\)")) {
+    Fail ("the upgrade was refused, but not by naming the open mochiii (process $($open.Id)):`n" + (Get-Content -Raw (Join-Path $work "open.log")))
+}
+foreach ($id in $daemonsBefore) {
+    if (@(Get-Ours "mochiii-daemon" | Where-Object { $_.Id -eq $id }).Count -eq 0) { Fail "the refused upgrade stopped the background service (process $id) anyway" }
+}
+if (@(Get-Staging).Count -gt 0) { Fail "the refused upgrade left a staging folder behind" }
+Pass "an open mochiii stopped the upgrade by name, and nothing was changed"
+
+# 6b. a file held by another program -- this test, opening one without letting
+#     it be moved, as a security scanner does. The upgrade must wait, say what
+#     for, give up after its limit naming the holder, and leave the installed
+#     version in place.
+$held = [IO.File]::Open((Join-Path $bin "models.json"), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    $code = Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "held.log")
+} finally {
+    $held.Dispose()
+}
+$heldLog = Join-Path $work "held.log"
+if ($code -eq 0) { Fail "the installer upgraded while a file in the install was held open" }
+foreach ($want in "waiting for pwsh \(process $PID\)", "still in use after 30 seconds, by pwsh \(process $PID\)") {
+    if (-not (Test-LogSays $heldLog $want)) {
+        Fail ("the held file was not reported as '$want':`n" + (Get-Content -Raw $heldLog))
+    }
+}
+if (((& (Join-Path $bin "mochiii.exe") --version | Out-String).Trim()) -ne "mochiii $Version") { Fail "the refused upgrade broke the installed version" }
+if (@(Get-Staging).Count -gt 0) { Fail "the refused upgrade left a staging folder behind" }
+Pass "a held file was waited on, named, and the installed version kept"
+# 6b stopped the background service before it found the file held; step 6 needs one.
+$out = (& (Join-Path $bin "mochiii.exe") --workspace $project --prompt "before the upgrade?" 2>$null | Out-String)
+if ($out -notmatch "SMOKE-ANSWER-OK") { Fail "no answer before the upgrade: $out" }
+
 # 6. re-install while the background service is running. The installer must stop
 #    it: Windows will not rename a folder a running program was started from.
 $before = @(Get-Ours "mochiii-daemon" | ForEach-Object { $_.Id })
@@ -339,6 +407,7 @@ $now = @(Get-Ours "mochiii-daemon" | ForEach-Object { $_.Id })
 foreach ($id in $before) { if ($now -contains $id) { Fail "re-installing left the old background service (process $id) running" } }
 $out = (& (Join-Path $bin "mochiii.exe") --workspace $project --prompt "again?" 2>$null | Out-String)
 if ($out -notmatch "SMOKE-ANSWER-OK") { Fail "no answer after re-installing: $out" }
+Show-Waits (Join-Path $work "reinstall.log") "upgrade"
 Pass "re-installed over a running background service: the old one was stopped, and the new one answers"
 
 # 7. stop, then uninstall. Every stop here is TerminateProcess, which runs none
@@ -359,7 +428,9 @@ Pass "mochiii --stop ended the background service and its embedder helper"
 $env:MOCHIII_UNINSTALL = "1"
 if ((Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "uninstall.log")) -ne 0) { Fail "uninstall failed" }
 Remove-Item Env:MOCHIII_UNINSTALL
+Show-Waits (Join-Path $work "uninstall.log") "uninstall"
 if (Test-Path $bin) { Fail "uninstall left $bin" }
+if (@(Get-Staging).Count -gt 0) { Fail "uninstall left an old version's folder behind" }
 if (-not (Test-Path (Join-Path $env:USERPROFILE ".mochiii\models"))) { Fail "uninstall removed the downloaded models, which it must keep" }
 Pass "uninstalled; models and settings kept"
 
