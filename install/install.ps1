@@ -177,15 +177,18 @@ namespace MochiiiInstall {
     }
 
     # Runs $action on $dir until it succeeds, waiting out a hold on the folder's
-    # files. WINDOWS DEFENDER holds the files of a program that has just exited
-    # for a moment -- measured 2026-10-19 on GitHub's Windows on ARM runner: the
-    # folder was refused for 287 ms after the service stopped, Restart Manager
-    # saw no process (Defender scans from the kernel), and with the folder
-    # excluded from scanning it was free at once. GitHub's x64 image has Defender
-    # off, which is why only ARM showed it; every real Windows has it on. So a
-    # refusal is waited out, saying what for, for up to 30 seconds -- about a
-    # hundred times the measured hold -- and past that it fails with the error
-    # and whoever holds the files. $after ends that failure message.
+    # files. WINDOWS ITSELF BRIEFLY HOLDS THE FILES OF A PROGRAM THAT HAS JUST
+    # EXITED. Measured on GitHub's Windows on ARM runner by the smoke test's lock
+    # probe (2026-10-19, two runs): the folder was refused for 176-316 ms after
+    # the service stopped, by a different holder each time and never one of ours
+    # -- Windows Defender (which Restart Manager cannot see: the hold vanished
+    # with the folder excluded from scanning), the x64 emulator's translation
+    # cache (the XtaCache service), and another system process. GitHub's x64
+    # image has Defender off and needs no emulator, so it showed none; a real
+    # Windows has Defender on. So a refusal is waited out, saying what for, for
+    # up to 30 seconds -- about a hundred times the longest measured hold -- and
+    # past that it fails with the error and whoever holds the files. $after ends
+    # that failure message.
     function Invoke-OnFolder([string]$dir, [scriptblock]$action, [string]$doing, [string]$after) {
         $deadline = (Get-Date).AddSeconds(30)
         $waiting = $false

@@ -276,8 +276,10 @@ Pass "mochiii started its own background service, searched the project and answe
 # LOCK PROBE (2026-10-19). What holds the install folder just after its programs
 # are stopped, and for how long: on Windows on ARM an upgrade once could not
 # rename it after stopping them, where x64 could. Measured as is, then with
-# Windows Defender told to skip the folder, which says whether Defender is the
-# holder. A report for the record: it never fails the run.
+# Windows Defender told to skip the folder, which separates Defender's part from
+# the rest. The holder differs from run to run (Defender, the x64 emulator's
+# cache, other system processes), so each run is a sample, not a verdict. A
+# report for the record: it never fails the run.
 $label = "LOCK PROBE ($env:PROCESSOR_ARCHITECTURE)"
 function Write-Probe([string]$line) {
     Write-Host $line
