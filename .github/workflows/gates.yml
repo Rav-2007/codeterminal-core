@@ -69,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v shellcheck >/dev/null || { echo "::error::shellcheck is not on this runner"; exit 1; }
-          shellcheck -s sh install/install.sh install/build-archive.sh install/check-notices.sh install/smoke/run-smoke.sh
+          shellcheck -s sh install/install.sh install/build-archive.sh install/check-notices.sh install/smoke/run-smoke.sh install/smoke/old-glibc.sh
           pwsh -NoProfile -Command '
             $bad = 0
             foreach ($f in "install/install.ps1", "install/smoke/run-smoke.ps1") {
@@ -280,8 +280,7 @@ jobs:
       # Kept anyway: that matrix is the part of CI the hosted-runner skip switch
       # can disable, and three of this repository's historical scheduled reds
       # were infrastructure rather than code. Seconds on a Linux runner, and it
-      # survives a billing outage. helper is excluded for the reason
-      # CROSSVET_MODULES records -- cgo against onnxruntime fails on build
-      # constraints rather than on anything this gate asks about.
+      # survives a billing outage. helper joined on 2026-10-19, once its ONNX
+      # Runtime binding stopped being cgo (see CROSSVET_MODULES).
       - name: Windows files compile and vet from here
         run: make crossvet

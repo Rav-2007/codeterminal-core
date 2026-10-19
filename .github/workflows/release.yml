@@ -94,14 +94,12 @@ jobs:
   # Binaries are built on the OS they run on. NOT cross-compiled, and that is a
   # decision rather than an omission.
   #
-  # `helper` requires CGO -- measured: CGO_ENABLED=0 fails with
-  # "onnxruntime_go: build constraints exclude all Go files". onnxruntime itself
-  # is dlopen'd at runtime (ort.SetSharedLibraryPath), so a cross-build would
-  # need only a C toolchain for the target and no onnxruntime at all -- mingw-w64
-  # would genuinely work for Windows. macOS is where it stops: cross-building
-  # needs an Apple SDK whose redistribution is constrained, and the signing and
-  # notarisation steps must run on macOS regardless. Native everywhere is one
-  # rule instead of two, and CI already has both runners green.
+  # Until 2026-10-19 it was also a necessity: `helper` required CGO, because
+  # onnxruntime_go is cgo-only. helper/internal/ort now calls ONNX Runtime's C
+  # API without cgo, so every binary here builds with CGO_ENABLED=0 and could be
+  # cross-compiled from one runner. They stay native because each target's
+  # binaries are then built on the OS whose smoke job runs them, and a signing
+  # step, when one comes, has to run on macOS regardless.
   # ---------------------------------------------------------------------------
   binaries:
     name: binaries (${{ matrix.target }})
@@ -160,9 +158,9 @@ jobs:
           echo "value=$V" >> "$GITHUB_OUTPUT"
           echo "stamping version: $V"
 
-      # CGO_ENABLED is explicit on both, in opposite directions, because the
-      # difference is the entire reason the helper is a separate process:
-      # the daemon must stay pure Go, and CGO is confined to the helper.
+      # CGO_ENABLED=0 on every binary, explicitly. It was 1 on the helper until
+      # 2026-10-19, when its ONNX Runtime binding stopped being cgo; a C
+      # toolchain on the runner must never be what a build silently depends on.
       #
       # -trimpath on both. MEASURED without it on this tree: a plain build
       # embedded 678 absolute paths, starting with the build machine's home
@@ -177,11 +175,11 @@ jobs:
         env:
           CGO_ENABLED: 0
 
-      - name: Build embedder helper (CGO)
+      - name: Build embedder helper (pure Go)
         run: go build -trimpath -ldflags "-X main.version=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii-embedder-helper${{ startsWith(matrix.target, 'win32') && '.exe' || '' }}" .
         working-directory: helper
         env:
-          CGO_ENABLED: 1
+          CGO_ENABLED: 0
 
       # THE TERMINAL CLIENT, added 2026-09-04. It was absent from this workflow
       # entirely -- recorded as R1.14, and the reason that row is now closed
@@ -551,6 +549,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./install/smoke/run-smoke.ps1 -Dist dist -Version "${{ needs.package.outputs.version }}"
+      # The glibc floor the install docs state, measured on the release's own
+      # programs: code search on Ubuntu 18.04 (glibc 2.27), and every program
+      # starting on CentOS 7 (2.17). See the script for why these two.
+      - name: Code search on old glibc
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sh install/smoke/old-glibc.sh dist "${{ matrix.label }}"
 
   # Only a tag drafts a release, and only after every platform's smoke test
   # passed: a release whose install command fails anywhere it promises to work

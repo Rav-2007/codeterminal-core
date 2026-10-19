@@ -796,9 +796,10 @@ function main() {
     } else {
       const bin = readEntry(buf, helperEntry);
       checkBinaryToolchain('helper binary', bin, goFloorFromWorkspace(), failures);
-      // The helper needs CGO (onnxruntime_go has no pure-Go build), so only the
-      // trimming is required of it.
-      checkBinaryBuild('helper binary', bin, { pureGo: false }, failures);
+      // Pure Go like the daemon since 2026-10-19 (helper/internal/ort): a CGO
+      // helper would link the build machine's glibc again, which is what tied
+      // code search to glibc 2.34 when onnxruntime itself needs 2.27.
+      checkBinaryBuild('helper binary', bin, { pureGo: true }, failures);
       if (notices) linkedModules += checkNoticesCoverGoDeps('helper binary', bin, notices, failures);
       const header = bin.subarray(0, 4);
       const isElf = header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46;

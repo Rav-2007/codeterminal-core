@@ -290,6 +290,21 @@ jobs:
             ./ 2>&1 | tee "$RUNNER_TEMP/eval.log"
         working-directory: daemon
 
+      # THE ONNX RUNTIME BINDING AGAINST THE REAL MODEL (2026-10-19). Every
+      # helper/internal/ort test that loads ONNX Runtime -- the golden vectors,
+      # teardown in either order, the thread count -- skips in every other job,
+      # because no other job has the model. This one has just downloaded it into
+      # ~/.mochiii/models, so it runs them here. The golden vectors were written
+      # on another CPU, so this checks them to goldenCosine, not bit for bit. A
+      # skipped vector test fails the step: green must mean they ran.
+      - name: The embedder helper's tests, against the real model
+        run: |
+          set -o pipefail
+          go test -count=1 -v ./... 2>&1 | tee "$RUNNER_TEMP/helper.log" | grep -E '^(--- |ok|FAIL|panic)'
+          grep -q -- '--- PASS: TestTheBindingComputesTheGoldenVectors' "$RUNNER_TEMP/helper.log" \
+            || { echo "the golden-vector test did not run: the model is not where the helper's tests look"; exit 1; }
+        working-directory: helper
+
       # The verdict for a change measured against its base. `always()` so a
       # change whose eval run failed for another reason still shows what it did
       # to the questions. A missing or unfinished log is eval-delta.sh's exit 2,
