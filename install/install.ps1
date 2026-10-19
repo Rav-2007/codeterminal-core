@@ -70,18 +70,42 @@ function Install-Mochiii {
     # spellings are matched: the terminal app starts the daemon by its long path
     # (Go's filepath.EvalSymlinks expands short names), while %LOCALAPPDATA% can
     # be short.
-    function Stop-Ours {
+    function Get-FromBin([string[]]$names) {
         $dirs = @($bin, (Get-LongPath $bin)) | ForEach-Object { $_.TrimEnd("\") + "\" }
-        $procs = @(Get-Process -Name "mochiii-daemon", "mochiii-embedder-helper" -ErrorAction SilentlyContinue |
-                Where-Object {
-                    $path = $_.Path
-                    $path -and @($dirs | Where-Object { $path.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
-                })
+        $procs = if ($names) { Get-Process -Name $names -ErrorAction SilentlyContinue } else { Get-Process -ErrorAction SilentlyContinue }
+        @($procs | Where-Object {
+                $path = try { $_.Path } catch { $null }
+                $path -and @($dirs | Where-Object { $path.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+            })
+    }
+
+    function Stop-Ours {
+        $procs = @(Get-FromBin "mochiii-daemon", "mochiii-embedder-helper")
         if ($procs.Count -gt 0) {
             $procs | Stop-Process -Force -ErrorAction SilentlyContinue
             $procs | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
             Note "stopped the running background service; the next 'mochiii' starts the new one"
         }
+    }
+
+    # Runs $action until it succeeds, for up to 15 seconds, and returns the last
+    # error, or $null. A program that has just exited can keep its files open a
+    # moment longer -- an antivirus scan, or on Windows on ARM the x64 emulator's
+    # translation cache -- and the 1.1.0 rehearsal's Windows on ARM run failed its
+    # upgrade on exactly that, where x64 did not.
+    function Invoke-Retrying([scriptblock]$action) {
+        $last = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            try { & $action; return $null } catch { $last = $_.Exception.Message; Start-Sleep -Milliseconds 500 }
+        }
+        return $last
+    }
+
+    # Why $bin could not be moved: the error, and whatever still runs from it.
+    function Get-Why([string]$err) {
+        $held = @(Get-FromBin | ForEach-Object { "$($_.ProcessName) (process $($_.Id))" })
+        if ($held.Count -gt 0) { return "$err Still running from it: $($held -join ', ')." }
+        return "$err Nothing is running from it any more; try again."
     }
 
     $stillRunning = "Mochiii is still running from $bin -- most likely an open mochiii in another window. Close it and run this again"
@@ -97,7 +121,8 @@ function Install-Mochiii {
         Step "Removing Mochiii"
         Stop-Ours
         if (Test-Path $bin) {
-            try { Remove-Item -Recurse -Force $bin } catch { throw "$stillRunning." }
+            $err = Invoke-Retrying { Remove-Item -Recurse -Force $bin }
+            if ($err) { throw "$stillRunning. ($(Get-Why $err))" }
         }
         if ((Test-Path $root) -and -not (Get-ChildItem $root -Force)) { Remove-Item -Force $root }
         Remove-FromUserPath
@@ -181,11 +206,10 @@ function Install-Mochiii {
 
         Stop-Ours
         if (Test-Path $bin) {
-            try {
-                Rename-Item -Path $bin -NewName (Split-Path $previous -Leaf)
-            } catch {
+            $err = Invoke-Retrying { Rename-Item -Path $bin -NewName (Split-Path $previous -Leaf) }
+            if ($err) {
                 Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
-                throw "$stillRunning; nothing was changed."
+                throw "$stillRunning; nothing was changed. ($(Get-Why $err))"
             }
         }
         try {
