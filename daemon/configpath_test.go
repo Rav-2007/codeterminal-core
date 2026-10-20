@@ -239,6 +239,9 @@ func TestTheBuiltInConfigIsTheShippedOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading models.agent.json: %v", err)
 	}
+	// Git for Windows checks models.agent.json out with CRLF; the gzipped copy
+	// is binary to git and keeps the repository's LF (CI's first Windows run).
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
 	got, err := builtinConfig()
 	if err != nil {
 		t.Fatalf("reading the built-in config: %v", err)
