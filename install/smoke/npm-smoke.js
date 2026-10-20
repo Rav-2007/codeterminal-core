@@ -28,11 +28,15 @@ const path = require('path');
 const { spawnSync, spawn } = require('child_process');
 
 const win = process.platform === 'win32';
-const [npmDir, want] = process.argv.slice(2);
-if (!npmDir || !want) {
+const [dirArg, want] = process.argv.slice(2);
+if (!dirArg || !want) {
   console.error('usage: npm-smoke.js <npm-dir> <version>');
   process.exit(2);
 }
+// Absolute, because npm reads a relative `npm-dist/x.tgz` as the GitHub
+// repository npm-dist/x.tgz and asks git for it (the first CI run, on every
+// runner but Windows, whose backslash spared it).
+const npmDir = path.resolve(dirArg);
 const here = __dirname;
 const { platformPackage, usesMusl } = require(path.join(here, '..', '..', 'npm', 'mochiii', 'platform.js'));
 
