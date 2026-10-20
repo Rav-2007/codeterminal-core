@@ -1,16 +1,15 @@
 // Command mochiii-embedder-helper is a small subprocess spawned by the
-// daemon to run the local embedding model. It exists as a separate process
-// (rather than a package inside the daemon) so that CGO — needed by the
-// ONNX Runtime binding this binary uses — never has to touch the daemon
-// binary, which must stay pure Go.
+// daemon to run the local embedding model. It was a separate process so that
+// CGO, which the old ONNX Runtime binding needed, never touched the daemon.
+// Since 2026-10-19 it has no CGO at all (internal/ort calls the C API through
+// its function table), and it stays a process of its own for its memory: the
+// model's arena lives and dies with this process, never with the daemon.
 //
-// CGO in this binary is dlopen-based (github.com/yalue/onnxruntime_go loads
-// the onnxruntime shared library manually at runtime rather than linking
-// it at compile time), so `go build` here succeeds regardless of whether
-// that library is present on the build machine. The failure necessarily
-// happens at startup instead, when this binary actually tries to load it —
-// see loadEmbedder below, which is written to fail with an actionable
-// message rather than a raw dlopen error.
+// ONNX Runtime is loaded at run time, never linked, so `go build` here
+// succeeds regardless of whether that library is present on the build
+// machine. The failure necessarily happens at startup instead, when this
+// binary actually tries to load it — see loadEmbedder below, which is
+// written to fail with an actionable message rather than a raw dlopen error.
 package main
 
 import (
@@ -28,9 +27,8 @@ import (
 	"syscall"
 	"time"
 
-	ort "github.com/yalue/onnxruntime_go"
-
 	"mochiii/helper/helperproto"
+	"mochiii/helper/internal/ort"
 	"mochiii/protocol"
 )
 
@@ -73,8 +71,10 @@ func main() {
 	if err != nil {
 		logger.Fatal(err)
 	}
+	// Deferred in this order so they run in the other: the session closes
+	// before the environment it belongs to.
+	defer ort.Destroy()
 	defer embedder.Close()
-	defer ort.DestroyEnvironment()
 
 	addr := protocol.Address{Transport: *transport, Address: *socketPath}
 
@@ -142,14 +142,13 @@ func loadEmbedder(modelDir, onnxRuntimeLib string, intraOpThreads int) (*OnnxEmb
 		return nil, fmt.Errorf("onnxruntime shared library not found at %s (run `mochiii-daemon download-model` first): %w", onnxRuntimeLib, err)
 	}
 
-	ort.SetSharedLibraryPath(onnxRuntimeLib)
-	if err := ort.InitializeEnvironment(); err != nil {
+	if err := ort.Init(onnxRuntimeLib); err != nil {
 		return nil, fmt.Errorf("initializing ONNX Runtime using shared library %s: %w", onnxRuntimeLib, err)
 	}
 
 	embedder, err := NewOnnxEmbedder(modelDir, intraOpThreads)
 	if err != nil {
-		ort.DestroyEnvironment()
+		ort.Destroy()
 		return nil, fmt.Errorf("loading BGE model from %s (run `mochiii-daemon download-model` first): %w", modelDir, err)
 	}
 	return embedder, nil

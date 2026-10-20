@@ -17,9 +17,8 @@
 // verify-vsix.js now refuses each of those, so this script is the way to pass it.
 //
 // Each step below is the release.yml step of the same name, for one target. It
-// builds only for the host: the helper needs CGO, and CGO does not cross-compile
-// without the target's C toolchain. The other platform's package comes from the
-// release workflow, which builds each target on its own runner.
+// builds only for the host, as release.yml builds each target on its own
+// runner; the other platform's package comes from the release workflow.
 //
 // Cross-platform on purpose -- processes spawned with an explicit environment,
 // never shell `VAR=value` syntax -- because npm runs scripts under cmd.exe on
@@ -72,9 +71,9 @@ run('Build daemon (pure Go)', 'go',
     '-o', path.join(daemonDir, `mochiii-daemon${exe}`), '.'],
   { cwd: path.join(repo, 'daemon'), env: { ...process.env, CGO_ENABLED: '0' } });
 
-run('Build embedder helper (CGO)', 'go',
+run('Build embedder helper (pure Go)', 'go',
   ['build', '-trimpath', '-o', path.join(daemonDir, `mochiii-embedder-helper${exe}`), '.'],
-  { cwd: path.join(repo, 'helper'), env: { ...process.env, CGO_ENABLED: '1' } });
+  { cwd: path.join(repo, 'helper'), env: { ...process.env, CGO_ENABLED: '0' } });
 
 run(`Stage the runtime for ${target}`, node, [path.join(__dirname, 'stage-runtime.js'), target], { cwd: ext });
 

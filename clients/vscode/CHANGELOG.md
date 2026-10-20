@@ -3,6 +3,18 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [Unreleased]
+
+### Changed
+
+- **Code search no longer needs cgo, or a new glibc.** The embedder helper calls
+  ONNX Runtime's C API directly instead of through the cgo binding
+  `onnxruntime_go`, so every program builds with `CGO_ENABLED=0`. On Linux, code
+  search now needs glibc 2.27 (Ubuntu 18.04+, Debian 10+, RHEL 8+), down from
+  2.34. Vectors are unchanged: the helper reproduces the old binding's output
+  bit for bit.
+- Building from source no longer needs a C compiler.
+
 ## [1.1.0] - 2026-10-18
 
 One command installs Mochiii on macOS, Linux and Windows, and installs this

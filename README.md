@@ -201,9 +201,9 @@ The [security model](SECURITY_MODEL.md) explains what Mochiii protects and what 
 | Windows x64 | ✓ | ✓ |
 | Windows on ARM | ✓ (the x64 build, under Windows' emulation) | — |
 
-- On Linux, code search needs glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+,
-  Fedora 35+). On older or musl systems everything else works and the installer
-  says so.
+- On Linux, code search needs glibc 2.27 or newer (Ubuntu 18.04+, Debian 10+,
+  RHEL 8+, Fedora 28+). On older or musl systems everything else works and the
+  installer says so.
 - On Windows, code search needs the Microsoft Visual C++ runtime, which most PCs
   already have; the installer tells you if yours does not.
 - **Intel Macs are not supported:** the engine that runs the code-search model,
@@ -235,7 +235,7 @@ make check
 ```
 
 To run the terminal app from a checkout instead of an install, you need
-[Go 1.26.9 or newer](https://go.dev/dl/) and a C compiler:
+[Go 1.26.9 or newer](https://go.dev/dl/); no C compiler is needed:
 
 ```bash
 ./run-tui.sh

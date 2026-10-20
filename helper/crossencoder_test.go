@@ -6,9 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	ort "github.com/yalue/onnxruntime_go"
-
 	"mochiii/helper/helperproto"
+	"mochiii/helper/internal/ort"
 )
 
 // realCrossEncoder opens the cross-encoder from the local model cache, or
@@ -26,8 +25,7 @@ func realCrossEncoder(t *testing.T) *CrossEncoder {
 	}
 	var initErr error
 	ortOnce.Do(func() {
-		ort.SetSharedLibraryPath(lib)
-		initErr = ort.InitializeEnvironment()
+		initErr = ort.Init(lib)
 	})
 	if initErr != nil {
 		t.Skipf("initializing ONNX Runtime: %v", initErr)

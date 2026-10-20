@@ -107,5 +107,10 @@ mochiii/daemon/mcp          91.0
 mochiii/proxy/testharness    0.0
 mochiii/helper              22.0
 mochiii/helper/helperproto  75.0
+# helper/internal/ort, added 2026-10-19: 14.4% measured three times uncached
+# with no model cached, which is what this gate's runner has -- its tests that
+# load ONNX Runtime skip there (82.5% with the model). They run against the real
+# model in the retrieval-eval job instead.
+mochiii/helper/internal/ort 14.0
 mochiii/protocol            89.5
 mochiii/clients/tui 84.0

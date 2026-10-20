@@ -131,11 +131,11 @@ detect_target() {
 	esac
 }
 
-# Mochiii's code search needs glibc 2.34 or newer. Chat, agent tools and
-# everything else work without it, so an older or musl system is warned, not refused.
+# Mochiii's code search needs glibc 2.27 or newer, onnxruntime's own floor. Chat,
+# agent tools and everything else work without it, so an older or musl system is warned, not refused.
 check_libc() {
 	if ldd --version 2>&1 | grep -qi musl; then
-		warn "this system uses musl libc; code search needs glibc 2.34+ and will be off. Everything else works."
+		warn "this system uses musl libc; code search needs glibc 2.27+ and will be off. Everything else works."
 		return
 	fi
 	glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
@@ -143,8 +143,8 @@ check_libc() {
 	major=${glibc%%.*}
 	minor=${glibc#*.}
 	minor=${minor%%.*}
-	if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 34 ]; }; then
-		warn "this system has glibc $glibc; code search needs 2.34+ and will be off. Everything else works."
+	if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 27 ]; }; then
+		warn "this system has glibc $glibc; code search needs 2.27+ and will be off. Everything else works."
 	fi
 }
 

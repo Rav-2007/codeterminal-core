@@ -92,12 +92,13 @@ echo "building…"
 # earlier. So a fix to the helper (that day's: its memory, which had reached
 # 6 GB) was in the source, passed every test, and would never have run here.
 #
-# The helper needs a C compiler (cgo); the daemon and the client do not. Without
-# one this says so and carries on with whatever helper is already there, since
-# everything but local code search works without it.
+# Built like the other two, with no C compiler: the helper stopped needing cgo
+# on 2026-10-19. A failed build still says so and carries on with whatever
+# helper is already there, since everything but local code search works
+# without it.
 readonly HELPER="$BIN/mochiii-embedder-helper"
-if ! (cd helper && go build -o "$HELPER" .) 2>"$BIN/helper-build.log"; then
-	echo "run-tui: could not build the embedder helper (it needs a C compiler); see $BIN/helper-build.log" >&2
+if ! (cd helper && CGO_ENABLED=0 go build -o "$HELPER" .) 2>"$BIN/helper-build.log"; then
+	echo "run-tui: could not build the embedder helper; see $BIN/helper-build.log" >&2
 	echo "run-tui: carrying on with the helper that is already there, if there is one" >&2
 fi
 

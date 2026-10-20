@@ -109,7 +109,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.23 five goroutine layers parse untrusted process output with no `recover` | **PARTIALLY CLOSED — ours FIXED, the SDK's four remain OPEN as a dependency-policy row. Decided by **Ravi Kiran, 2026-09-13**. TRIGGER for the SDK half: the next go-sdk upgrade, or the first unexplained daemon exit with an MCP server configured** | Opened 2026-09-09. `daemon/mcpruntime.go:206` plus four inside `modelcontextprotocol/go-sdk@v1.7.0`, which contains **zero** `recover()` calls anywhere. A panic in any kills the daemon and drops every client. |
 | R1.24 the LSP header read is unbounded | **OPEN — the one validation gap on either boundary** | Opened 2026-09-09. `daemon/lsp_bridge.go:491` `ReadString('\n')` bounds neither a single header line nor their number, while the BODY is bounded at 8 MiB. Same shape as the `prefixWriter` flood that was already fixed. |
 | R1.25 LSP teardown kills the process, not the group | **OPEN — asymmetry with MCP, consequence UNMEASURED** | Opened 2026-09-09. `daemon/lsp_bridge.go:530` calls `Process.Kill()` with no grace period; `daemon/mcp/stdioclient.go` kills the whole group unconditionally and is tested for orphans. gopls spawns `go` subprocesses. |
-| R1.26 helper is outside every cross-platform check, and cannot join one | **OPEN — structural, nothing can catch it** | Opened 2026-09-09. `helper` links `onnxruntime_go`, which is CGO-only, so `GOOS=windows go vet` reports "build constraints exclude all Go files". It is absent from `CROSSVET_MODULES` and from CI's `cross` matrix, and no gate can be added that would genuinely cover it. |
+| R1.26 helper is outside every cross-platform check, and cannot join one | **FIXED 2026-10-19 — the structural cause is gone** | Opened 2026-09-09: `helper` linked `onnxruntime_go`, which is CGO-only, so `GOOS=windows go vet` reported "build constraints exclude all Go files". `helper/internal/ort` now calls ONNX Runtime's C API without cgo; helper is in `CROSSVET_MODULES` and in both arms of `make standalone`, and builds and vets with `CGO_ENABLED=0` for linux, darwin and windows on amd64 and arm64. |
 | R1.27 the sandbox's confinement tests run only where CI relaxed the host | **OPEN — a real reason, stated rather than removed** | Opened 2026-09-12. `build.yml` sets `kernel.apparmor_restrict_unprivileged_userns=0` on its throwaway VM. The REFUSAL path no longer depends on that; the tests that check bwrap actually isolates anything still do, and cannot be stubbed. |
 | R1.28 daemon's timing assertions were inline literals with no guard | **NARROWED 2026-09-12 — not closed** | Task 6 landed: `daemon/timingliterals_test.go` scans the whole workspace and all **17** comparison sites are now derived bounds. What remains is the larger half — the guard checks that a bound *names* something, not that the derivation is right, and it does not make any existing assertion stable. Four residuals stated in the row. |
 
@@ -1776,6 +1776,16 @@ the work, not by the trigger firing.
 
 
 ## R1.26 — helper is outside every cross-platform check, and cannot join one
+
+**FIXED 2026-10-19.** The premise below no longer holds: helper does not link
+`onnxruntime_go`. `helper/internal/ort` loads ONNX Runtime at run time (purego
+on macOS and Linux, LoadLibrary on Windows) and calls its C API through the
+function table, so the module has no cgo and joined `CROSSVET_MODULES` and the
+Windows arm of `make standalone` the same day. Every table position and enum
+value it passes is re-derived from the pinned 1.26.0 header by
+`TestTheTableIndicesAreTheHeaders` and `TestTheEnumValuesAreTheHeaders`, and
+`TestTheBindingComputesTheGoldenVectors` holds it to the old binding's vectors,
+bit for bit on the machine that wrote them. The record below is kept as it was.
 
 **What it is.** `make crossvet` compiles five modules for `windows` and `darwin`;
 CI's `cross` matrix runs four on a real Windows runner. **`helper` is in

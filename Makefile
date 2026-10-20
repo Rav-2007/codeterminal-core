@@ -95,24 +95,17 @@ vet:
 # the tree still looks green, because nothing local disagrees. This makes the
 # check exist on the machine doing the work.
 #
-# helper is excluded, and not by oversight: it links onnxruntime_go, which is
-# CGO-only, so a cross-target vet reports "build constraints exclude all Go
-# files" for reasons that have nothing to do with our code. CI's cross matrix
-# omits it too, and builds it natively per-runner instead.
+# helper joined on 2026-10-19, when its ONNX Runtime binding stopped being cgo
+# (helper/internal/ort). Until then it linked onnxruntime_go, which is
+# CGO-only, so a cross-target vet reported "build constraints exclude all Go
+# files" and the module sat outside every cross-platform check (R1.26).
 # proxy joined on 2026-09-09. It has no platform-split files, so it cost nothing
 # and had been left out for no stated reason -- which is how a module ends up
 # outside every cross-platform check by accident rather than by decision.
-#
-# helper is still absent and CANNOT join: it links onnxruntime_go, which is
-# CGO-only, so GOOS=windows reports "build constraints exclude all Go files" for
-# reasons unrelated to our code. CI's cross matrix omits it for the same reason.
-# That leaves a real blind spot -- a platform-specific symbol in a helper test is
-# caught by nothing, anywhere -- recorded as R1.26 rather than papered over with
-# a check that appears to cover it.
 # darwin joined on 2026-10-01, after the daemon had gone a week not compiling
 # for macOS (termecho_unix.go named Linux's termios ioctls for every Unix) and
 # nothing here or in CI said so.
-CROSSVET_MODULES := daemon editapply protocol clients/tui proxy
+CROSSVET_MODULES := daemon editapply protocol clients/tui proxy helper
 
 crossvet:
 	@for os in windows darwin; do \
@@ -140,12 +133,10 @@ crossvet:
 # golang.org/x/sys/windows exists in v0.10.0; it is merely missing the function.
 # Only a compile finds this, which is why this target compiles.
 #
-# helper is on the linux arm but not the windows one: it is cgo against
-# onnxruntime, so a cross-build without a C toolchain fails on build constraints
-# rather than on anything this gate is asking about. CI builds it natively on
-# windows-latest instead (.github/workflows/release.yml's binaries job).
+# helper is on both arms since 2026-10-19: it no longer needs cgo, so a
+# cross-build needs no C toolchain.
 STANDALONE_LINUX   := protocol daemon editapply clients/tui proxy helper
-STANDALONE_WINDOWS := protocol daemon editapply clients/tui proxy
+STANDALONE_WINDOWS := protocol daemon editapply clients/tui proxy helper
 
 standalone:
 	@for m in $(STANDALONE_LINUX); do \
@@ -154,7 +145,7 @@ standalone:
 	@for m in $(STANDALONE_WINDOWS); do \
 		(cd $$m && GOWORK=off GOOS=windows go build ./...) || { echo "standalone: FAILED GOOS=windows $$m -- this module cannot be built outside the workspace"; exit 1; }; \
 	done
-	@echo "standalone: clean -- linux $(words $(STANDALONE_LINUX)) module(s), windows $(words $(STANDALONE_WINDOWS)) (helper is cgo; CI builds it natively)"
+	@echo "standalone: clean -- linux $(words $(STANDALONE_LINUX)) module(s), windows $(words $(STANDALONE_WINDOWS))"
 
 # -count=1 DISABLES THE TEST CACHE, and it is not tidiness.
 #

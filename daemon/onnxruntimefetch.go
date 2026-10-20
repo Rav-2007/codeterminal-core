@@ -15,11 +15,11 @@ import (
 	"strings"
 )
 
-// onnxRuntimeVersion is the pinned onnxruntime release. It must match the
-// ORT_API_VERSION that github.com/yalue/onnxruntime_go (used by the helper)
-// was built against — confirmed by comparing the ORT_API_VERSION constant
-// in both projects' C API headers directly: both are 26, i.e. onnxruntime
-// v1.26.0.
+// onnxRuntimeVersion is the pinned onnxruntime release. It must provide the
+// ORT_API_VERSION the helper asks for (APIVersion in helper/internal/ort),
+// whose tests re-derive every number they pass from this release's own C API
+// header: 26, i.e. onnxruntime v1.26.0. A newer release still serves API 26;
+// an older one does not.
 const onnxRuntimeVersion = "1.26.0"
 
 // onnxRuntimePlatform pins one platform's onnxruntime release archive

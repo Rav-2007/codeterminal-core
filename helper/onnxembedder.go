@@ -8,9 +8,9 @@ import (
 
 	"github.com/sugarme/tokenizer"
 	"github.com/sugarme/tokenizer/pretrained"
-	ort "github.com/yalue/onnxruntime_go"
 
 	"mochiii/helper/helperproto"
+	"mochiii/helper/internal/ort"
 )
 
 // embedDim is the real model's output width: BGE-small's hidden size.
@@ -24,16 +24,14 @@ const embedDim = 384
 // drift that stamp exists to catch.
 const maxSequenceLength = helperproto.MaxSequenceLength
 
-// OnnxEmbedder runs the real BGE model via ONNX Runtime. CGO — needed by
-// the onnxruntime_go binding — is confined to this file (and main.go's
-// environment setup) and never touches the daemon.
+// OnnxEmbedder runs the real BGE model via ONNX Runtime, through
+// internal/ort's function-table calls -- no CGO, here or in the daemon.
 //
-// ort.SetSharedLibraryPath and ort.InitializeEnvironment are process-global
-// state in onnxruntime_go, not per-instance; main() calls them exactly once
-// before constructing an OnnxEmbedder.
+// ort.Init is process-global state, not per-instance; main() calls it
+// exactly once before constructing an OnnxEmbedder.
 type OnnxEmbedder struct {
 	tokenizer *tokenizer.Tokenizer
-	session   *ort.DynamicAdvancedSession
+	session   *ort.Session
 }
 
 // NewOnnxEmbedder loads the tokenizer and opens an inference session for
@@ -63,25 +61,11 @@ func NewOnnxEmbedder(modelDir string, intraOpThreads int) (*OnnxEmbedder, error)
 		return nil, fmt.Errorf("loading tokenizer.json: %w", err)
 	}
 
-	// nil options is not the same as default-valued options: it is the path
-	// this code took for its whole life, and production must keep taking it.
-	var opts *ort.SessionOptions
-	if intraOpThreads > 0 {
-		opts, err = ort.NewSessionOptions()
-		if err != nil {
-			return nil, fmt.Errorf("creating ONNX session options: %w", err)
-		}
-		// Destroyed as soon as the session exists: onnxruntime_go documents
-		// the options as consumed by the constructor, not retained by it.
-		defer func() { _ = opts.Destroy() }()
-		if err := opts.SetIntraOpNumThreads(intraOpThreads); err != nil {
-			return nil, fmt.Errorf("setting intra-op thread count to %d: %w", intraOpThreads, err)
-		}
-	}
-
+	// Zero threads means default session options -- the path this code took
+	// for its whole life, and the one production must keep taking.
 	inputNames := []string{"input_ids", "attention_mask", "token_type_ids"}
 	outputNames := []string{"last_hidden_state"}
-	session, err := ort.NewDynamicAdvancedSession(filepath.Join(modelDir, "model_int8.onnx"), inputNames, outputNames, opts)
+	session, err := ort.NewSession(filepath.Join(modelDir, "model_int8.onnx"), inputNames, outputNames, intraOpThreads)
 	if err != nil {
 		return nil, fmt.Errorf("opening ONNX session for model_int8.onnx: %w", err)
 	}
@@ -89,8 +73,8 @@ func NewOnnxEmbedder(modelDir string, intraOpThreads int) (*OnnxEmbedder, error)
 	return &OnnxEmbedder{tokenizer: tk, session: session}, nil
 }
 
-// Close releases the ONNX session. It does not call ort.DestroyEnvironment
-// — that's process-global and main()'s responsibility.
+// Close releases the ONNX session. It does not call ort.Destroy — that's
+// process-global and main()'s responsibility.
 func (e *OnnxEmbedder) Close() error {
 	return e.session.Destroy()
 }
@@ -155,9 +139,9 @@ func truncateKeepingFinalToken(ids []int, maxLen int) []int {
 // with a whole batch.
 var inferenceGate sync.Mutex
 
-// runOne runs session over ONE tokenized text and returns its float output,
-// which the caller destroys. See Embed for why it is never more than one.
-func runOne(session *ort.DynamicAdvancedSession, t tokenized) (*ort.Tensor[float32], error) {
+// runOne runs session over ONE tokenized text and returns its float output.
+// See Embed for why it is never more than one.
+func runOne(session *ort.Session, t tokenized) (ort.Tensor, error) {
 	n := len(t.ids)
 	inputIDs := make([]int64, n)
 	attnMask := make([]int64, n)
@@ -168,39 +152,13 @@ func runOne(session *ort.DynamicAdvancedSession, t tokenized) (*ort.Tensor[float
 		tokenTypeIDs[j] = int64(t.typeIDs[j])
 	}
 
-	// The input tensors are released when runOne returns. Destroy's error is
-	// discarded on purpose: there is nothing to do about a failed release of a
-	// tensor this call is finished with.
-	shape := ort.NewShape(1, int64(n))
-	inputIDsT, err := ort.NewTensor(shape, inputIDs)
-	if err != nil {
-		return nil, fmt.Errorf("building input_ids tensor: %w", err)
-	}
-	defer func() { _ = inputIDsT.Destroy() }()
-	attnMaskT, err := ort.NewTensor(shape, attnMask)
-	if err != nil {
-		return nil, fmt.Errorf("building attention_mask tensor: %w", err)
-	}
-	defer func() { _ = attnMaskT.Destroy() }()
-	tokenTypeIDsT, err := ort.NewTensor(shape, tokenTypeIDs)
-	if err != nil {
-		return nil, fmt.Errorf("building token_type_ids tensor: %w", err)
-	}
-	defer func() { _ = tokenTypeIDsT.Destroy() }()
-
-	outputs := []ort.Value{nil}
+	// The input tensors wrap these three slices for the length of the call
+	// and are released inside it; the output comes back copied into Go memory.
 	inferenceGate.Lock()
-	err = session.Run([]ort.Value{inputIDsT, attnMaskT, tokenTypeIDsT}, outputs)
+	out, err := session.Run([]int64{1, int64(n)}, inputIDs, attnMask, tokenTypeIDs)
 	inferenceGate.Unlock()
 	if err != nil {
-		return nil, fmt.Errorf("running inference: %w", err)
-	}
-	out, ok := outputs[0].(*ort.Tensor[float32])
-	if !ok {
-		if outputs[0] != nil {
-			_ = outputs[0].Destroy()
-		}
-		return nil, fmt.Errorf("unexpected output tensor type %T", outputs[0])
+		return ort.Tensor{}, fmt.Errorf("running inference: %w", err)
 	}
 	return out, nil
 }
@@ -292,9 +250,8 @@ func (e *OnnxEmbedder) embedOne(t tokenized) ([]float32, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = out.Destroy() }()
 
-	outShape := out.GetShape()
+	outShape := out.Shape
 	if len(outShape) != 3 || outShape[0] != 1 {
 		return nil, fmt.Errorf("unexpected output shape %v, want [1, seq, hidden]", outShape)
 	}
@@ -303,7 +260,7 @@ func (e *OnnxEmbedder) embedOne(t tokenized) ([]float32, error) {
 		return nil, fmt.Errorf("model produced %d-dim hidden state, want %d", hidden, embedDim)
 	}
 	// [CLS] is position 0, so its hidden state is the first `hidden` floats.
-	data := out.GetData()
+	data := out.Data
 	if len(data) < hidden {
 		return nil, fmt.Errorf("model returned %d values, fewer than one %d-dim hidden state", len(data), hidden)
 	}
