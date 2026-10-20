@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"bufio"
@@ -25,7 +25,11 @@ func prepareDaemon(workspaceRoot string, launch launchOptions, interactive bool)
 	if !ok {
 		return
 	}
-	if interactive && (launch.forceIndex || !launch.noIndex) {
+	if !CodeSearch {
+		if launch.forceIndex {
+			say(os.Stderr, "Code search isn't in this build of Mochiii (the static one for musl Linux), so there is nothing to index.\n")
+		}
+	} else if interactive && (launch.forceIndex || !launch.noIndex) {
 		home, _ := os.UserHomeDir()
 		folderSetup{
 			root:     workspaceRoot,
@@ -38,7 +42,7 @@ func prepareDaemon(workspaceRoot string, launch launchOptions, interactive bool)
 			stop:     func() error { return stopDaemon(os.Stderr) },
 		}.offer(launch.forceIndex)
 	}
-	if daemonAnswers() {
+	if useRunningDaemon(daemon, os.Stderr, func() error { return stopDaemon(os.Stderr) }) {
 		return
 	}
 	if err := startInstalledDaemon(daemon, config, workspaceRoot, os.Stderr); err != nil {

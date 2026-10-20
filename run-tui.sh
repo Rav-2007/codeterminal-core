@@ -21,9 +21,9 @@
 # The environment wins; this script says which one it found.
 #
 # Stop the daemon it started with:  ./run-tui.sh --stop
-# All three programs are built here: the daemon, the client and the embedder
-# helper. A daemon left running from an older build -- its own, or its helper's
-# -- is restarted automatically (Linux), so what runs is what was just built.
+# The one `mochiii` binary is built here -- the client, the daemon and the
+# embedder helper. A daemon left running from an older build is restarted
+# automatically (Linux), so what runs is what was just built.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -80,27 +80,18 @@ command -v go >/dev/null 2>&1 || die "go not found; install it or add it to PATH
 private_dir "$BIN"
 private_dir "$STATE"
 echo "building…"
-(cd daemon && go build -o "$BIN/mochiii-daemon" .)
-(cd clients/tui && go build -o "$BIN/mochiii" .)
-
-# THE EMBEDDER HELPER IS BUILT TOO, next to the daemon -- the first place the
-# daemon looks for it (daemon/helperpath.go).
-#
-# FOUND 2026-10-08: this script built two of the product's three programs. The
-# third, the helper that computes embeddings, was whatever binary happened to
-# sit in helper/ -- on the machine this was found on, one built seventeen days
-# earlier. So a fix to the helper (that day's: its memory, which had reached
-# 6 GB) was in the source, passed every test, and would never have run here.
-#
-# Built like the other two, with no C compiler: the helper stopped needing cgo
-# on 2026-10-19. A failed build still says so and carries on with whatever
-# helper is already there, since everything but local code search works
-# without it.
-readonly HELPER="$BIN/mochiii-embedder-helper"
-if ! (cd helper && CGO_ENABLED=0 go build -o "$HELPER" .) 2>"$BIN/helper-build.log"; then
-	echo "run-tui: could not build the embedder helper; see $BIN/helper-build.log" >&2
-	echo "run-tui: carrying on with the helper that is already there, if there is one" >&2
-fi
+# ONE BINARY SINCE 1.2.0 (daemon/programrole.go): `mochiii` is the client, the
+# daemon and the embedder helper. It is built once, and hard-linked as
+# mochiii-daemon -- under that name it is the daemon, so this script starts the
+# daemon exactly as it always has, with the config it chooses below, and the
+# daemon runs its helper as itself. A hard link, not a copy: the inode check
+# further down compares the running daemon with this build, and both names are
+# the same file. Until 1.2.0 this built three programs, and on 2026-10-08 it was
+# found building two -- the helper that ran was whatever sat in helper/,
+# seventeen days old. There is no third program left to forget.
+(cd daemon && go build -o "$BIN/mochiii" .)
+ln -f "$BIN/mochiii" "$BIN/mochiii-daemon"
+rm -f "$BIN/mochiii-embedder-helper" # 1.1.0's separate helper, if an old build left one
 
 # The daemon takes its credential from the environment, or from the one
 # `mochiii-daemon connect` stored. .env is the documented place for the
@@ -149,10 +140,8 @@ ARGS=("$@")
 # connection per prompt and finds the new daemon through the lock file. A turn
 # in flight there when this runs would end.
 #
-# AND A DAEMON WHOSE HELPER IS OLDER THAN THIS BUILD, likewise. The daemon starts
-# its helper once and keeps it, so a helper built from older code goes on
-# running under a daemon that has not itself changed. Only the helpers of the
-# daemons this script started are looked at -- never another daemon's.
+# Its embedder helper needs no check of its own since 1.2.0: the daemon runs its
+# helper as itself, so a daemon running this build runs this build's helper.
 stale=()
 # A daemon started from where builds used to go is older than this one by
 # definition, and the client must not be left talking to it.
@@ -163,20 +152,10 @@ for pid in $(pgrep -f "$BIN/mochiii-daemon" || true); do
 	running=$(stat -L -c %i "/proc/$pid/exe" 2>/dev/null) || continue
 	if [[ "$running" != "$(stat -c %i "$BIN/mochiii-daemon")" ]]; then
 		stale+=("$pid")
-		continue
 	fi
-	[[ -x "$HELPER" ]] || continue
-	for child in $(pgrep -P "$pid" || true); do
-		[[ "$(readlink "/proc/$child/exe" 2>/dev/null)" == *mochiii-embedder-helper* ]] || continue
-		helper_running=$(stat -L -c %i "/proc/$child/exe" 2>/dev/null) || continue
-		if [[ "$helper_running" != "$(stat -c %i "$HELPER")" ]]; then
-			stale+=("$pid")
-			break
-		fi
-	done
 done
 if (( ${#stale[@]} )); then
-	echo "restarting the daemon: it, or its embedder helper, is running an older build than the one just made"
+	echo "restarting the daemon: it is running an older build than the one just made"
 	kill "${stale[@]}" 2>/dev/null || true
 	for _ in $(seq 1 50); do
 		alive=()

@@ -6,7 +6,7 @@
 // TIOCSPTLCK/TIOCGPTN, the BSDs use TIOCPTYUNLK/TIOCPTYGNAME), and a portable
 // version means a second implementation nobody runs. One platform that actually
 // executes beats two that are skipped.
-package main
+package tui
 
 import (
 	"encoding/json"
@@ -80,7 +80,7 @@ var tuiBinary = sync.OnceValues(func() (string, error) {
 		return "", err
 	}
 	bin := filepath.Join(dir, "mochiii")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/mochiii-tui").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("building the client: %w\n%s", err, out)
 	}
 	return bin, nil

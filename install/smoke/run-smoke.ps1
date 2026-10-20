@@ -5,17 +5,20 @@
 # unmodified, and in an isolated profile, it checks that:
 #
 #   0. an elevated PowerShell is refused (where this runs elevated, as CI does);
-#   1. install.ps1, run by Windows PowerShell 5.1, installs, and all three
-#      programs report -Version;
-#   2. the code-search model downloads (real network, pinned checksums);
-#   3. `mochiii-daemon index` indexes a small project -- the embedder helper and
+#   1. the previous release (1.1.0, from GitHub) installs and runs, as a user's
+#      machine has it today;
+#   2. install.ps1, run by Windows PowerShell 5.1, installs this release OVER it
+#      while its background service runs: the old service is stopped, the old
+#      programs are gone, and the one binary's three roles report -Version;
+#   3. the code-search model downloads (real network, pinned checksums);
+#   4. `mochiii index` indexes a small project -- the embedder helper and
 #      onnxruntime really run here;
-#   4. `mochiii --prompt` starts its own background service and answers through
+#   5. `mochiii --prompt` starts its own background service and answers through
 #      a stand-in provider, and the project's code reached the request;
-#   5. a tampered archive is refused and the installed version keeps working;
-#   6. re-installing over a running service stops it and works;
-#   7. `mochiii --stop` ends the service and its embedder helper, and
-#      uninstalling removes the programs and keeps %USERPROFILE%\.mochiii.
+#   6. a tampered archive is refused and the installed version keeps working;
+#   7. re-installing over a running service stops it and works;
+#   8. `mochiii --stop` ends the service and its embedder helper, and
+#      uninstalling removes the program and keeps %USERPROFILE%\.mochiii.
 
 param(
     [Parameter(Mandatory = $true)][string]$Dist,
@@ -59,7 +62,7 @@ function Cleanup {
 }
 
 function Serve([string]$dir, [int]$port) {
-    $p = Start-Process -FilePath $python -ArgumentList @("-m", "http.server", "$port", "--bind", "127.0.0.1", "--directory", $dir) `
+    $p = Start-Process -FilePath $python -ArgumentList @((Join-Path $here "serve.py"), $dir, "$port") `
         -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $work "serve-$port.log")
     $script:servers += $p
     for ($i = 0; $i -lt 50; $i++) {
@@ -81,13 +84,30 @@ function Get-LongPath([string]$path) {
     return $long
 }
 
-# The processes of <name> started from the install, in either spelling of $bin.
-function Get-Ours([string]$name) {
+# The first argument on a process's command line, as install.ps1 reads it: since
+# 1.2.0 one mochiii.exe is the terminal app, the background service (`mochiii
+# daemon`) and the embedder helper (`mochiii __embedder-helper`).
+function Get-RoleWord([int]$id) {
+    $line = try { (Get-CimInstance Win32_Process -Filter "ProcessId = $id" -ErrorAction Stop).CommandLine } catch { $null }
+    if (-not $line) { return "" }
+    $rest = if ($line.StartsWith('"')) { $line.Substring($line.IndexOf('"', 1) + 1) } else { @($line -split ' ', 2)[1] }
+    return @("$rest".Trim() -split '\s+', 2)[0]
+}
+
+# The processes of one role started from the install, in either spelling of $bin:
+# "daemon" and "helper" are mochiii.exe in those roles; "mochiii-daemon" and
+# "mochiii-embedder-helper" are 1.1.0's programs of their own.
+function Get-Ours([string]$role) {
     $dirs = @($bin, (Get-LongPath $bin)) | ForEach-Object { $_.TrimEnd("\") + "\" }
+    $name, $word = switch ($role) {
+        "daemon" { "mochiii", "daemon" }
+        "helper" { "mochiii", "__embedder-helper" }
+        default { $role, "" }
+    }
     @(Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object {
             $path = $_.Path
             $path -and @($dirs | Where-Object { $path.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
-        })
+        } | Where-Object { -not $word -or (Get-RoleWord $_.Id) -eq $word })
 }
 
 # WHO HAS THESE FILES OPEN, from the Windows Restart Manager -- the system's own
@@ -174,7 +194,7 @@ function Get-FileHolders {
 # then measures how long until $bin can be renamed -- the upgrade's own move --
 # and records who held it at the first refusal.
 function Measure-FolderRelease {
-    $procs = @(Get-Ours "mochiii-daemon") + @(Get-Ours "mochiii-embedder-helper")
+    $procs = @(Get-Ours "daemon") + @(Get-Ours "helper")
     $procs | Stop-Process -Force -ErrorAction SilentlyContinue
     $procs | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
     $probeLeaf = (Split-Path $bin -Leaf) + ".probe"
@@ -192,7 +212,7 @@ function Measure-FolderRelease {
             if ($r.failures -eq 0) {
                 $r.error = $_.Exception.Message
                 $r.holders = @(Get-FileHolders)
-                $r.survivors = @(@(Get-Ours "mochiii-daemon") + @(Get-Ours "mochiii-embedder-helper") | ForEach-Object { "$($_.ProcessName) (process $($_.Id))" })
+                $r.survivors = @(@(Get-Ours "daemon") + @(Get-Ours "helper") | ForEach-Object { "$($_.ProcessName) (process $($_.Id))" })
             }
             $r.failures++
             Start-Sleep -Milliseconds 100
@@ -210,12 +230,45 @@ function Format-Release($r) {
 }
 
 # Runs install.ps1 the way a user does: in Windows PowerShell, a fresh process.
-function Invoke-Installer([string]$base, [string]$log) {
+# An empty $base removes MOCHIII_DOWNLOAD_BASE, so the installer reads GitHub.
+function Invoke-Installer([string]$base, [string]$log, [string]$file = $installer) {
     $env:MOCHIII_DOWNLOAD_BASE = $base
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer *> $log
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $file *> $log
     return $LASTEXITCODE
 }
 
+# Prints the installer's "waiting for ..." notes from a log, so a run records what
+# an upgrade or uninstall waited on (see the lock probe above).
+function Show-Waits([string]$log, [string]$what) {
+    Select-String -Path $log -Pattern "waiting for" | ForEach-Object { Write-Host "note - ${what}: $($_.Line.Trim())" }
+}
+
+# Whether a log says $pattern. Windows PowerShell word-wraps an error message at
+# its console width (the 1.1.0 rehearsal's logs show it), so line breaks and runs
+# of spaces are collapsed before matching.
+function Test-LogSays([string]$log, [string]$pattern) {
+    ((Get-Content -Raw $log) -replace '\s+', ' ') -match $pattern
+}
+
+# The installer's staging and old-version folders (bin.new.N, bin.old.N) beside
+# $bin. Matched with -like, not -Filter: a Windows filter "bin.*" also matches
+# "bin" itself.
+function Get-Staging {
+    @(Get-ChildItem -LiteralPath (Split-Path $bin -Parent) -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "bin.*" })
+}
+
+# One answer through the stand-in provider.
+function Ask([string]$question) {
+    (& (Join-Path $bin "mochiii.exe") --workspace $project --prompt $question 2> (Join-Path $work "client.err") | Out-String)
+}
+
+New-Item -ItemType Directory -Path $project | Out-Null
+Copy-Item (Join-Path $here "fixture\quokka.go") $project
+$requests = Join-Path $work "requests.jsonl"
+$stub = Start-Process -FilePath $python -ArgumentList @((Join-Path $here "stub_provider.py"), "18472", $requests) `
+    -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $work "stub.log")
+$script:servers += $stub
+$env:MOCHIII_API_BASE = "http://127.0.0.1:18472/v1"
 Serve $dist 18471
 
 # 0. an elevated PowerShell is refused unless MOCHIII_ALLOW_ADMIN says otherwise.
@@ -238,40 +291,60 @@ if ($elevated) {
     Write-Host "note - not elevated here, so the elevated-PowerShell refusal was not exercised"
 }
 
-# 1. install
+# 1. the previous release, from GitHub, running -- with its own installer.
+$previous = "1.1.0"
+$previousInstaller = Join-Path $work "install-$previous.ps1"
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Rav-2007/codeterminal-core/releases/download/v$previous/install.ps1" -OutFile $previousInstaller
+$env:MOCHIII_VERSION = $previous
+$env:MOCHIII_NO_MODEL = "1"
+$code = Invoke-Installer "" (Join-Path $work "previous.log") $previousInstaller
+Remove-Item Env:MOCHIII_VERSION, Env:MOCHIII_NO_MODEL
+if ($code -ne 0) { Fail ("installing $previous from GitHub failed:`n" + (Get-Content -Raw (Join-Path $work "previous.log"))) }
+if (((& (Join-Path $bin "mochiii.exe") --version | Out-String).Trim()) -ne "mochiii $previous") { Fail "the $previous install does not report $previous" }
+$out = Ask "hello from $previous"
+if ($out -notmatch "SMOKE-ANSWER-OK") { Fail ("$previous did not answer: $out`n" + (Get-Content -Raw (Join-Path $work "client.err"))) }
+$oldService = @(Get-Ours "mochiii-daemon" | ForEach-Object { $_.Id })
+if ($oldService.Count -eq 0) { Fail "no $previous background service was running, so the upgrade would prove nothing" }
+Pass "$previous installed from GitHub, and its background service is running"
+
+# 2. this release, over it
 if ((Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "install.log")) -ne 0) {
     Fail ("the installer failed:`n" + (Get-Content -Raw (Join-Path $work "install.log")))
 }
-foreach ($b in "mochiii", "mochiii-daemon", "mochiii-embedder-helper") {
-    $got = (& (Join-Path $bin "$b.exe") --version | Out-String).Trim()
-    if ($got -ne "$b $Version") { Fail "$b --version said '$got', want '$b $Version'" }
+foreach ($id in $oldService) {
+    if (Get-Process -Id $id -ErrorAction SilentlyContinue) { Fail "upgrading left the $previous background service (process $id) running" }
 }
-Pass "installed $Version; all three programs report it"
+foreach ($gone in "mochiii-daemon.exe", "mochiii-embedder-helper.exe", "models.json") {
+    if (Test-Path (Join-Path $bin $gone)) { Fail "upgrading left $previous's $gone in $bin" }
+}
+$exe = Join-Path $bin "mochiii.exe"
+foreach ($check in @(
+        @{ role = "the client"; want = "mochiii"; got = (& $exe --version | Out-String).Trim() },
+        @{ role = "daemon"; want = "mochiii-daemon"; got = (& $exe daemon --version | Out-String).Trim() },
+        @{ role = "__embedder-helper"; want = "mochiii-embedder-helper"; got = (& $exe __embedder-helper --version | Out-String).Trim() })) {
+    if ($check.got -ne "$($check.want) $Version") { Fail "$($check.role) --version said '$($check.got)', want '$($check.want) $Version'" }
+}
+Show-Waits (Join-Path $work "install.log") "upgrade from $previous"
+Pass "upgraded $previous to $Version while it ran: its service stopped, its programs gone, and all three roles report $Version"
 
-# 2. the model
-$check = (& (Join-Path $bin "mochiii-daemon.exe") download-model --check 2>$null | Select-Object -Last 1)
+# 3. the model
+$check = (& (Join-Path $bin "mochiii.exe") download-model --check 2>$null | Select-Object -Last 1)
 if ("$check" -notmatch '"cached":true') { Fail "the model is not in place after install: $check" }
 Pass "code-search model downloaded and verified"
 
-# 3. index a project
-New-Item -ItemType Directory -Path $project | Out-Null
-Copy-Item (Join-Path $here "fixture\quokka.go") $project
-& (Join-Path $bin "mochiii-daemon.exe") index $project *> (Join-Path $work "index.log")
+# 4. index a project
+& (Join-Path $bin "mochiii.exe") index $project *> (Join-Path $work "index.log")
 if ($LASTEXITCODE -ne 0) { Fail ("indexing failed:`n" + (Get-Content -Raw (Join-Path $work "index.log"))) }
 if (-not (Test-Path (Join-Path $project ".mochiii\index\embedder_stamp.json"))) { Fail "the index finished without its stamp" }
 Pass "indexed a project: the embedder helper and onnxruntime run here"
 
-# 4. the whole chain
-$requests = Join-Path $work "requests.jsonl"
-$stub = Start-Process -FilePath $python -ArgumentList @((Join-Path $here "stub_provider.py"), "18472", $requests) `
-    -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $work "stub.log")
-$script:servers += $stub
-Start-Sleep -Seconds 1
-$env:MOCHIII_API_BASE = "http://127.0.0.1:18472/v1"
-$out = (& (Join-Path $bin "mochiii.exe") --workspace $project --prompt "where is the burrow survey folded into one number?" 2> (Join-Path $work "client.err") | Out-String)
+# 5. the whole chain
+Clear-Content -Path $requests -ErrorAction SilentlyContinue
+$out = Ask "where is the burrow survey folded into one number?"
 if ($out -notmatch "SMOKE-ANSWER-OK") { Fail ("the answer did not come back: $out`n" + (Get-Content -Raw (Join-Path $work "client.err"))) }
 if (-not (Select-String -Path $requests -Pattern "quokkaChecksum" -Quiet)) { Fail "the project's code never reached the provider: code search did not run" }
-Pass "mochiii started its own background service, searched the project and answered"
+if (@(Get-Ours "daemon").Count -eq 0) { Fail "the answer came, but not from a 'mochiii daemon' started from the install" }
+Pass "mochiii started itself as its background service, searched the project and answered"
 
 # LOCK PROBE (2026-10-19). What holds the install folder just after its programs
 # are stopped, and for how long: on Windows on ARM an upgrade once could not
@@ -316,7 +389,7 @@ try {
 $out = (& (Join-Path $bin "mochiii.exe") --workspace $project --prompt "after the probe?" 2>$null | Out-String)
 if ($out -notmatch "SMOKE-ANSWER-OK") { Fail "no answer after the lock probe: $out" }
 
-# 5. a tampered download is refused
+# 6. a tampered download is refused
 $bad = Join-Path $work "bad"
 New-Item -ItemType Directory -Path $bad | Out-Null
 Copy-Item (Join-Path $dist "*") $bad
@@ -330,27 +403,7 @@ if (-not (Select-String -Path (Join-Path $work "bad.log") -Pattern "Checksum mis
 if (((& (Join-Path $bin "mochiii.exe") --version | Out-String).Trim()) -ne "mochiii $Version") { Fail "a refused install broke the installed version" }
 Pass "a tampered archive was refused and the installed version still runs"
 
-# Prints the installer's "waiting for ..." notes from a log, so a run records what
-# an upgrade or uninstall waited on (see the lock probe above).
-function Show-Waits([string]$log, [string]$what) {
-    Select-String -Path $log -Pattern "waiting for" | ForEach-Object { Write-Host "note - ${what}: $($_.Line.Trim())" }
-}
-
-# Whether a log says $pattern. Windows PowerShell word-wraps an error message at
-# its console width (the 1.1.0 rehearsal's logs show it), so line breaks and runs
-# of spaces are collapsed before matching.
-function Test-LogSays([string]$log, [string]$pattern) {
-    ((Get-Content -Raw $log) -replace '\s+', ' ') -match $pattern
-}
-
-# The installer's staging and old-version folders (bin.new.N, bin.old.N) beside
-# $bin. Matched with -like, not -Filter: a Windows filter "bin.*" also matches
-# "bin" itself.
-function Get-Staging {
-    @(Get-ChildItem -LiteralPath (Split-Path $bin -Parent) -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "bin.*" })
-}
-
-# 6a. an open mochiii -- here one waiting on a slow answer -- is not the
+# 7a. an open mochiii -- here one waiting on a slow answer -- is not the
 #     installer's to stop. The upgrade must stop before changing anything, and
 #     name it.
 $open = Start-Process -FilePath (Join-Path $bin "mochiii.exe") -ArgumentList @("--workspace", "`"$project`"", "--prompt", "SMOKE-SLOW") `
@@ -361,7 +414,7 @@ while (-not (Select-String -Path $requests -Pattern "SMOKE-SLOW" -Quiet)) {
     if ((Get-Date) -gt $deadline) { Fail "the slow question never reached the stand-in provider" }
     Start-Sleep -Milliseconds 200
 }
-$daemonsBefore = @(Get-Ours "mochiii-daemon" | ForEach-Object { $_.Id })
+$daemonsBefore = @(Get-Ours "daemon" | ForEach-Object { $_.Id })
 $code = Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "open.log")
 Stop-Process -Id $open.Id -Force -ErrorAction SilentlyContinue
 if ($code -eq 0) { Fail "the installer upgraded while a mochiii was open" }
@@ -369,16 +422,16 @@ if (-not (Test-LogSays (Join-Path $work "open.log") "Close mochiii \(process $($
     Fail ("the upgrade was refused, but not by naming the open mochiii (process $($open.Id)):`n" + (Get-Content -Raw (Join-Path $work "open.log")))
 }
 foreach ($id in $daemonsBefore) {
-    if (@(Get-Ours "mochiii-daemon" | Where-Object { $_.Id -eq $id }).Count -eq 0) { Fail "the refused upgrade stopped the background service (process $id) anyway" }
+    if (@(Get-Ours "daemon" | Where-Object { $_.Id -eq $id }).Count -eq 0) { Fail "the refused upgrade stopped the background service (process $id) anyway" }
 }
 if (@(Get-Staging).Count -gt 0) { Fail "the refused upgrade left a staging folder behind" }
 Pass "an open mochiii stopped the upgrade by name, and nothing was changed"
 
-# 6b. a file held by another program -- this test, opening one without letting
+# 7b. a file held by another program -- this test, opening one without letting
 #     it be moved, as a security scanner does. The upgrade must wait, say what
 #     for, give up after its limit naming the holder, and leave the installed
 #     version in place.
-$held = [IO.File]::Open((Join-Path $bin "models.json"), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+$held = [IO.File]::Open((Join-Path $bin "LICENSE"), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
 try {
     $code = Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "held.log")
 } finally {
@@ -394,38 +447,38 @@ foreach ($want in "waiting for pwsh \(process $PID\)", "still in use after 30 se
 if (((& (Join-Path $bin "mochiii.exe") --version | Out-String).Trim()) -ne "mochiii $Version") { Fail "the refused upgrade broke the installed version" }
 if (@(Get-Staging).Count -gt 0) { Fail "the refused upgrade left a staging folder behind" }
 Pass "a held file was waited on, named, and the installed version kept"
-# 6b stopped the background service before it found the file held; step 6 needs one.
+# 7b stopped the background service before it found the file held; step 7 needs one.
 $out = (& (Join-Path $bin "mochiii.exe") --workspace $project --prompt "before the upgrade?" 2>$null | Out-String)
 if ($out -notmatch "SMOKE-ANSWER-OK") { Fail "no answer before the upgrade: $out" }
 
-# 6. re-install while the background service is running. The installer must stop
+# 7. re-install while the background service is running. The installer must stop
 #    it: Windows will not rename a folder a running program was started from.
-$before = @(Get-Ours "mochiii-daemon" | ForEach-Object { $_.Id })
+$before = @(Get-Ours "daemon" | ForEach-Object { $_.Id })
 if ($before.Count -eq 0) { Fail "no background service was running before re-installing, so this would prove nothing" }
 if ((Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "reinstall.log")) -ne 0) {
     Fail ("re-installing over a running background service failed:`n" + (Get-Content -Raw (Join-Path $work "reinstall.log")))
 }
-$now = @(Get-Ours "mochiii-daemon" | ForEach-Object { $_.Id })
+$now = @(Get-Ours "daemon" | ForEach-Object { $_.Id })
 foreach ($id in $before) { if ($now -contains $id) { Fail "re-installing left the old background service (process $id) running" } }
 $out = (& (Join-Path $bin "mochiii.exe") --workspace $project --prompt "again?" 2>$null | Out-String)
 if ($out -notmatch "SMOKE-ANSWER-OK") { Fail "no answer after re-installing: $out" }
 Show-Waits (Join-Path $work "reinstall.log") "upgrade"
 Pass "re-installed over a running background service: the old one was stopped, and the new one answers"
 
-# 7. stop, then uninstall. Every stop here is TerminateProcess, which runs none
+# 8. stop, then uninstall. Every stop here is TerminateProcess, which runs none
 #    of the service's shutdown; its embedder helper must end with it anyway
 #    (daemon/helperlifetime_windows.go), not linger until logoff.
-if (@(Get-Ours "mochiii-embedder-helper").Count -eq 0) {
+if (@(Get-Ours "helper").Count -eq 0) {
     Fail "no embedder helper was running before --stop, so the check after it would prove nothing"
 }
 & (Join-Path $bin "mochiii.exe") --workspace $project --stop *> $null
 if ($LASTEXITCODE -ne 0) { Fail "mochiii --stop failed" }
 $deadline = (Get-Date).AddSeconds(10)
-while (@(Get-Ours "mochiii-embedder-helper").Count -gt 0) {
+while (@(Get-Ours "helper").Count -gt 0) {
     if ((Get-Date) -gt $deadline) { Fail "mochiii --stop left the embedder helper running: an orphan" }
     Start-Sleep -Milliseconds 200
 }
-if (@(Get-Ours "mochiii-daemon").Count -gt 0) { Fail "mochiii --stop left the background service running" }
+if (@(Get-Ours "daemon").Count -gt 0) { Fail "mochiii --stop left the background service running" }
 Pass "mochiii --stop ended the background service and its embedder helper"
 $env:MOCHIII_UNINSTALL = "1"
 if ((Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "uninstall.log")) -ne 0) { Fail "uninstall failed" }

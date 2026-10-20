@@ -122,6 +122,11 @@ jobs:
             target: darwin-arm64
           - os: ubuntu-24.04-arm
             target: linux-arm64
+          # Static, with no code search, for Linux on musl (release-targets.txt).
+          - os: ubuntu-latest
+            target: linux-x64-musl
+          - os: ubuntu-24.04-arm
+            target: linux-arm64-musl
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -158,43 +163,29 @@ jobs:
           echo "value=$V" >> "$GITHUB_OUTPUT"
           echo "stamping version: $V"
 
-      # CGO_ENABLED=0 on every binary, explicitly. It was 1 on the helper until
-      # 2026-10-19, when its ONNX Runtime binding stopped being cgo; a C
-      # toolchain on the runner must never be what a build silently depends on.
+      # ONE BINARY SINCE 1.2.0: `mochiii` is the terminal client, the daemon and
+      # the embedder helper (daemon/programrole.go), built from daemon/, which
+      # imports the other two as packages. Until then this job built three
+      # programs, because the helper needed cgo and the daemon had to stay pure
+      # Go; helper/internal/ort removed the reason (2026-10-19). One stamp,
+      # main.daemonVersion, is every role's version.
       #
-      # -trimpath on both. MEASURED without it on this tree: a plain build
-      # embedded 678 absolute paths, starting with the build machine's home
-      # directory and its Go installation -- the builder's username and
-      # directory layout, handed to anyone who runs `strings` on a release
-      # artifact. It also makes the build reproducible from a different
-      # checkout path. scripts/supply-chain.sh fails if any main package
-      # produces a binary carrying one.
-      - name: Build daemon (pure Go)
-        run: go build -trimpath -ldflags "-X main.daemonVersion=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii-daemon${{ startsWith(matrix.target, 'win32') && '.exe' || '' }}" .
+      # CGO_ENABLED=0, explicitly: a C toolchain on the runner must never be
+      # what a build silently depends on.
+      #
+      # -trimpath. MEASURED without it: a plain build embedded 678 absolute
+      # paths, starting with the build machine's home directory and its Go
+      # installation -- the builder's username and directory layout, handed to
+      # anyone who runs `strings` on a release artifact. It also makes the build
+      # reproducible from a different checkout path. scripts/supply-chain.sh
+      # fails if any main package produces a binary carrying one.
+      # A -musl target is the same program built with -tags nosearch, which
+      # leaves out ONNX Runtime's loader (helper/internal/ort/load_nosearch.go)
+      # and with it purego, the one thing that links the Linux build to glibc's
+      # loader: the result is static and starts on Alpine, without code search.
+      - name: Build mochiii (pure Go)
+        run: go build -trimpath ${{ endsWith(matrix.target, '-musl') && '-tags nosearch' || '' }} -ldflags "-X main.daemonVersion=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii${{ startsWith(matrix.target, 'win32') && '.exe' || '' }}" .
         working-directory: daemon
-        env:
-          CGO_ENABLED: 0
-
-      - name: Build embedder helper (pure Go)
-        run: go build -trimpath -ldflags "-X main.version=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii-embedder-helper${{ startsWith(matrix.target, 'win32') && '.exe' || '' }}" .
-        working-directory: helper
-        env:
-          CGO_ENABLED: 0
-
-      # THE TERMINAL CLIENT, added 2026-09-04. It was absent from this workflow
-      # entirely -- recorded as R1.14, and the reason that row is now closed
-      # rather than accepted: "CI goes green once before release" is not a
-      # condition anything can satisfy for a target the release does not build.
-      #
-      # Pure Go, verified: CGO_ENABLED=0 builds it clean. It is NOT bundled into
-      # the .vsix -- the extension neither references nor launches it, and a
-      # copy of a 7.5 MB binary nothing runs in every package is 7.5 MB per
-      # target for nothing.
-      # It ships as a standalone download, attached to the Release below, which
-      # is why it is also in the macOS signing list.
-      - name: Build terminal client (pure Go)
-        run: go build -trimpath -ldflags "-X main.version=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii-tui${{ startsWith(matrix.target, 'win32') && '.exe' || '' }}" .
-        working-directory: clients/tui
         env:
           CGO_ENABLED: 0
 
@@ -289,24 +280,22 @@ jobs:
           for TARGET in linux-x64 win32-x64; do # targets: vsix
             echo "::group::$TARGET"
             rm -rf daemon && mkdir -p daemon
-            # NAMED, NOT `cp -a .`, since 2026-09-04. The build artifact now
-            # also carries mochiii-tui, which the extension does not launch
-            # and must not ship: a wildcard copy would have silently added 7.5 MB
-            # to every package, and verify-vsix.js asserts what MUST be present
-            # and what MUST NOT -- it does not assert that nothing else is.
+            # THE ONE BINARY, under the daemon's name (1.2.0). Run as
+            # mochiii-daemon it IS the daemon (daemon/programrole.go), so the
+            # extension starts it exactly as before, and it starts its own
+            # helper -- there is no second file to ship.
             #
             # No `ls a b | head -1` here, and that is not style: this script
             # runs under `set -euo pipefail`, `ls` exits 2 when one of its
             # arguments does not exist, and pipefail propagates that through
             # head -- so the assignment failed and the job died silently before
             # reaching its own error message. Caught by running the loop.
-            for BIN in mochiii-daemon mochiii-embedder-helper; do
-              SRC="../../artifacts/binaries-$TARGET/$BIN"
-              [ -f "$SRC" ] || SRC="$SRC.exe"
-              [ -f "$SRC" ] || { echo "::error::$BIN missing from binaries-$TARGET"; exit 1; }
-              cp -a "$SRC" daemon/
-            done
-            chmod +x daemon/mochiii-daemon* daemon/mochiii-embedder-helper* 2>/dev/null || true
+            EXE=""
+            [ -f "../../artifacts/binaries-$TARGET/mochiii.exe" ] && EXE=".exe"
+            SRC="../../artifacts/binaries-$TARGET/mochiii$EXE"
+            [ -f "$SRC" ] || { echo "::error::mochiii missing from binaries-$TARGET"; exit 1; }
+            cp -a "$SRC" "daemon/mochiii-daemon$EXE"
+            chmod +x daemon/mochiii-daemon* 2>/dev/null || true
 
             # Stages models.json and the LICENSE, and FAILS if either binary is
             # missing rather than packaging a broken runtime.
@@ -361,25 +350,24 @@ jobs:
           set -euo pipefail
           mkdir -p out-bin
           EXPECT=0
-          for TARGET in linux-x64 win32-x64 darwin-arm64 linux-arm64; do # targets: all
+          for TARGET in linux-x64 win32-x64 darwin-arm64 linux-arm64 linux-x64-musl linux-arm64-musl; do # targets: all
             EXE=""
             [ "$TARGET" = "win32-x64" ] && EXE=".exe"
-            for BIN in mochiii-tui mochiii-daemon mochiii-embedder-helper; do
-              SRC="artifacts/binaries-$TARGET/$BIN$EXE"
-              [ -f "$SRC" ] || { echo "::error::no $BIN built for $TARGET"; exit 1; }
-              # <binary>-<target>[.exe] is the naming contract the signing guard
-              # keys on. It prunes by TARGET SUFFIX rather than by a list of
-              # binary names, so adding a fourth binary here needs no edit there.
-              cp -a "$SRC" "out-bin/$BIN-$TARGET$EXE"
-              # Assignment form, not ((EXPECT++)): the latter returns 1 when the
-              # old value is 0, which `set -e` turns into a dead job on the first
-              # iteration.
-              EXPECT=$((EXPECT + 1))
-            done
+            SRC="artifacts/binaries-$TARGET/mochiii$EXE"
+            [ -f "$SRC" ] || { echo "::error::no mochiii built for $TARGET"; exit 1; }
+            # mochiii-<target>[.exe] is the naming contract the signing guard
+            # keys on. It prunes by TARGET SUFFIX rather than by a list of
+            # binary names, so the move from three binaries to one needed no
+            # edit there.
+            cp -a "$SRC" "out-bin/mochiii-$TARGET$EXE"
+            # Assignment form, not ((EXPECT++)): the latter returns 1 when the
+            # old value is 0, which `set -e` turns into a dead job on the first
+            # iteration.
+            EXPECT=$((EXPECT + 1))
           done
           N=$(find out-bin -type f | wc -l)
           [ "$N" -eq "$EXPECT" ] || { echo "::error::staged $N binaries, expected $EXPECT"; exit 1; }
-          echo "staged $N standalone binaries (one per binary per target in the loop)"
+          echo "staged $N standalone binaries (one per target in the loop)"
           (cd out-bin && sha256sum * | tee SHA256SUMS-bin)
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -402,7 +390,7 @@ jobs:
           set -euo pipefail
           mkdir -p out-dist
           EXPECT=0
-          for TARGET in linux-x64 win32-x64 darwin-arm64 linux-arm64; do # targets: all
+          for TARGET in linux-x64 win32-x64 darwin-arm64 linux-arm64 linux-x64-musl linux-arm64-musl; do # targets: all
             sh install/build-archive.sh "$TARGET" "artifacts/binaries-$TARGET" out-dist
             EXPECT=$((EXPECT + 1))
           done
@@ -422,7 +410,7 @@ jobs:
           cache: false
       - name: Every shipped binary's modules are in THIRD_PARTY_LICENSES.txt
         shell: bash
-        run: sh install/check-notices.sh THIRD_PARTY_LICENSES.txt artifacts/binaries-*/mochiii-*
+        run: sh install/check-notices.sh THIRD_PARTY_LICENSES.txt artifacts/binaries-*/mochiii*
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -475,6 +463,25 @@ jobs:
             --vsix-dir out-vsix \
             --bin-dir out-bin
 
+      # THE NPM PACKAGES, since 1.2.0: `npm install -g mochiii`, the install
+      # command that reads the same in every shell on every OS. Built from
+      # out-bin AFTER the guard, so each @mochiii/<target> package carries the
+      # bytes the standalone asset and the archive carry. npm/build.js reads the
+      # targets from scripts/release-targets.txt and stops if
+      # npm/mochiii/platform.js disagrees. The smoke job installs these offline
+      # on every runner; publishing them to the npm registry is the founder's
+      # step, from the tarballs the draft carries.
+      - name: Build the npm packages
+        shell: bash
+        run: node npm/build.js --version "${{ steps.version.outputs.value }}" --bin-dir out-bin --out out-npm
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-packages
+          path: out-npm/
+          retention-days: 30
+          if-no-files-found: error
+
       # What the release gets, exactly as the guard left it, handed to the
       # attach job -- which runs only after every platform's install smoke test
       # has passed.
@@ -486,6 +493,7 @@ jobs:
           cp out-vsix/*.vsix out-vsix/SHA256SUMS release-assets/
           cp out-bin/mochiii-* out-bin/SHA256SUMS-bin release-assets/
           cp out-dist/* release-assets/
+          cp out-npm/npm-*.tgz out-npm/SHA256SUMS-npm release-assets/
           ls -l release-assets
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -505,7 +513,9 @@ jobs:
   # index (the embedder helper and onnxruntime running on that OS), `mochiii`
   # starting its own background service and answering through a stand-in
   # provider that must receive the project's code, a tampered archive being
-  # refused, an upgrade over a running service, and uninstall.
+  # refused, an upgrade over a running service, and uninstall. Then the same
+  # run's npm packages, installed with npm; and on the two Linux runners,
+  # Alpine containers for the musl build.
   #
   # windows-11-arm runs the win32-x64 build under Windows' emulation, which is
   # what the installer gives Windows on ARM. Intel Macs are not here because
@@ -541,6 +551,13 @@ jobs:
         with:
           name: install-dist
           path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-packages
+          path: npm-dist
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
       - name: Install, index, answer, refuse a tampered download, upgrade, uninstall
         if: runner.os != 'Windows'
         shell: bash
@@ -549,6 +566,20 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./install/smoke/run-smoke.ps1 -Dist dist -Version "${{ needs.package.outputs.version }}"
+      # `npm install -g mochiii` from this run's tarballs, offline, in its own
+      # prefix and home: the native binary behind the command, the three roles'
+      # versions, an answer through the stand-in provider, and --stop. It also
+      # reports, in the job summary, what an npm reinstall over a running
+      # service does on this OS.
+      - name: npm install -g mochiii, answer, stop
+        run: node install/smoke/npm-smoke.js npm-dist "${{ needs.package.outputs.version }}"
+      # Linux on musl, in Alpine containers on this runner's CPU: install.sh and
+      # npm must each choose the static -musl build, which must start, answer
+      # and say that code search isn't in it. See the script.
+      - name: Alpine (musl), by install.sh and by npm
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sh install/smoke/alpine.sh dist npm-dist "${{ needs.package.outputs.version }}"
       # The glibc floor the install docs state, measured on the release's own
       # programs: code search on Ubuntu 18.04 (glibc 2.27), and every program
       # starting on CentOS 7 (2.17). See the script for why these two.

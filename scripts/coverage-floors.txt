@@ -107,6 +107,12 @@ mochiii/daemon/mcp          91.0
 mochiii/proxy/testharness    0.0
 mochiii/helper              22.0
 mochiii/helper/helperproto  75.0
+# helper/cmd/mochiii-embedder-helper and clients/tui/cmd/mochiii-tui, added
+# 2026-10-20 with the one binary: 0.0 for the same reason as testharness. Each
+# is a main that only sets Version and calls Main, kept so the helper's and
+# the TUI's own tests can build them alone; what they run is measured in its
+# package.
+mochiii/helper/cmd/mochiii-embedder-helper 0.0
 # helper/internal/ort, added 2026-10-19: 14.4% measured three times uncached
 # with no model cached, which is what this gate's runner has -- its tests that
 # load ONNX Runtime skip there (82.5% with the model). They run against the real
@@ -114,3 +120,4 @@ mochiii/helper/helperproto  75.0
 mochiii/helper/internal/ort 14.0
 mochiii/protocol            89.5
 mochiii/clients/tui 84.0
+mochiii/clients/tui/cmd/mochiii-tui 0.0

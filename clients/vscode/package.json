@@ -430,8 +430,7 @@
   },
   "scripts": {
     "build:daemon": "cd ../../ && go build -o clients/vscode/daemon/mochiii-daemon ./daemon",
-    "build:helper": "cd ../../helper && go build -o ../clients/vscode/daemon/mochiii-embedder-helper .",
-    "build:runtime": "npm run build:daemon && npm run build:helper && node scripts/stage-runtime.js",
+    "build:runtime": "npm run build:daemon && node scripts/stage-runtime.js",
     "compile": "npm run build:daemon && tsc -p ./ && npm run check:extractors && npm run build:extractors",
     "watch": "tsc -w -p ./",
     "pretest": "tsc -p ./ && npm run check:extractors && npm run build:extractors && npm run check:webview && npm run check:theme && npm run check:installpath",

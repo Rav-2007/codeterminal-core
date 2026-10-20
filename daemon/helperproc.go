@@ -58,14 +58,14 @@ const (
 // guaranteeing a clean shutdown (no orphaned child process) when Stop is
 // called.
 //
-// It never embeds anything itself — Embed only speaks the wire protocol in
-// helperproto and forwards texts to whatever the helper process does with
-// them (real ONNX inference — see helper/onnxembedder.go). BgeEmbedder is
-// the layer that turns this into an Embedder.
+// It never embeds anything itself — Embed speaks helperproto's wire protocol
+// and forwards texts to the helper process (real ONNX inference, see
+// helper/onnxembedder.go); BgeEmbedder turns this into an Embedder.
 type HelperProcess struct {
 	binPath        string
-	modelDir       string // passed to the helper as --model-dir; empty means omit the flag
-	onnxRuntimeLib string // passed to the helper as --onnxruntime-lib; empty means omit the flag
+	roleArgs       []string // before its flags: __embedder-helper when binPath is this binary
+	modelDir       string   // passed to the helper as --model-dir; empty means omit the flag
+	onnxRuntimeLib string   // passed to the helper as --onnxruntime-lib; empty means omit the flag
 	logger         *log.Logger
 
 	// intraOpThreads pins ONNX Runtime's intra-op thread count in the helper.
@@ -202,7 +202,7 @@ func (h *HelperProcess) spawnLocked() error {
 	// BOTH PARTS, because --socket alone cannot say what it is. The helper used
 	// to pair this flag with a hardcoded protocol.TransportUnix on its side,
 	// which made the pair unrepresentable on Windows -- see helperproto.Address.
-	args := []string{"--socket", h.addr.Address, "--transport", h.addr.Transport}
+	args := append(append([]string(nil), h.roleArgs...), "--socket", h.addr.Address, "--transport", h.addr.Transport)
 	if h.modelDir != "" {
 		args = append(args, "--model-dir", h.modelDir)
 	}

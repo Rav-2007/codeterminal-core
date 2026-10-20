@@ -39,6 +39,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == sandboxReaperArg {
 		os.Exit(sandboxReaperMain(os.Args[2:]))
 	}
+	// Then which program of the one binary this run is: see programrole.go.
+	daemonArgs, exit, isDaemon := runProgramRole(os.Args, os.Stderr)
+	if !isDaemon {
+		os.Exit(exit)
+	}
+	os.Args = append([]string{os.Args[0]}, daemonArgs...)
 
 	logger := log.New(os.Stderr, "mochiii-daemon: ", log.LstdFlags)
 
@@ -456,6 +462,7 @@ func main() {
 	}
 
 	lock := protocol.NewLockFile(addr, os.Getpid())
+	lock.Executable, _ = ownProgram() // empty if unknown: no client then claims this daemon as its own
 	lockBytes, err := json.MarshalIndent(lock, "", "  ")
 	if err != nil {
 		logger.Fatalf("encoding lockfile: %v", err)

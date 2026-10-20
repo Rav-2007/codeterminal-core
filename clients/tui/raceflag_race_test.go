@@ -1,6 +1,6 @@
 //go:build race
 
-package main
+package tui
 
 // raceEnabled is true when the binary was built with -race.
 //

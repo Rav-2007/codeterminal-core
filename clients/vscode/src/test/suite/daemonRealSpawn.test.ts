@@ -109,9 +109,10 @@ suite('the extension can start the daemon it ships', function () {
     // IT PASSED LOCALLY AND FAILED ON A RUNNER for the oldest reason there is:
     // a developer tree has a models.json left beside the binary from some
     // earlier `build:runtime`, and a clean checkout does not. Staged here
-    // rather than in `pretest`, because adding build:runtime there would drag
-    // in build:helper, which needs CGO and onnxruntime and would trade this
-    // failure for a worse one.
+    // rather than in `pretest`, so the test states its own precondition
+    // instead of depending on a build step it cannot see (until 1.2.0 that
+    // step also built a cgo helper, which would have traded this failure for
+    // a worse one).
     const repoRoot = path.resolve(__dirname, '../../../../..');
     const stagedConfig = path.join(path.dirname(daemonBin), 'models.json');
     if (!fs.existsSync(stagedConfig)) {

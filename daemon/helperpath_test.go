@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -51,30 +50,16 @@ func fakeHelperAt(t *testing.T, path string) {
 	}
 }
 
-// TestResolveHelperBinPath_HonoursExplicitOverride pins the deployment escape
-// hatch: a layout none of the candidates describe can still be pointed at.
-func TestResolveHelperBinPath_HonoursExplicitOverride(t *testing.T) {
-	custom := filepath.Join(t.TempDir(), "somewhere", "my-helper")
-	fakeHelperAt(t, custom)
-	t.Setenv(helperBinEnvVar, custom)
+// THE HELPER IS THIS BINARY (1.2.0). resolveHelperProgram looks for no file,
+// so the tests that pinned where it looked -- beside the binary, not in the
+// working directory, the Windows .exe -- became one assertion each: what it
+// returns, wherever the process is and whatever the workspace holds.
 
-	got, err := resolveHelperBinPath()
-	if err != nil {
-		t.Fatalf("resolveHelperBinPath: %v", err)
-	}
-	if got != custom {
-		t.Errorf("got %q, want the override %q", got, custom)
-	}
-}
-
-// TestResolveHelperBinPath_DoesNotDependOnWorkingDirectory is the review's
-// repro: the daemon launched from /tmp (or anywhere that is not the repo root)
-// must still find its helper. The pre-fix constant was a bare relative path, so
-// this could only ever succeed by accident of where the process happened to be.
-func TestResolveHelperBinPath_DoesNotDependOnWorkingDirectory(t *testing.T) {
-	// A helper sitting next to the daemon binary, which is where a release
-	// layout puts it. os.Executable() during `go test` is the test binary, so
-	// that is the "daemon binary" for resolution purposes here.
+// TestTheHelperIsThisBinary: with no override, the helper is this very
+// executable, run in its helper role.
+func TestTheHelperIsThisBinary(t *testing.T) {
+	t.Setenv(helperBinEnvVar, "")
+	chdirTemp(t)
 	exe, err := os.Executable()
 	if err != nil {
 		t.Skipf("os.Executable unavailable: %v", err)
@@ -82,73 +67,53 @@ func TestResolveHelperBinPath_DoesNotDependOnWorkingDirectory(t *testing.T) {
 	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
 		exe = resolved
 	}
-	// helperFile, not helperBinName: on Windows this plants the .exe a release
-	// ships, which the bare name never matched (see helperFile).
-	sibling := filepath.Join(filepath.Dir(exe), helperFile)
-	if _, err := os.Stat(sibling); err == nil {
-		t.Skip("a real helper already sits beside the test binary; nothing to prove")
-	}
-	fakeHelperAt(t, sibling)
-	t.Cleanup(func() { os.Remove(sibling) })
-
-	// Run from a directory that is emphatically not the repo root. (os.Chdir
-	// rather than t.Chdir: this module is go1.23, and the process-wide CWD is
-	// restored before any other test observes it.)
-	chdirTemp(t)
-
-	got, err := resolveHelperBinPath()
+	bin, roleArgs, err := resolveHelperProgram()
 	if err != nil {
-		t.Fatalf("resolveHelperBinPath from a non-repo-root CWD: %v", err)
+		t.Fatalf("resolveHelperProgram: %v", err)
 	}
-	if got != sibling {
-		t.Errorf("got %q, want the binary-relative %q", got, sibling)
+	if bin != exe || len(roleArgs) != 1 || roleArgs[0] != helperRoleArg {
+		t.Errorf("resolveHelperProgram() = %q %q, want this binary %q with %q", bin, roleArgs, exe, helperRoleArg)
 	}
-	if !filepath.IsAbs(got) {
-		t.Errorf("got %q, want an absolute path — a relative one is what made this CWD-dependent", got)
-	}
-}
-
-// TestTheHelperFileIsNamedAsEachPlatformShipsIt pins the name the lookup asks
-// the filesystem for. It runs on every platform, so the Windows answer is
-// checked here on Linux too: the bare name on Windows is what left code search
-// off on every Windows install until 2026-10-17.
-func TestTheHelperFileIsNamedAsEachPlatformShipsIt(t *testing.T) {
-	for goos, want := range map[string]string{
-		"windows": "mochiii-embedder-helper.exe",
-		"linux":   "mochiii-embedder-helper",
-		"darwin":  "mochiii-embedder-helper",
-	} {
-		if got := executableFileName(helperBinName, goos); got != want {
-			t.Errorf("executableFileName(%q, %q) = %q, want %q", helperBinName, goos, got, want)
-		}
-	}
-	if got, want := helperFile, executableFileName(helperBinName, runtime.GOOS); got != want {
-		t.Errorf("helperFile = %q, want %q on %s", got, want, runtime.GOOS)
+	if !filepath.IsAbs(bin) {
+		t.Errorf("got %q, want an absolute path -- a relative one is what made this CWD-dependent (Fix 8)", bin)
 	}
 }
 
-// TestResolveHelperBinPath_MissingHelperSaysSo covers the honest-failure half:
-// when the helper genuinely is not there, the error must name the helper and
-// how to get one, not leave the caller to guess.
-func TestResolveHelperBinPath_MissingHelperSaysSo(t *testing.T) {
+// TestTheHelperOverrideRunsAsGiven pins the escape hatch the tests' fakehelper
+// uses: a separate program, run with no role argument in front of its flags.
+func TestTheHelperOverrideRunsAsGiven(t *testing.T) {
+	custom := filepath.Join(t.TempDir(), "somewhere", "my-helper")
+	fakeHelperAt(t, custom)
+	t.Setenv(helperBinEnvVar, custom)
+
+	bin, roleArgs, err := resolveHelperProgram()
+	if err != nil || bin != custom || len(roleArgs) != 0 {
+		t.Errorf("resolveHelperProgram() = %q %q %v; want the override %q with no role argument", bin, roleArgs, err, custom)
+	}
+}
+
+// THE HIJACK THAT WENT WITH THE FILE. The daemon's working directory is the
+// workspace it serves, and until 1.2.0 a repository shipping
+// helper/mochiii-embedder-helper could have it started as the embedder under
+// `go run`, and anywhere had the lookup ever reached that candidate. Now no
+// workspace content is consulted at all, under `go run` or not.
+func TestNoWorkspaceCanSupplyTheHelper(t *testing.T) {
 	t.Setenv(helperBinEnvVar, "")
-	chdirTemp(t) // no helper/ here, and none beside the test binary
+	repo := t.TempDir()
+	planted := filepath.Join(repo, "helper", "mochiii-embedder-helper")
+	fakeHelperAt(t, planted)
+	t.Chdir(repo)
 
-	exe, _ := os.Executable()
-	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
-		exe = resolved
-	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), helperFile)); err == nil {
-		t.Skip("a real helper sits beside the test binary; cannot exercise the missing case")
-	}
-
-	_, err := resolveHelperBinPath()
-	if err == nil {
-		t.Fatal("expected an error when no helper can be found")
-	}
-	for _, want := range []string{helperBinName, helperBinEnvVar, "go build"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %v, want it to mention %q", err, want)
+	for _, goRun := range []bool{false, true} {
+		original := goRunDetector
+		goRunDetector = func() bool { return goRun }
+		bin, _, err := resolveHelperProgram()
+		goRunDetector = original
+		if err != nil {
+			t.Fatalf("resolveHelperProgram (go run %v): %v", goRun, err)
+		}
+		if pathIsUnder(bin, repo) {
+			t.Errorf("go run %v: the helper resolved inside the workspace: %q", goRun, bin)
 		}
 	}
 }
@@ -246,122 +211,5 @@ func TestGatherContext_SurfacesTheConfiguredReason(t *testing.T) {
 	}
 	if out.Reason != reasonEmbedderUnavailable {
 		t.Errorf("Reason = %q, want the specific reason %q", out.Reason, reasonEmbedderUnavailable)
-	}
-}
-
-// THE HIJACK VARIANT. legacyHelperBinPath resolves against the WORKING
-// DIRECTORY, and the daemon's working directory is the workspace it was asked
-// to serve. So a repository shipping helper/mochiii-embedder-helper could
-// have it started as this daemon's embedder — the same defect class as the
-// TUI's /mcp-server hijack, narrower only because it is the last candidate and
-// needs the real helper to be absent first.
-//
-// The candidate is now offered only under `go run`, which is what its own
-// comment always said it was for. An installed binary never sees it.
-//
-// Neuter check: append legacyHelperBinPath unconditionally and this fails with
-// the planted path returned.
-func TestResolveHelperBinPath_IgnoresTheWorkingDirectoryWhenInstalled(t *testing.T) {
-	t.Setenv(helperBinEnvVar, "")
-
-	// A hostile workspace that ships something at the legacy path.
-	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "helper"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	planted := filepath.Join(repo, legacyHelperBinPath)
-	if err := os.WriteFile(planted, []byte("#!/bin/sh\necho pwned\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(repo)
-
-	// Stand in for an INSTALLED daemon. A test binary is itself built into the
-	// temp directory, so without this the case that actually matters could
-	// never run and this test would permanently skip.
-	original := goRunDetector
-	goRunDetector = func() bool { return false }
-	defer func() { goRunDetector = original }()
-
-	got, err := resolveHelperBinPath()
-	if err == nil {
-		t.Fatalf("a helper was found where none should be: %q", got)
-	}
-	if _, statErr := os.Stat(got); statErr == nil {
-		t.Errorf("resolveHelperBinPath returned an EXISTING path from the working directory: %q", got)
-	}
-}
-
-// The explicit override still wins, and is the documented escape hatch for any
-// layout the candidates do not describe.
-func TestResolveHelperBinPath_OverrideStillWins(t *testing.T) {
-	want := filepath.Join(t.TempDir(), "my-helper")
-	t.Setenv(helperBinEnvVar, want)
-	got, err := resolveHelperBinPath()
-	if err != nil || got != want {
-		t.Errorf("resolveHelperBinPath() = %q, %v; want %q", got, err, want)
-	}
-}
-
-// Under `go run`, the candidate must still be offered — the whole point is that
-// the developer workflow the comment protects is untouched.
-func TestResolveHelperBinPath_OffersTheWorkingDirectoryUnderGoRun(t *testing.T) {
-	t.Setenv(helperBinEnvVar, "")
-
-	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "helper"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	planted := filepath.Join(repo, legacyHelperBinPath)
-	if err := os.WriteFile(planted, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(repo)
-
-	original := goRunDetector
-	goRunDetector = func() bool { return true }
-	defer func() { goRunDetector = original }()
-
-	got, err := resolveHelperBinPath()
-	if err != nil {
-		t.Fatalf("under go run the legacy candidate must still resolve: %v", err)
-	}
-	if got != legacyHelperBinPath {
-		t.Errorf("resolveHelperBinPath() = %q, want %q", got, legacyHelperBinPath)
-	}
-}
-
-// pathIsUnder is the entire security decision, so it is tested against the path
-// shapes that break naive implementations.
-func TestPathIsUnder(t *testing.T) {
-	for _, tc := range []struct {
-		path, dir string
-		want      bool
-	}{
-		{"/tmp/go-build123/b001/exe/daemon", "/tmp", true},
-		{"/tmp", "/tmp", true},
-		{"/usr/local/bin/mochiii-daemon", "/tmp", false},
-		{"/home/u/repo/daemon", "/tmp", false},
-		// The one a strings.HasPrefix implementation gets WRONG: a sibling
-		// directory sharing a textual prefix.
-		{"/tmpfoo/daemon", "/tmp", false},
-		{"/tmp-other/daemon", "/tmp", false},
-		// Escapes must not count as inside.
-		{"/tmp/../usr/bin/daemon", "/tmp", false},
-	} {
-		if got := pathIsUnder(tc.path, tc.dir); got != tc.want {
-			t.Errorf("pathIsUnder(%q, %q) = %v, want %v", tc.path, tc.dir, got, tc.want)
-		}
-	}
-}
-
-// The OS-touching half must be deterministic and must not panic. Deterministic
-// matters because it gates a security decision: a predicate that flickered
-// would offer the working-directory candidate intermittently.
-func TestRunningFromGoRun_IsDeterministic(t *testing.T) {
-	first := runningFromGoRun()
-	for i := 0; i < 5; i++ {
-		if again := runningFromGoRun(); again != first {
-			t.Fatalf("runningFromGoRun returned %v then %v", first, again)
-		}
 	}
 }

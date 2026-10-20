@@ -17,7 +17,35 @@ it, and the commands most people use — is the [front page](../README.md).
 
 ## Install, update and uninstall
 
-macOS and Linux:
+With Node.js 18 or later, on any OS:
+
+```bash
+npm install -g mochiii
+```
+
+The `mochiii` package depends on one `@mochiii/<platform>` package per build
+(`linux-x64`, `linux-arm64`, `linux-x64-musl`, `linux-arm64-musl`,
+`darwin-arm64`, `win32-x64`), and npm installs only the one that matches this
+computer. Each carries the same binary, byte for
+byte, that the installers below put in place. On macOS and Linux the package's
+install script puts that binary where the `mochiii` command points, so starting
+Mochiii does not start Node. With install scripts off (`--ignore-scripts`,
+pnpm's default) a small Node launcher runs it instead, as npm does on Windows.
+npm installs neither the code-search model, which the first index downloads,
+nor the VS Code extension.
+
+- Update: `npm install -g mochiii@latest`. The next `mochiii` in a folder
+  restarts that folder's background service if an older version of this same
+  install is still running it.
+- Remove: `mochiii --stop` in each project folder you used Mochiii in, then
+  `npm uninstall -g mochiii`. npm does not stop the background service.
+- On Alpine and other musl systems npm installs the `-musl` build, which has no
+  code search (see the troubleshooting below).
+- `npm install -g` failing with `EACCES`, or asking for `sudo`: npm's global
+  folder belongs to root on this machine. Use the curl line below, which
+  installs into your home folder.
+
+Without Node.js, on macOS and Linux:
 
 ```bash
 curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh
@@ -69,18 +97,26 @@ and `mochiii` in every normal window afterwards is refused it, with a message
 saying to delete the directory or run at the same elevation. After
 `MOCHIII_ALLOW_ADMIN=1`, open a normal PowerShell to run `mochiii`.
 
+**One program.** Since 1.2.0 Mochiii is one binary, `mochiii`: the terminal
+app, the background service (`mochiii daemon`) and the code-search helper, with
+its default configuration built in. The service's commands run as
+`mochiii <command>` -- `mochiii index`, `mochiii download-model`,
+`mochiii connect`, `mochiii mcp …` ([all of them](#commands)). Upgrading from
+1.1.0 stops its background service and replaces its three programs and
+`models.json` with this one file.
+
 **Where things go:**
 
 | | macOS / Linux | Windows |
 |---|---|---|
-| Programs | `~/.mochiii/bin/` (+ link `~/.local/bin/mochiii`) | `%LOCALAPPDATA%\Programs\Mochiii\bin` |
+| Program | `~/.mochiii/bin/mochiii` (+ link `~/.local/bin/mochiii`) | `%LOCALAPPDATA%\Programs\Mochiii\bin\mochiii.exe` |
 | Keys, models, MCP servers | `~/.mochiii/` | `%USERPROFILE%\.mochiii\` |
 | Chats, rules, tasks, logs | `$XDG_STATE_HOME/mochiii` or `~/.local/state/mochiii` | `%LOCALAPPDATA%\mochiii` |
 | A project's index | `<project>/.mochiii/index` | the same |
 
 **`mochiii` in a project folder** starts Mochiii's background service for that
-folder if none is running. Only the service installed beside `mochiii` is
-started, never one found on `PATH` or in the project. The service keeps running
+folder if none is running: itself, run as `mochiii daemon`, never a program
+found on `PATH` or in the project. The service keeps running
 after the chat closes, so the next start is instant. The first run offers to
 download the code-search model and to index the folder; answer `never` to stop
 being asked for that folder. Other options:
@@ -95,7 +131,9 @@ being asked for that folder. Other options:
 - `mochiii: command not found` right after installing: open a new terminal. The
   installer added `~/.local/bin` to your shell's startup file.
 - Code search is off on Linux: it needs glibc 2.27+ (`ldd --version`). Chat and
-  agent tools work regardless.
+  agent tools work regardless. On Alpine and other musl systems both install
+  commands give you a static build without code search, since the regular one
+  cannot start without glibc; `mochiii index` says so.
 - Code search is off on Windows: install the Visual C++ runtime from
   <https://aka.ms/vs/17/release/vc_redist.x64.exe>.
 - A Windows upgrade or uninstall says "Close mochiii (process N)": a `mochiii`
@@ -123,13 +161,14 @@ later) downloads that toolchain by itself on the first build, unless
 
 ### 1. Build
 
-The helper is **not** optional — the daemon spawns it to compute embeddings
-locally, and retrieval is disabled without it.
+One binary, built from `daemon/`, which imports the client and the helper. It
+is the terminal client under any name but `mochiii-daemon`, under which it is
+the background service, so the steps below run it by that name; it starts its
+own embedder helper. On Windows, copy instead of linking.
 
 ```bash
-(cd helper      && go build -o mochiii-embedder-helper .)
-(cd daemon      && go build -o mochiii-daemon .)
-(cd clients/tui && go build -o mochiii-tui .)
+(cd daemon && go build -o mochiii .)
+ln -f daemon/mochiii daemon/mochiii-daemon
 ```
 
 ### 2. Fetch the model — once per machine
@@ -241,7 +280,7 @@ set -a && source .env && set +a
 
 ```bash
 ./daemon/mochiii-daemon --workspace .    # terminal 1
-./clients/tui/mochiii-tui                # terminal 2
+./daemon/mochiii                         # terminal 2
 ```
 
 **With no key yet, the terminal client opens on the setup** rather than the
@@ -302,7 +341,9 @@ on the leftover socket, removes it, and binds a fresh one.
 
 ## Commands
 
-All commands are subcommands of the `mochiii-daemon` binary.
+These are the background service's commands. An installed copy runs them as
+`mochiii <command>`; `mochiii daemon <command>`, and the binary run under the
+name `mochiii-daemon`, take them too.
 
 | Command | Purpose |
 |---|---|
@@ -322,7 +363,7 @@ All commands are subcommands of the `mochiii-daemon` binary.
 | Flag | Effect |
 |---|---|
 | `--workspace <path>` | Which repo grounds answers (default: cwd) |
-| `--config <path>` | Path to `models.json` (default: beside the binary, then `./models.json`) |
+| `--config <path>` | Path to `models.json` (default: one beside the binary, or one directory up, else the copy built into it; `./models.json` only under `go run`) |
 | `--model <slug>` | Override the resolved slug (testing only) |
 | `--system-prompt <path>` | Use this file instead of the prompt compiled into the binary |
 | `--log-file <path>` | Tee logs to a size-rotating file as well as stderr |

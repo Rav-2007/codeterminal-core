@@ -62,7 +62,7 @@ func buildRealHelperBinary(t *testing.T) string {
 	t.Helper()
 	binPath := filepath.Join(t.TempDir(), exeName("mochiii-embedder-helper"))
 
-	cmd := exec.Command("go", "build", "-o", binPath, ".")
+	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/mochiii-embedder-helper")
 	cmd.Dir = "../helper"
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building real helper binary: %v\n%s", err, out)

@@ -6,15 +6,14 @@
 // already agree on it, which is why bundling needs no Go changes at all:
 //
 //   extension.ts          -> <extensionPath>/daemon/mochiii-daemon
-//   resolveHelperBinPath  -> <exedir>/mochiii-embedder-helper
-//                            ("installed side by side (release layout)")
 //   resolveConfigPath     -> <exedir>/models.json
 //
-// So daemon, helper and models.json all live in one directory and find each
-// other. Getting this wrong is invisible: the 2026-08-05 package shipped the
-// daemon WITHOUT the helper, which does not error -- retrieval just silently
-// degrades to reasonEmbedderUnavailable and the product answers ungrounded
-// while looking like it works.
+// Since 1.2.0 mochiii-daemon is the one `mochiii` binary under the daemon's
+// name, and it runs its own embedder helper (resolveHelperProgram), so the
+// runtime is that binary and models.json. Until then a separate
+// mochiii-embedder-helper had to sit beside it, and the 2026-08-05 package
+// shipped WITHOUT it: no error, retrieval silently off, and the product
+// answering ungrounded while looking like it worked.
 
 'use strict';
 
@@ -66,16 +65,12 @@ function requireFile(p, hint) {
 
 console.log('staging runtime into', path.relative(repoRoot, runtimeDir));
 
-// The two binaries are produced by npm run build:daemon / build:helper, which
-// write straight into runtimeDir. Assert rather than assume -- a silent absence
-// here is the exact defect that shipped last time.
+// The binary is produced by npm run build:daemon (or release.yml), which writes
+// straight into runtimeDir. Assert rather than assume -- a silent absence here
+// is the defect that shipped on 2026-08-05.
 requireFile(
   path.join(runtimeDir, `mochiii-daemon${exe}`),
   'run: npm run build:daemon',
-);
-requireFile(
-  path.join(runtimeDir, `mochiii-embedder-helper${exe}`),
-  'run: npm run build:helper   (needs CGO — onnxruntime_go excludes every file without it)',
 );
 
 // models.json is tracked at the repo root and is not a secret; the daemon reads

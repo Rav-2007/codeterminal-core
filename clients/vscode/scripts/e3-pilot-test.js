@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // E3 CLEAN INSTALLATION PILOT HARNESS
-// The end-to-end proof: unpack `.vsix`, spawn bundled daemon & embedder helper
+// The end-to-end proof: unpack `.vsix`, spawn the bundled daemon (which starts its own embedder helper)
 // without Go on PATH, connect over Unix domain socket, verify handshake,
 // apply an edit, and perform an undo operation.
 
@@ -125,15 +125,11 @@ async function runPilot() {
   extractZip(vsixPath, stagingDir);
 
   const daemonExe = path.join(stagingDir, 'extension', 'daemon', process.platform === 'win32' ? 'mochiii-daemon.exe' : 'mochiii-daemon');
-  const helperExe = path.join(stagingDir, 'extension', 'daemon', process.platform === 'win32' ? 'mochiii-embedder-helper.exe' : 'mochiii-embedder-helper');
   const modelsJson = path.join(stagingDir, 'extension', 'daemon', 'models.json');
 
   logStep('Asserting bundled runtime components...');
   if (!fs.existsSync(daemonExe)) {
     throw new Error(`Missing bundled daemon executable at ${daemonExe}`);
-  }
-  if (!fs.existsSync(helperExe)) {
-    throw new Error(`Missing bundled embedder helper executable at ${helperExe}`);
   }
   if (!fs.existsSync(modelsJson)) {
     throw new Error(`Missing bundled models.json config at ${modelsJson}`);

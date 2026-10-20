@@ -2214,10 +2214,10 @@ type GroundingInfo struct {
 // Address is authoritative. SocketPath is kept because it is what every shipped
 // client reads today and a lockfile written by an older daemon must keep
 // working on the same machine; on Unix the two agree, and on Windows there is
-// no path to put in it. Resolve with AddressFromLock rather than reading either
-// field directly.
+// no path to put in it. Resolve with AddressFromLock, not either field.
 type LockFile struct {
 	SocketPath string  `json:"socket_path"`
 	PID        int     `json:"pid"`
 	Address    Address `json:"address,omitempty"`
+	Executable string  `json:"executable,omitempty"` // the daemon's own file, links resolved (1.2.0+)
 }

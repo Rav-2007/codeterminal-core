@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+// The `mochiii` command of the npm package: it runs the native binary from the
+// platform package npm installed beside it (@mochiii/<platform>).
+//
+// On macOS and Linux this file is usually not what runs: the package's
+// postinstall (install.js) replaces it with the binary itself, so starting
+// mochiii costs no Node. It runs when install scripts were off (npm
+// --ignore-scripts, pnpm by default) and always on Windows, where npm starts
+// every package command through Node.
+'use strict';
+
+const { spawn } = require('child_process');
+const { findBinary } = require('../platform.js');
+
+let bin;
+try {
+  bin = findBinary();
+} catch (err) {
+  console.error(`mochiii: ${err.message}`);
+  process.exit(1);
+}
+
+// The terminal, signals and exit status all belong to the binary. Ctrl-C in a
+// terminal reaches it directly (the whole foreground process group gets it), so
+// this process ignores SIGINT rather than dying first; SIGTERM and SIGHUP, which
+// are sent to this process alone, are passed on.
+const child = spawn(bin, process.argv.slice(2), { stdio: 'inherit', windowsHide: false });
+process.on('SIGINT', () => {});
+for (const sig of ['SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => child.kill(sig));
+}
+child.on('error', (err) => {
+  console.error(`mochiii: could not start ${bin}: ${err.message}`);
+  process.exit(1);
+});
+child.on('exit', (code, signal) => {
+  if (signal) {
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+    return;
+  }
+  process.exit(code === null ? 1 : code);
+});

@@ -79,8 +79,30 @@ function Install-Mochiii {
             })
     }
 
+    # THE ROLE OF A mochiii.exe (1.2.0). One binary is now the terminal app,
+    # the background service (`mochiii daemon ...`) and the embedder helper
+    # (`mochiii __embedder-helper ...`), so the process name no longer tells
+    # them apart; the first argument on its command line does. Read through
+    # CIM, which Windows PowerShell 5.1 and PowerShell 7 both have. A command
+    # line that cannot be read gives no role, so that process counts as not
+    # ours: the installer never stops what it cannot identify.
+    function Get-RoleWord([int]$id) {
+        $line = try { (Get-CimInstance Win32_Process -Filter "ProcessId = $id" -ErrorAction Stop).CommandLine } catch { $null }
+        if (-not $line) { return "" }
+        $rest = if ($line.StartsWith('"')) { $line.Substring($line.IndexOf('"', 1) + 1) } else { @($line -split ' ', 2)[1] }
+        return @("$rest".Trim() -split '\s+', 2)[0]
+    }
+
+    # The background services and embedder helpers this install started: since
+    # 1.2.0 mochiii.exe in those roles, and until then the programs of their own
+    # (an upgrade from 1.1.0 must stop those too).
+    function Get-Ours {
+        @(Get-FromBin "mochiii-daemon", "mochiii-embedder-helper") +
+        @(Get-FromBin "mochiii" | Where-Object { (Get-RoleWord $_.Id) -in "daemon", "__embedder-helper" })
+    }
+
     function Stop-Ours {
-        $procs = @(Get-FromBin "mochiii-daemon", "mochiii-embedder-helper")
+        $procs = @(Get-Ours)
         if ($procs.Count -gt 0) {
             $procs | Stop-Process -Force -ErrorAction SilentlyContinue
             $procs | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
@@ -93,7 +115,8 @@ function Install-Mochiii {
     # not move the folder, so the install stops before changing anything and
     # names it.
     function Assert-NothingElseRunning {
-        $others = @(Get-FromBin | Where-Object { $_.ProcessName -notin "mochiii-daemon", "mochiii-embedder-helper" })
+        $ours = @(Get-Ours | ForEach-Object { $_.Id })
+        $others = @(Get-FromBin | Where-Object { $_.Id -notin $ours })
         if ($others.Count -gt 0) {
             $names = ($others | ForEach-Object { "$($_.ProcessName) (process $($_.Id))" }) -join ", "
             throw "Close $names, which is running from $bin, and run this again. Nothing was changed."
@@ -299,9 +322,7 @@ namespace MochiiiInstall {
         $previous = Join-Path $root "bin.old.$PID"
         if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
         Expand-Archive -Path (Join-Path $tmp $archive) -DestinationPath $staging -Force
-        foreach ($f in "mochiii.exe", "mochiii-daemon.exe", "mochiii-embedder-helper.exe", "models.json") {
-            if (-not (Test-Path (Join-Path $staging $f))) { throw "$archive has no $f in it." }
-        }
+        if (-not (Test-Path (Join-Path $staging "mochiii.exe"))) { throw "$archive has no mochiii.exe in it." }
         Get-ChildItem -Path $staging -Recurse -File | Unblock-File
 
         $reported = & (Join-Path $staging "mochiii.exe") --version 2>$null
@@ -366,7 +387,7 @@ namespace MochiiiInstall {
 
     if (-not $NoModel) {
         Step "Downloading the code-search model (once for this computer)"
-        & (Join-Path $bin "mochiii-daemon.exe") download-model
+        & (Join-Path $bin "mochiii.exe") download-model
         if ($LASTEXITCODE -ne 0) {
             Warn "The model download did not finish; Mochiii offers it again the first time you run it in a project."
         }

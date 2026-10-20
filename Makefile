@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks hookcheck test race fmt vet crossvet standalone targetparity lint ratchet ledger errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain
+.PHONY: help hooks hookcheck test race fmt vet crossvet standalone targetparity lint ratchet ledger errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain builtin-config
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -22,6 +22,7 @@ help:
 	@echo "make errcheck per-module unchecked-error ceilings (a ratchet, not a gate)"
 	@echo "make fuzz     30s per fuzz target (FUZZTIME=5m to search harder)"
 	@echo "make eval     real-model retrieval eval (~15min, downloads a model) -- NOT in check"
+	@echo "make builtin-config  rebuild the models.json the binary carries, after editing models.agent.json"
 	@echo "make drill    mid-stream SIGTERM drill against the real proxy binary"
 	@echo "make soak     30-minute sustained-load run (DURATION=180 for a quick check)"
 
@@ -114,6 +115,14 @@ crossvet:
 		done; \
 	done
 	@echo "crossvet: clean (windows and darwin, $(words $(CROSSVET_MODULES)) modules)"
+	@# The static build for musl Linux (-tags nosearch, release-targets.txt's
+	@# -musl targets) must compile, and must leave out purego, which is what ties
+	@# the regular Linux build to glibc's dynamic loader.
+	@(cd helper && GOOS=linux go vet -tags nosearch ./...) || { echo "crossvet: FAILED GOOS=linux -tags nosearch helper"; exit 1; }
+	@if (cd daemon && GOOS=linux go list -deps -tags nosearch .) | grep -q ebitengine/purego; then \
+		echo "crossvet: FAILED -- the -tags nosearch build imports purego, so it is not static"; exit 1; \
+	fi
+	@echo "crossvet: clean (linux -tags nosearch: compiles, and imports no purego)"
 
 # STANDALONE, and this asks a different question from crossvet above.
 #
@@ -329,3 +338,10 @@ docs:
 	@./scripts/docs-coderefs.sh
 	@./scripts/docs-claims.sh --self-test
 	@./scripts/docs-claims.sh
+
+# THE MODELS.JSON BUILT INTO THE BINARY (1.2.0) is models.agent.json, gzipped
+# (daemon/builtinconfig.go says why gzipped). TestTheBuiltInConfigIsTheShippedOne
+# fails when the two differ; this makes them the same again.
+builtin-config:
+	@gzip -9 -n -c models.agent.json > daemon/builtinconfig/models.agent.json.gz
+	@echo "builtin-config: daemon/builtinconfig/models.agent.json.gz rebuilt from models.agent.json"
