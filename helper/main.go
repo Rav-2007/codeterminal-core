@@ -1,5 +1,7 @@
-// Command mochiii-embedder-helper is a small subprocess spawned by the
-// daemon to run the local embedding model. It was a separate process so that
+// Package helper is the embedder helper: a small subprocess the daemon spawns
+// to run the local embedding model. Since 1.2.0 it is a role of the one
+// `mochiii` binary (`mochiii __embedder-helper`), and
+// cmd/mochiii-embedder-helper builds it on its own for tests and comparisons. It was a separate process so that
 // CGO, which the old ONNX Runtime binding needed, never touched the daemon.
 // Since 2026-10-19 it has no CGO at all (internal/ort calls the C API through
 // its function table), and it stays a process of its own for its memory: the
@@ -10,7 +12,7 @@
 // machine. The failure necessarily happens at startup instead, when this
 // binary actually tries to load it — see loadEmbedder below, which is
 // written to fail with an actionable message rather than a raw dlopen error.
-package main
+package helper
 
 import (
 	"encoding/json"
@@ -32,10 +34,13 @@ import (
 	"mochiii/protocol"
 )
 
-func main() {
+// Main runs the helper with its command-line arguments (without the program
+// name) and returns the process's exit status.
+func Main(args []string) int {
 	logger := log.New(os.Stderr, "mochiii-embedder-helper: ", log.LstdFlags)
 
-	socketPath := flag.String("socket", "", "address to listen on -- a socket path on Unix, a named pipe on Windows (required; the daemon supplies this)")
+	fs := flag.NewFlagSet("mochiii-embedder-helper", flag.ExitOnError)
+	socketPath := fs.String("socket", "", "address to listen on -- a socket path on Unix, a named pipe on Windows (required; the daemon supplies this)")
 	// SUPPLIED BY THE DAEMON, not derived here, and empty is a valid value.
 	//
 	// protocol.Listen reads an empty transport as "this platform's local
@@ -45,22 +50,22 @@ func main() {
 	// protocol.TransportUnix here, and on Windows that is rejected outright
 	// rather than degraded, so the next line was logger.Fatalf and the helper
 	// never started. Both sides now derive this from helperproto.Address.
-	transport := flag.String("transport", "", "transport for --socket (unix|npipe; empty means this platform's default)")
-	modelDir := flag.String("model-dir", "", "directory containing model_int8.onnx + tokenizer files (required; the daemon supplies this after `download-model`)")
-	onnxRuntimeLib := flag.String("onnxruntime-lib", "", "path to the onnxruntime shared library (required; the daemon supplies this after `download-model`)")
+	transport := fs.String("transport", "", "transport for --socket (unix|npipe; empty means this platform's default)")
+	modelDir := fs.String("model-dir", "", "directory containing model_int8.onnx + tokenizer files (required; the daemon supplies this after `download-model`)")
+	onnxRuntimeLib := fs.String("onnxruntime-lib", "", "path to the onnxruntime shared library (required; the daemon supplies this after `download-model`)")
 	// A FLAG rather than an environment variable, deliberately: helperEnv() in
 	// the daemon passes this process only PATH and HOME, on the stated grounds
 	// that the helper "takes every real input via flags and reads no
 	// environment variables itself". A diagnostic knob is not a reason to
 	// falsify that. Zero means "say nothing to ONNX Runtime", which is what
 	// production does and what this binary did before the flag existed.
-	intraOpThreads := flag.Int("intra-op-threads", 0, "diagnostic: pin ONNX Runtime's intra-op thread count (0 = library default, and the only value production uses)")
-	showVersion := flag.Bool("version", false, "print this helper's version and exit")
-	flag.Parse()
+	intraOpThreads := fs.Int("intra-op-threads", 0, "diagnostic: pin ONNX Runtime's intra-op thread count (0 = library default, and the only value production uses)")
+	showVersion := fs.Bool("version", false, "print this helper's version and exit")
+	_ = fs.Parse(args) // ExitOnError: a bad flag has already exited
 
 	if *showVersion {
-		fmt.Println("mochiii-embedder-helper", version)
-		return
+		fmt.Println("mochiii-embedder-helper", Version)
+		return 0
 	}
 
 	if *socketPath == "" {
@@ -111,7 +116,7 @@ func main() {
 		if err != nil {
 			// Expected once the signal handler above closes ln during
 			// shutdown; nothing else should cause Accept to fail here.
-			return
+			return 0
 		}
 		go srv.handleConn(conn)
 	}

@@ -30,6 +30,11 @@ linux-x64     none    ubuntu-latest       vsix+bin
 win32-x64     none    windows-latest      vsix+bin
 darwin-arm64  none    macos-latest        bin
 linux-arm64   none    ubuntu-24.04-arm    bin
+# The -musl builds (1.2.0) are for Linux on musl, Alpine among them: static,
+# with no code search (`-tags nosearch`), because the builds above need glibc's
+# dynamic loader to start at all. install.sh and npm choose them on musl.
+linux-x64-musl    none  ubuntu-latest     bin
+linux-arm64-musl  none  ubuntu-24.04-arm  bin
 
 # ------------------------------------------------------------------------------
 # darwin-arm64 IS BACK SINCE 2026-10-17 -- AS THE TERMINAL APP ONLY, UNSIGNED.

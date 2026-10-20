@@ -306,7 +306,11 @@ jobs:
         run: |
           set -o pipefail
           if [ -d "$RUNNER_TEMP/base/helper" ]; then
-            (cd "$RUNNER_TEMP/base/helper" && go build -o "$RUNNER_TEMP/base-helper" .)
+            # Since 1.2.0 the helper is a package with a command of its own;
+            # a base from before that builds from the module root.
+            pkg=.
+            [ -d "$RUNNER_TEMP/base/helper/cmd/mochiii-embedder-helper" ] && pkg=./cmd/mochiii-embedder-helper
+            (cd "$RUNNER_TEMP/base/helper" && go build -o "$RUNNER_TEMP/base-helper" "$pkg")
             export MOCHIII_OTHER_HELPER="$RUNNER_TEMP/base-helper"
           fi
           go test -count=1 -v ./... 2>&1 | tee "$RUNNER_TEMP/helper.log" | grep -vE '^=== (RUN|PAUSE|CONT)'

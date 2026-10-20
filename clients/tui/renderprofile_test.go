@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"go/ast"
@@ -154,19 +154,19 @@ func TestMainPinsTheProfileBeforeAnythingElse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fn := findFunc(file, "main")
+	fn := findFunc(file, "Main")
 	if fn == nil {
-		t.Fatal("main.go has no main()")
+		t.Fatal("main.go has no Main()")
 	}
 	if len(fn.Body.List) == 0 {
-		t.Fatal("main() is empty")
+		t.Fatal("Main() is empty")
 	}
 	call, ok := fn.Body.List[0].(*ast.ExprStmt)
 	if !ok {
-		t.Fatalf("main()'s first statement is %T, not the pin", fn.Body.List[0])
+		t.Fatalf("Main()'s first statement is %T, not the pin", fn.Body.List[0])
 	}
 	if !callsFunc(call.X, "pinColorProfile") {
-		t.Fatalf("main()'s first statement is not pinColorProfile(). The colour profile " +
+		t.Fatalf("Main()'s first statement is not pinColorProfile(). The colour profile " +
 			"must be resolved before anything can render, or the first Style.Render " +
 			"in the process decides it instead -- see renderprofile.go")
 	}

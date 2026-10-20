@@ -7,6 +7,14 @@ All notable changes to the Mochiii extension. Versions follow the extension's
 
 ### Changed
 
+- **One binary.** `mochiii` is now the terminal app, the background service
+  (`mochiii daemon`) and the code-search helper in one file, with its default
+  configuration built in. An install is that file: the archives drop from 22 MB
+  to under 15 MB, and the service's commands run as `mochiii index`,
+  `mochiii download-model`, `mochiii connect`. This extension ships the same
+  binary as `mochiii-daemon`, and it starts its own helper, so there is no
+  second file to go missing. Upgrading from 1.1.0 stops its background service
+  and replaces its three programs.
 - **Code search no longer needs cgo, or a new glibc.** The embedder helper calls
   ONNX Runtime's C API directly instead of through the cgo binding
   `onnxruntime_go`, so every program builds with `CGO_ENABLED=0`. On Linux, code

@@ -14,6 +14,7 @@ Standard library only: it runs on every CI runner as it is.
 """
 
 import json
+import socketserver
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -81,9 +82,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+class QuickServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without its reverse-DNS lookup of the bind address.
+
+    HTTPServer.server_bind calls socket.getfqdn, and on GitHub's macOS runners
+    that took about 35 seconds (measured 2026-10-19): every macOS smoke spent
+    over a minute waiting for its two servers to start, which also hid how long
+    Mochiii itself took there.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def main():
     port, requests_file = int(sys.argv[1]), sys.argv[2]
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = QuickServer(("127.0.0.1", port), Handler)
     server.requests_file = requests_file
     server.serve_forever()
 

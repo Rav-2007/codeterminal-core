@@ -632,6 +632,9 @@ func (s *Server) mcpRemove(req protocol.MCPRequest) protocol.MCPResponse {
 // absoluteOrAsGiven makes a path absolute for display, leaving it alone when
 // that cannot be done.
 func absoluteOrAsGiven(path string) string {
+	if path == "" {
+		return "" // the built-in models.json, which has no path
+	}
 	if abs, err := filepath.Abs(path); err == nil {
 		return abs
 	}

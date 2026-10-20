@@ -66,14 +66,12 @@ const daemonDir = path.join(ext, 'daemon');
 fs.rmSync(daemonDir, { recursive: true, force: true });
 fs.mkdirSync(daemonDir, { recursive: true });
 
-run('Build daemon (pure Go)', 'go',
+// The one `mochiii` binary under the daemon's name (1.2.0): it is the daemon
+// when run as mochiii-daemon, and it starts its own embedder helper.
+run('Build mochiii as mochiii-daemon (pure Go)', 'go',
   ['build', '-trimpath', '-ldflags', `-X main.daemonVersion=${version}`,
     '-o', path.join(daemonDir, `mochiii-daemon${exe}`), '.'],
   { cwd: path.join(repo, 'daemon'), env: { ...process.env, CGO_ENABLED: '0' } });
-
-run('Build embedder helper (pure Go)', 'go',
-  ['build', '-trimpath', '-o', path.join(daemonDir, `mochiii-embedder-helper${exe}`), '.'],
-  { cwd: path.join(repo, 'helper'), env: { ...process.env, CGO_ENABLED: '0' } });
 
 run(`Stage the runtime for ${target}`, node, [path.join(__dirname, 'stage-runtime.js'), target], { cwd: ext });
 

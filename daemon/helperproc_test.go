@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"mochiii/daemon/mcp"
+	"mochiii/helper"
 	"mochiii/protocol"
 	"os"
 	"os/exec"
@@ -34,6 +35,11 @@ func TestMain(m *testing.M) {
 	// And the stand-ins of TestTheHelperEndsWithItsKilledDaemon, which are killed.
 	if len(os.Args) > 1 && os.Args[1] == helperLifetimeRoleArg {
 		os.Exit(helperLifetimeRoleMain(os.Args[2:]))
+	}
+	// And the embedder helper: since 1.2.0 the daemon starts it as itself
+	// (resolveHelperProgram), and under `go test` itself is this binary.
+	if len(os.Args) > 1 && os.Args[1] == helperRoleArg {
+		os.Exit(helper.Main(os.Args[2:]))
 	}
 
 	tmpDir, err := os.MkdirTemp("", "fakehelper-build")

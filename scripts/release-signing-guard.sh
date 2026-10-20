@@ -286,10 +286,10 @@ run_guard() {
     # Assets. Both directories, because both feed the release `files:` list.
     #
     # PRUNED BY TARGET SUFFIX, not by a list of binary names. out-bin held only
-    # mochiii-tui-<target> until 2026-09-21; it now also holds the daemon
-    # and the embedder helper, because publishing a terminal client with no
-    # daemon to talk to made two of six assets unusable. Keying on `-<target>`
-    # means a fourth binary added to release.yml's staging loop is pruned here
+    # mochiii-tui-<target> until 2026-09-21, then the daemon and the embedder
+    # helper beside it, and since 1.2.0 the one mochiii-<target> that is all
+    # three: the names changed twice and this line did not have to. Keying on
+    # `-<target>` means a binary added to release.yml's staging loop is pruned here
     # automatically -- a list of names would be a mirror of that loop, and a
     # mirror nobody updates is how an UNSIGNED binary survives an exclusion.
     rm -fv "$vsix_dir"/*"$t"*.vsix 2>/dev/null || true
@@ -354,16 +354,12 @@ self_test() {
     for t in $ALL_TARGETS; do
       mkdir -p "$d/artifacts/binaries-$t"
       echo "vsix-$t" > "$d/out-vsix/mochiii-vscode-$t-0.0.1.vsix"
-      # EVERY BINARY release.yml STAGES, not just the client. A fixture that
-      # holds less than the real tree cannot prove the guard prunes the real
-      # tree -- and from 2026-09-21 the real out-bin carries three binaries per
-      # target, so an exclusion that removed only the client would leave an
-      # unsigned daemon in the release and this self-test would still pass.
-      local b ext=""
+      # EVERY BINARY release.yml STAGES: a fixture that holds less than the
+      # real tree cannot prove the guard prunes the real tree. From 2026-09-21
+      # to 1.2.0 that was three per target; since 1.2.0 it is the one mochiii.
+      local ext=""
       [ "$t" = "win32-x64" ] && ext=".exe"
-      for b in mochiii-tui mochiii-daemon mochiii-embedder-helper; do
-        echo "$b-$t" > "$d/out-bin/$b-$t$ext"
-      done
+      echo "mochiii-$t" > "$d/out-bin/mochiii-$t$ext"
     done
     ( cd "$d/out-vsix" && sha256sum ./*.vsix > SHA256SUMS )
     ( cd "$d/out-bin" && sha256sum mochiii-* > SHA256SUMS-bin )
@@ -408,22 +404,13 @@ FIXTURE
   run_guard "refs/heads/some-branch" "$d/artifacts" "$d/out-vsix" "$d/out-bin" >/dev/null 2>&1
   check "dispatch + unsigned darwin -> green" pass $?
   absent  "  darwin vsix removed"            "$d/out-vsix/mochiii-vscode-darwin-arm64-0.0.1.vsix"
-  absent  "  darwin tui binary removed"      "$d/out-bin/mochiii-tui-darwin-arm64"
-  # THE DAEMON AND HELPER TOO, and these two arms are the ones that would have
-  # failed on 2026-09-21 before the guard stopped keying on the `mochiii-tui-`
-  # prefix. An excluded target whose DAEMON survived the prune would ship an
-  # unsigned binary under a release that claims nothing unsigned reaches it --
-  # a worse outcome than the missing client this change set out to fix.
-  absent  "  darwin daemon removed"          "$d/out-bin/mochiii-daemon-darwin-arm64"
-  absent  "  darwin helper removed"          "$d/out-bin/mochiii-embedder-helper-darwin-arm64"
+  absent  "  darwin binary removed"         "$d/out-bin/mochiii-darwin-arm64"
   ngreps  "  SHA256SUMS drops darwin"        "darwin-arm64" "$d/out-vsix/SHA256SUMS"
   ngreps  "  SHA256SUMS-bin drops darwin"    "darwin-arm64" "$d/out-bin/SHA256SUMS-bin"
   present "  linux vsix untouched"           "$d/out-vsix/mochiii-vscode-linux-x64-0.0.1.vsix"
-  present "  windows tui untouched"          "$d/out-bin/mochiii-tui-win32-x64.exe"
-  present "  windows daemon untouched"       "$d/out-bin/mochiii-daemon-win32-x64.exe"
+  present "  windows binary untouched"       "$d/out-bin/mochiii-win32-x64.exe"
   greps   "  SHA256SUMS still names linux"   "linux-x64"   "$d/out-vsix/SHA256SUMS"
   greps   "  SHA256SUMS-bin names windows"   "win32-x64"   "$d/out-bin/SHA256SUMS-bin"
-  greps   "  SHA256SUMS-bin names the daemon" "mochiii-daemon" "$d/out-bin/SHA256SUMS-bin"
 
   # --- 2. tag, darwin unsigned: fails.
   d="$tmp/b"; mk_tree "$d"; unsign "$d" darwin-arm64 no-certificate
@@ -506,7 +493,7 @@ FIXTURE
   greps   "  reason=no-binaries"          "reason=no-binaries" "$m/UNSIGNED-darwin-arm64"
 
   # PATH 2 -- binaries present, no certificate.
-  m="$tmp/m2"; mkdir -p "$m"; : > "$m/mochiii-daemon"; : > "$m/mochiii-tui"
+  m="$tmp/m2"; mkdir -p "$m"; : > "$m/mochiii"
   run_signer "$m" darwin-arm64
   check   "path 2 (no certificate) exits 0" pass $?
   present "  wrote UNSIGNED-darwin-arm64"   "$m/UNSIGNED-darwin-arm64"
@@ -515,7 +502,7 @@ FIXTURE
 
   # PATH 3 -- certificate present but the host is not macOS. On a Linux runner
   # this is the branch a cert actually reaches, which is why it is testable here.
-  m="$tmp/m3"; mkdir -p "$m"; : > "$m/mochiii-daemon"
+  m="$tmp/m3"; mkdir -p "$m"; : > "$m/mochiii"
   if [ "$(uname -s)" != "Darwin" ]; then
     run_signer "$m" darwin-arm64 MACOS_CERT_P12=ZmFrZQ==
     check   "path 3 (not macOS) exits 0"  pass $?
@@ -527,18 +514,18 @@ FIXTURE
   fi
 
   # SIGN_TARGET is required, not guessed: the marker's name decides what ships.
-  m="$tmp/m4"; mkdir -p "$m"; : > "$m/mochiii-daemon"
+  m="$tmp/m4"; mkdir -p "$m"; : > "$m/mochiii"
   ( env -u MACOS_CERT_P12 DIST_DIR="$m" SIGN_TARGET="" bash "$signer" >/dev/null 2>&1 )
   check "missing SIGN_TARGET fails loudly rather than defaulting" fail $?
 
   # A stale SIGNED marker must not survive a later unsigned run.
-  m="$tmp/m5"; mkdir -p "$m"; : > "$m/mochiii-daemon"
+  m="$tmp/m5"; mkdir -p "$m"; : > "$m/mochiii"
   printf 'target=darwin-arm64\nsigned=yes\n' > "$m/SIGNED-darwin-arm64"
   run_signer "$m" darwin-arm64
   absent "a stale SIGNED marker is cleared by an unsigned run" "$m/SIGNED-darwin-arm64"
 
   # Per-target isolation at the WRITING end as well as the reading end.
-  m="$tmp/m6"; mkdir -p "$m"; : > "$m/mochiii-daemon"
+  m="$tmp/m6"; mkdir -p "$m"; : > "$m/mochiii"
   run_signer "$m" win32-x64
   present "signing win32-x64 writes only its own marker" "$m/UNSIGNED-win32-x64"
   absent  "  and not darwin's"                           "$m/UNSIGNED-darwin-arm64"

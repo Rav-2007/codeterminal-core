@@ -198,7 +198,7 @@ func startEvalEmbedder() (Embedder, error) {
 	// buildRealHelperBinary gives: a prebuilt binary can be stale, and a stale
 	// embedder scores the wrong product.
 	helperBin := filepath.Join(tmpDir, exeName("mochiii-embedder-helper"))
-	build := exec.Command("go", "build", "-o", helperBin, ".")
+	build := exec.Command("go", "build", "-o", helperBin, "./cmd/mochiii-embedder-helper")
 	build.Dir = "../helper"
 	if out, err := build.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("building real helper binary: %w\n%s", err, out)

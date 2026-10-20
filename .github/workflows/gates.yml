@@ -62,14 +62,20 @@ jobs:
       # THE ONE-LINE INSTALLERS, on every push (2026-10-17). install.sh runs on
       # dash, bash and macOS's sh through `curl | sh`, so it is linted as POSIX
       # sh, with the scripts that build and test it; the PowerShell ones must
-      # parse. Behaviour is release.yml's job: its smoke job runs the real
-      # installer on five platforms before any release is drafted.
+      # parse, and so must the npm package's scripts (1.2.0), whose targets must
+      # match the release's. Behaviour is release.yml's job: its smoke job runs
+      # the real installer, and npm, on five platforms before any release is
+      # drafted.
       - name: Installers lint
         shell: bash
         run: |
           set -euo pipefail
           command -v shellcheck >/dev/null || { echo "::error::shellcheck is not on this runner"; exit 1; }
-          shellcheck -s sh install/install.sh install/build-archive.sh install/check-notices.sh install/smoke/run-smoke.sh install/smoke/old-glibc.sh
+          shellcheck -s sh install/install.sh install/build-archive.sh install/check-notices.sh install/smoke/run-smoke.sh install/smoke/old-glibc.sh install/smoke/alpine.sh
+          for f in npm/build.js npm/mochiii/bin/mochiii npm/mochiii/install.js npm/mochiii/platform.js install/smoke/npm-smoke.js; do
+            node --check "$f"
+          done
+          node npm/build.js --check-targets
           pwsh -NoProfile -Command '
             $bad = 0
             foreach ($f in "install/install.ps1", "install/smoke/run-smoke.ps1") {

@@ -49,6 +49,12 @@ func TestEveryReleaseTargetHasAPinnedONNXRuntime(t *testing.T) {
 	}
 
 	for _, target := range targets {
+		// A -musl target is the static build without code search (release.yml
+		// builds it -tags nosearch): it loads no ONNX Runtime, and its
+		// download-model refuses, so there is no library to pin for it.
+		if strings.HasSuffix(target, "-musl") {
+			continue
+		}
 		p, ok := releaseTargetPlatform[target]
 		if !ok {
 			t.Errorf("release target %q has no GOOS/GOARCH mapping here; add it to releaseTargetPlatform", target)

@@ -30,7 +30,26 @@ provider that answers.
 
 ## Install
 
-One command installs Mochiii. On **macOS or Linux**:
+One command installs Mochiii on macOS, Linux or Windows, the same in every
+shell (it needs [Node.js](https://nodejs.org) 18 or later):
+
+```bash
+npm install -g mochiii
+```
+
+Then, inside a project folder:
+
+```bash
+mochiii
+```
+
+The first run asks which AI provider to use, for its API key and for a model,
+and offers to index the folder so Mochiii can search your code. The first
+index also downloads Mochiii's local code-search model, once per computer.
+
+### No Node.js?
+
+One command installs the same program. On **macOS or Linux**:
 
 ```bash
 curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh
@@ -42,17 +61,10 @@ On **Windows**, in PowerShell:
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
 ```
 
-It installs the terminal app and downloads Mochiii's local code-search model.
-If VS Code is installed, it adds the Mochiii extension as well. It checks every
-download against the release's checksums and needs no administrator rights.
-Then, inside a project folder:
-
-```bash
-mochiii
-```
-
-The first run asks which AI provider to use, for its API key and for a model,
-and offers to index the folder so Mochiii can search your code.
+These also download the code-search model, and add the Mochiii extension if
+VS Code is installed. They check every download against the release's
+checksums and need no administrator rights. If `npm install -g` asks for
+`sudo`, use the curl line instead.
 
 ### VS Code only
 
@@ -69,9 +81,29 @@ start asking.
 
 ### Update and uninstall
 
-Run the install command again to update. To remove Mochiii, add `--uninstall`
-(on Windows, set `$env:MOCHIII_UNINSTALL="1"` first). Your keys, models and saved
-chats stay in `~/.mochiii` unless you also pass `--purge`. The
+Installed with npm, update with:
+
+```bash
+npm install -g mochiii@latest
+```
+
+To remove Mochiii, first stop its background service: run this in each
+project folder you used Mochiii in (npm does not stop it):
+
+```bash
+mochiii --stop
+```
+
+then:
+
+```bash
+npm uninstall -g mochiii
+```
+
+Installed with the curl or PowerShell line, run it again to update. To remove
+Mochiii, add `--uninstall` (on Windows, set `$env:MOCHIII_UNINSTALL="1"`
+first). Either way, your keys, models and saved chats stay in `~/.mochiii`
+unless you also pass `--purge` to the installer. The
 [reference](docs/REFERENCE.md#install-update-and-uninstall) lists every option.
 
 ## Features

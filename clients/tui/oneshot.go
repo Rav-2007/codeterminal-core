@@ -14,7 +14,7 @@
 //
 // Same reasoning as the CLI's `edits apply`, which refuses to confirm an edit
 // when it cannot reach a terminal (daemon/apply_cmd.go).
-package main
+package tui
 
 import (
 	"bufio"

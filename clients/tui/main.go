@@ -1,10 +1,11 @@
-// Command mochiii-tui is Mochiii's terminal client, branded
-// "Mochiii". Run with no arguments (and no piped stdin) from an actual
+// Package tui is Mochiii's terminal client, branded "Mochiii": the default
+// role of the one `mochiii` binary, and cmd/mochiii-tui on its own. Run with
+// no arguments (and no piped stdin) from an actual
 // terminal to launch the interactive chat UI. Pass --prompt, or pipe text
 // on stdin, to keep the original one-shot behavior instead: connect, send
 // one prompt, print the streamed answer, exit — the same behavior this
 // client has always had, unchanged, for scripting and tests.
-package main
+package tui
 
 import (
 	"flag"
@@ -22,23 +23,26 @@ import (
 	"mochiii/protocol"
 )
 
-func main() {
+// Main runs the client with its command-line arguments (without the program
+// name). It exits the process itself on every path but a plain return.
+func Main(args []string) {
 	// FIRST, before flags, before anything can draw. See renderprofile.go: the
 	// colour profile is otherwise decided by whatever the environment happens to
 	// say at the moment of the first Style.Render, wherever in the program that
 	// turns out to be. Resolving it here makes rendering a function of state.
 	pinColorProfile()
 
-	promptFlag := flag.String("prompt", "", "prompt text to send (reads stdin if omitted); with this flag (or piped stdin), runs one-shot instead of launching the chat UI")
-	workspaceFlag := flag.String("workspace", ".", "workspace to ground chat against; sent to the daemon so it can confirm this matches its own configured grounding workspace (one-shot mode ignores this — it predates grounding and stays unchanged)")
-	versionFlag := flag.Bool("version", false, "print this client's version and exit")
-	indexFlag := flag.Bool("index", false, "index (or re-index) this folder for code search, then open the chat")
-	noIndexFlag := flag.Bool("no-index", false, "do not offer to index this folder (also MOCHIII_NO_INDEX=1)")
-	stopFlag := flag.Bool("stop", false, "stop Mochiii's background service for this folder, then exit")
-	flag.Parse()
+	fs := flag.NewFlagSet("mochiii", flag.ExitOnError)
+	promptFlag := fs.String("prompt", "", "prompt text to send (reads stdin if omitted); with this flag (or piped stdin), runs one-shot instead of launching the chat UI")
+	workspaceFlag := fs.String("workspace", ".", "workspace to ground chat against; sent to the daemon so it can confirm this matches its own configured grounding workspace (one-shot mode ignores this — it predates grounding and stays unchanged)")
+	versionFlag := fs.Bool("version", false, "print this client's version and exit")
+	indexFlag := fs.Bool("index", false, "index (or re-index) this folder for code search, then open the chat")
+	noIndexFlag := fs.Bool("no-index", false, "do not offer to index this folder (also MOCHIII_NO_INDEX=1)")
+	stopFlag := fs.Bool("stop", false, "stop Mochiii's background service for this folder, then exit")
+	_ = fs.Parse(args) // ExitOnError: a bad flag has already exited
 
 	if *versionFlag {
-		fmt.Println("mochiii", version)
+		fmt.Println("mochiii", Version)
 		return
 	}
 	launch := launchOptions{forceIndex: *indexFlag, noIndex: *noIndexFlag || os.Getenv("MOCHIII_NO_INDEX") == "1"}

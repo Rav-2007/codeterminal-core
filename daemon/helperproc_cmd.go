@@ -8,16 +8,6 @@ import (
 	"strings"
 )
 
-// defaultHelperBinPath is what --helper-bin defaults to: whatever
-// resolveHelperBinPath finds relative to this binary. A resolution failure is
-// deliberately not fatal here — the smoketest's whole job is to report what
-// happens when the helper is started, so it proceeds with the fallback path and
-// lets Start() produce the real, specific error.
-func defaultHelperBinPath() string {
-	path, _ := resolveHelperBinPath()
-	return path
-}
-
 // runHelperSmoketestCommand implements
 // `mochiii-daemon helper-smoketest [--helper-bin path] [text...]`: a
 // one-shot manual check. It starts the helper (requires `download-model` to
@@ -26,7 +16,7 @@ func defaultHelperBinPath() string {
 // vector's length and first few values, and shuts the helper down cleanly.
 func runHelperSmoketestCommand(args []string, logger *log.Logger) error {
 	fset := flag.NewFlagSet("helper-smoketest", flag.ExitOnError)
-	helperBin := fset.String("helper-bin", defaultHelperBinPath(), "path to the mochiii-embedder-helper binary")
+	helperBin := fset.String("helper-bin", "", "a separate helper program to run (default: this binary's own helper)")
 	fset.Parse(args)
 
 	text := "hello from the mochiii daemon"
@@ -39,10 +29,17 @@ func runHelperSmoketestCommand(args []string, logger *log.Logger) error {
 		return err
 	}
 
-	h := NewHelperProcess(*helperBin, modelDir, onnxRuntimeLib, logger)
-	logger.Printf("helper-smoketest: starting helper %s", *helperBin)
+	bin, roleArgs := *helperBin, []string(nil)
+	if bin == "" {
+		if bin, roleArgs, err = resolveHelperProgram(); err != nil {
+			return err
+		}
+	}
+	h := NewHelperProcess(bin, modelDir, onnxRuntimeLib, logger)
+	h.roleArgs = roleArgs
+	logger.Printf("helper-smoketest: starting helper %s %s", bin, strings.Join(roleArgs, " "))
 	if err := h.Start(); err != nil {
-		return fmt.Errorf("starting embedder helper (build it first with: cd helper && go build -o mochiii-embedder-helper .): %w", err)
+		return fmt.Errorf("starting embedder helper: %w", err)
 	}
 
 	vecs, embedErr := h.Embed(context.Background(), []string{text})

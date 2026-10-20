@@ -8,8 +8,9 @@
 # containers of older distributions:
 #
 #   ubuntu:18.04  glibc 2.27  `index` must embed a project: the floor.
-#   centos:7      glibc 2.17  every program must start (`--version`), which
-#                             shows the helper itself needs no newer glibc.
+#   centos:7      glibc 2.17  every role of the one binary must start
+#                             (`--version`), which shows the binary itself --
+#                             helper included -- needs no newer glibc.
 #
 # Needs docker (GitHub's Linux runners have it). Exit status 0 only if every
 # check passed.
@@ -36,8 +37,8 @@ chmod 700 "$work/r"
 tar -xzf "$dist/mochiii-$target.tar.gz" -C "$work/bin"
 cp "$here/fixture/quokka.go" "$work/project/"
 
-# The model is fetched once, on the runner, by the static daemon.
-HOME="$work/home" "$work/bin/mochiii-daemon" download-model >/dev/null 2>&1 ||
+# The model is fetched once, on the runner.
+HOME="$work/home" "$work/bin/mochiii" download-model >/dev/null 2>&1 ||
 	fail "downloading the code-search model on the runner failed"
 
 # inside <image> <command...> runs a command in a container that sees the
@@ -56,15 +57,16 @@ glibc_of() { inside "$1" ldd --version 2>&1 | head -n 1; }
 
 for image in ubuntu:18.04 centos:7; do
 	echo "== $image: $(glibc_of "$image")"
-	for bin in mochiii mochiii-daemon mochiii-embedder-helper; do
-		inside "$image" "$work/bin/$bin" --version >/dev/null 2>"$work/err" ||
-			fail "$bin does not start on $image: $(cat "$work/err")"
+	for role in "" daemon __embedder-helper; do
+		# shellcheck disable=SC2086 # no role word for the client: an empty $role is no argument
+		inside "$image" "$work/bin/mochiii" $role --version >/dev/null 2>"$work/err" ||
+			fail "mochiii $role does not start on $image: $(cat "$work/err")"
 	done
-	pass "all three programs start on $image"
+	pass "all three roles of mochiii start on $image"
 done
 
 rm -rf "$work/project/.mochiii"
-inside ubuntu:18.04 "$work/bin/mochiii-daemon" index "$work/project" >"$work/index.log" 2>&1 ||
+inside ubuntu:18.04 "$work/bin/mochiii" index "$work/project" >"$work/index.log" 2>&1 ||
 	fail "indexing on ubuntu:18.04 (glibc 2.27) failed: $(tail -n 20 "$work/index.log")"
 [ -f "$work/project/.mochiii/index/embedder_stamp.json" ] ||
 	fail "indexing on ubuntu:18.04 finished without its stamp: $(tail -n 20 "$work/index.log")"

@@ -17,7 +17,8 @@
 # purges nothing.
 #
 # What it does, in order:
-#   1. works out which build this machine needs (Linux x64 or ARM64, Apple Silicon Mac);
+#   1. works out which build this machine needs (Linux x64 or ARM64, glibc or musl;
+#      Apple Silicon Mac);
 #   2. downloads it and its checksum from the GitHub release, and refuses to go on
 #      unless the checksum matches -- there is no switch to skip that;
 #   3. unpacks it beside the current install, checks it runs, then swaps it in, so a
@@ -133,9 +134,14 @@ detect_target() {
 
 # Mochiii's code search needs glibc 2.27 or newer, onnxruntime's own floor. Chat,
 # agent tools and everything else work without it, so an older or musl system is warned, not refused.
+# The regular Linux build needs glibc's loader to start at all, so a musl system
+# (Alpine) gets the static -musl build instead, which has no code search and so
+# no model to download.
 check_libc() {
-	if ldd --version 2>&1 | grep -qi musl; then
-		warn "this system uses musl libc; code search needs glibc 2.27+ and will be off. Everything else works."
+	if is_musl; then
+		TARGET="$TARGET-musl"
+		NO_MODEL=1
+		warn "this system uses musl libc: installing the build without code search, which needs glibc 2.27+. Everything else works."
 		return
 	fi
 	glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
@@ -146,6 +152,22 @@ check_libc() {
 	if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 27 ]; }; then
 		warn "this system has glibc $glibc; code search needs 2.27+ and will be off. Everything else works."
 	fi
+}
+
+# is_musl: ldd says musl, or, with no ldd to ask, there is a musl loader and no
+# glibc one (a glibc system can carry musl's loader too).
+is_musl() {
+	if ldd --version 2>&1 | grep -qi musl; then
+		return 0
+	fi
+	for f in /lib/ld-musl-*; do
+		[ -e "$f" ] || continue
+		for g in /lib/ld-linux* /lib64/ld-linux*; do
+			[ -e "$g" ] && return 1
+		done
+		return 0
+	done
+	return 1
 }
 
 check_user() {
@@ -221,9 +243,7 @@ install_files() {
 	rm -rf "$staging"
 	mkdir -p "$staging"
 	tar -xzf "$TMP/$ARCHIVE" -C "$staging" || die "could not unpack $ARCHIVE"
-	for f in mochiii mochiii-daemon mochiii-embedder-helper models.json; do
-		[ -f "$staging/$f" ] || die "$ARCHIVE has no $f in it"
-	done
+	[ -f "$staging/mochiii" ] || die "$ARCHIVE has no mochiii in it"
 	if [ "$TARGET" = darwin-arm64 ] && has xattr; then
 		xattr -dr com.apple.quarantine "$staging" 2>/dev/null || true
 	fi
@@ -258,11 +278,17 @@ regex_quote() {
 # path it was started by, and the terminal app starts the service by its
 # symlink-resolved path, which differs from BIN_DIR for a home reached through a
 # symlink (on macOS, any home under /tmp, which is /private/tmp).
+#
+# And both GENERATIONS of it: since 1.2.0 the service is the one binary run as
+# `mochiii daemon`, and until then it was a program of its own, mochiii-daemon.
+# Upgrading a 1.1.0 install must stop the 1.1.0 service, or the next `mochiii`
+# would reach the old daemon and its old helper. A terminal app open elsewhere
+# (`mochiii` with no role word) is never matched.
 daemon_pids() {
 	has pgrep || return 0
 	physical=$(cd "$BIN_DIR" 2>/dev/null && pwd -P) || physical=$BIN_DIR
 	for dir in "$BIN_DIR" "$physical"; do
-		pgrep -f "^$(regex_quote "$dir")/mochiii-daemon( |\$)" 2>/dev/null || true
+		pgrep -f "^$(regex_quote "$dir")/mochiii(-daemon| daemon)( |\$)" 2>/dev/null || true
 	done | sort -u
 }
 
@@ -315,7 +341,7 @@ fetch_model() {
 		return 0
 	fi
 	step "Downloading the code-search model (once for this computer)"
-	if ! "$BIN_DIR/mochiii-daemon" download-model; then
+	if ! "$BIN_DIR/mochiii" download-model; then
 		warn "the model download did not finish; Mochiii offers it again the first time you run it in a project"
 	fi
 }

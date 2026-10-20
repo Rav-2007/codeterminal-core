@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"bufio"
@@ -34,6 +34,28 @@ import (
 
 const daemonBinName = "mochiii-daemon"
 
+// InOneBinary is set by the `mochiii` binary, which carries the daemon as a
+// role of itself (daemon/main.go): the service is then this very executable,
+// run as `mochiii daemon`, and its models.json is the one beside it or, with
+// none there, the copy built into it -- never one from the project, which the
+// daemon only reads under `go run`. A build of this client alone leaves it
+// false and looks beside itself for a separate mochiii-daemon, as 1.1.0 did.
+var InOneBinary bool
+
+// CodeSearch is false in the build that has none, the static one for musl
+// Linux: the first run then never offers to index a folder, which it could
+// neither download a model for nor search.
+var CodeSearch = true
+
+// daemonCommand runs the daemon program with args: as the `daemon` role of
+// this binary when InOneBinary, or as the separate program at daemon.
+func daemonCommand(daemon string, args ...string) *exec.Cmd {
+	if InOneBinary {
+		args = append([]string{"daemon"}, args...)
+	}
+	return exec.Command(daemon, args...)
+}
+
 // daemonStartTimeout bounds the wait for a freshly started daemon to answer.
 // Startup includes starting the embedder helper, which loads a 33 MB model;
 // 30 seconds is what run-tui.sh has always allowed.
@@ -56,7 +78,8 @@ func executableFileName(name, goos string) string {
 }
 
 // installedDaemon returns the daemon and models.json installed beside this
-// binary. ok is false when either is missing.
+// binary. ok is false when either is missing. In the one binary the daemon is
+// this executable and config is empty: the daemon resolves its own.
 func installedDaemon() (daemon, config string, ok bool) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -64,6 +87,9 @@ func installedDaemon() (daemon, config string, ok bool) {
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
+	}
+	if InOneBinary {
+		return exe, "", true
 	}
 	return installedDaemonIn(filepath.Dir(exe))
 }
@@ -92,6 +118,83 @@ func daemonAnswers() bool {
 		return false
 	}
 	_ = sess.Close()
+	return true
+}
+
+// AN UPGRADE THAT STOPPED NOTHING (1.2.0). `npm install -g mochiii@latest`
+// replaces the program file and leaves the background service it started
+// running the old version, which then answers every question until it is
+// stopped by hand. The installers stop it themselves; npm cannot. So before
+// using a running daemon, the terminal app compares the program the daemon's
+// lockfile names with its own file: the same file at another version is its
+// own install, upgraded underneath it, and it restarts the daemon. A daemon
+// from anywhere else -- VS Code's own copy, another install -- is not its to
+// stop, and it only says which version is answering.
+
+// servingKind is what a running daemon is to this client.
+type servingKind int
+
+const (
+	servingUsable   servingKind = iota // this version, or one that cannot be told
+	servingUpgraded                    // this install's file, another version: restart it
+	servingForeign                     // another program's, another version: use it, say so
+)
+
+// classifyServing decides servingKind for a daemon of version serving started
+// from program, seen by a client of version mine running from self. With no
+// version to compare (a "dev" build, or a daemon that does not say) it is
+// usable as it is; a lockfile that names no program, as before 1.2.0, is
+// another install's.
+func classifyServing(serving, program, mine, self, goos string) servingKind {
+	if serving == "" || mine == "" || mine == "dev" || serving == mine {
+		return servingUsable
+	}
+	if program == "" || self == "" {
+		return servingForeign
+	}
+	a, b := filepath.Clean(program), filepath.Clean(self)
+	if a == b || (goos == "windows" && strings.EqualFold(a, b)) {
+		return servingUpgraded
+	}
+	return servingForeign
+}
+
+// probeServing completes one handshake with the daemon serving this folder and
+// returns its version and the program its lockfile names. ok is false when no
+// daemon answers.
+func probeServing() (version, program string, ok bool) {
+	lock, _ := readLockFile(lockPathFunc()) // unreadable: no program, so never ours
+	sess, err := connectToDaemon("mochiii-tui")
+	if err != nil {
+		return "", "", false
+	}
+	_ = sess.Close()
+	return sess.handshake.DaemonVersion, lock.Executable, true
+}
+
+// useRunningDaemon reports whether a daemon already serves this folder and is
+// the one to use. It stops a daemon this install's file left running at an
+// older version (stop), so the caller starts this version in its place; only
+// the one binary does this, since only it knows its daemon is its own file.
+func useRunningDaemon(self string, status io.Writer, stop func() error) bool {
+	serving, program, ok := probeServing()
+	if !ok {
+		return false
+	}
+	if !InOneBinary {
+		return true
+	}
+	switch classifyServing(serving, program, Version, self, runtime.GOOS) {
+	case servingUpgraded:
+		say(status, "Mochiii was upgraded from %s to %s: restarting its background service for this folder.\n", serving, Version)
+		if err := stop(); err != nil && !errors.Is(err, errNoDaemonRunning) {
+			say(status, "Could not stop the %s service (%v); carrying on with it.\n", serving, err)
+			return true
+		}
+		return false
+	case servingForeign:
+		say(status, "Note: Mochiii %s, from another install, is answering in this folder; this is %s.\n", serving, Version)
+	}
 	return true
 }
 
@@ -138,7 +241,11 @@ func startInstalledDaemon(daemon, config, root string, status io.Writer) error {
 	say(status, "Starting Mochiii for %s…\n", root)
 	return daemonStart{
 		start: func() (<-chan error, error) {
-			cmd := exec.Command(daemon, "--workspace", root, "--config", config, "--log-file", logPath)
+			args := []string{"--workspace", root, "--log-file", logPath}
+			if config != "" {
+				args = append(args, "--config", config)
+			}
+			cmd := daemonCommand(daemon, args...)
 			cmd.Dir = root
 			cmd.SysProcAttr = detachedProcAttr()
 			// stdio stays unset, which is the null device: the log file is the

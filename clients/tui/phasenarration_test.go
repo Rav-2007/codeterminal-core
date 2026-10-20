@@ -1,4 +1,4 @@
-package main
+package tui
 
 // Phase narration: the line that tells a user WHICH specialist is working.
 //

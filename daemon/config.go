@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 )
@@ -386,7 +385,7 @@ var (
 // daemon starts, since none of those makes the file unservable and refusing
 // forward/backward compatibility would be worse than reporting it.
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, path, err := readConfig(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}

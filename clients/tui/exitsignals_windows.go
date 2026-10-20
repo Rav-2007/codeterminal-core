@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package tui
 
 // Windows has no SIGHUP, SIGQUIT or SIGPIPE, and the console teardown Bubble
 // Tea already performs covers the ways a program ends there. Both of these are

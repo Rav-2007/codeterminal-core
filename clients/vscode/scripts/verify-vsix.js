@@ -131,10 +131,10 @@ const MUST_CONTAIN = [
   // licences require the notice to ship with the copy. A package without it
   // installs and works perfectly -- which is why it went missing unnoticed.
   'extension/THIRD_PARTY_LICENSES.txt',
+  // Since 1.2.0 the one `mochiii` binary under the daemon's name: it is also
+  // the embedder helper, so there is no second file whose absence could leave
+  // retrieval silently off (the 2026-08-05 package shipped without the helper).
   `extension/daemon/mochiii-daemon${exe}`,
-  // The one the last package omitted. Without it retrieval silently degrades
-  // and the product answers ungrounded while appearing to work.
-  `extension/daemon/mochiii-embedder-helper${exe}`,
   'extension/daemon/models.json',
   // The file readers (scripts/build-extractors.js). A package without them
   // installs and chats fine, then fails the first time someone attaches a PDF --
@@ -159,7 +159,7 @@ const MUST_CONTAIN = [
 // `mochiii-tui` because that binary once appeared here; before the rename it
 // would have had to name `codeterminal-tui` too, and after the next rename
 // something else again. A list of what must be ABSENT is unbounded. The set of
-// what may be PRESENT is three files.
+// what may be PRESENT is two files since 1.2.0 (three before: the helper).
 //
 // DERIVED FROM MUST_CONTAIN, not written out a second time, so a runtime file
 // added there is allowed here automatically and the two cannot drift apart.
@@ -574,7 +574,7 @@ function selfTest() {
   // The stale names below are the REAL ones found on disk, not invented
   // examples, and none of them is special: the check rejects them for not being
   // on the derived list rather than for being called anything in particular.
-  if (DAEMON_ALLOWED.size < 3) {
+  if (DAEMON_ALLOWED.size < 2) {
     failures.push(
       `SELF-TEST: the daemon allowlist derived only ${DAEMON_ALLOWED.size} entr(ies) from ` +
         'MUST_CONTAIN, so the runtime-directory check would allow everything',
@@ -583,6 +583,9 @@ function selfTest() {
   const staleInRuntime = [
     'extension/daemon/codeterminal-daemon',
     'extension/daemon/codeterminal-embedder-helper',
+    // 1.1.0's separate helper: since 1.2.0 the daemon binary is the helper,
+    // and a stale copy left in clients/vscode/daemon/ must not ship.
+    'extension/daemon/mochiii-embedder-helper',
     'extension/daemon/mochiii-daemon.old',
     'extension/daemon/models.json.bak',
     'extension/daemon/.DS_Store',
@@ -697,10 +700,10 @@ function main() {
 
   // ANTI-VACUITY. If the derivation above ever matches nothing, every entry in
   // daemon/ becomes "allowed" and this check silently stops existing.
-  if (DAEMON_ALLOWED.size < 3) {
+  if (DAEMON_ALLOWED.size < 2) {
     failures.push(
       `VACUOUS  the daemon allowlist derived ${DAEMON_ALLOWED.size} entr(ies) from MUST_CONTAIN; ` +
-        'expected at least 3 (daemon, embedder helper, models.json). The derivation is broken, ' +
+        'expected at least 2 (the mochiii-daemon binary and models.json). The derivation is broken, ' +
         'and passing here would mean nothing.',
     );
   }
@@ -768,7 +771,7 @@ function main() {
   checkTargetPlatform(vsixManifest, process.argv[3], failures);
   const targetLabel = (/\bTargetPlatform="([^"]+)"/.exec(vsixManifest) || [])[1] || 'none';
 
-  // Verify bundled daemon & helper binary sizes & header magic bytes
+  // Verify the bundled binary's size & header magic bytes
   const daemonEntry = entries.find((e) => e.name === `extension/daemon/mochiii-daemon${exe}`);
   if (daemonEntry) {
     if (daemonEntry.size < 1000000) { // < 1MB
@@ -785,29 +788,6 @@ function main() {
                       (header[0] === 0xca && header[1] === 0xfe && header[2] === 0xba && header[3] === 0xbe);
       if (!isElf && !isPE && !isMachO) {
         failures.push(`CORRUPT  daemon binary invalid header magic bytes: 0x${header.toString('hex')}`);
-      }
-    }
-  }
-
-  const helperEntry = entries.find((e) => e.name === `extension/daemon/mochiii-embedder-helper${exe}`);
-  if (helperEntry) {
-    if (helperEntry.size < 1000000) { // < 1MB
-      failures.push(`CORRUPT  helper binary size is suspiciously small: ${(helperEntry.size / 1024 / 1024).toFixed(2)} MB`);
-    } else {
-      const bin = readEntry(buf, helperEntry);
-      checkBinaryToolchain('helper binary', bin, goFloorFromWorkspace(), failures);
-      // Pure Go like the daemon since 2026-10-19 (helper/internal/ort): a CGO
-      // helper would link the build machine's glibc again, which is what tied
-      // code search to glibc 2.34 when onnxruntime itself needs 2.27.
-      checkBinaryBuild('helper binary', bin, { pureGo: true }, failures);
-      if (notices) linkedModules += checkNoticesCoverGoDeps('helper binary', bin, notices, failures);
-      const header = bin.subarray(0, 4);
-      const isElf = header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46;
-      const isPE = header[0] === 0x4d && header[1] === 0x5a;
-      const isMachO = (header[0] === 0xcf && header[1] === 0xfa && header[2] === 0xed && header[3] === 0xfe) ||
-                      (header[0] === 0xca && header[1] === 0xfe && header[2] === 0xba && header[3] === 0xbe);
-      if (!isElf && !isPE && !isMachO) {
-        failures.push(`CORRUPT  helper binary invalid header magic bytes: 0x${header.toString('hex')}`);
       }
     }
   }

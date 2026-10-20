@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"bufio"
@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -150,7 +149,7 @@ func (s folderSetup) ensureModel() bool {
 // daemon binary in the foreground.
 func runDaemonCommand(daemon string) func(args []string, stdout, stderr io.Writer) error {
 	return func(args []string, stdout, stderr io.Writer) error {
-		cmd := exec.Command(daemon, args...)
+		cmd := daemonCommand(daemon, args...)
 		cmd.Stdin = nil
 		cmd.Stdout, cmd.Stderr = stdout, stderr
 		return cmd.Run()
