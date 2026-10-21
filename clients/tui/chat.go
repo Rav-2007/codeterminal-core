@@ -847,7 +847,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.promptLive() {
 		_, oldPopupLines = m.renderSlashPopup()
 	}
-	m.input, cmd = m.input.Update(msg)
+	m.input, cmd = m.updateInput(msg) // a first key also warms the provider (warm.go)
 	newPopupLines := 0
 	if m.promptLive() {
 		_, newPopupLines = m.renderSlashPopup()

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -189,5 +190,20 @@ func TestTheStateDirIsTheDaemons(t *testing.T) {
 		if err != nil || got != c.want {
 			t.Errorf("stateDirFor(%s, %v) = %q, %v; want %q", c.goos, c.env, got, err, c.want)
 		}
+	}
+}
+
+func TestTheStartWaitBacksOffFromTenMillisecondsToAHundred(t *testing.T) {
+	ms := time.Millisecond
+	var got []time.Duration
+	for w, i := 10*ms, 0; i < 7; i, w = i+1, nextPoll(w, 10*ms, 100*ms) {
+		got = append(got, w)
+	}
+	want := []time.Duration{10 * ms, 20 * ms, 40 * ms, 80 * ms, 100 * ms, 100 * ms, 100 * ms}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("waits = %v, want %v", got, want)
+	}
+	if w := nextPoll(5*ms, 5*ms, 0); w != 5*ms {
+		t.Errorf("with no maxPoll the wait should stay at the first one: got %v", w)
 	}
 }

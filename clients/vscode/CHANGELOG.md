@@ -3,10 +3,35 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
-## [Unreleased]
+## [1.2.0] - 2026-10-21
+
+Mochiii is one program, `mochiii`, and `npm install -g mochiii` installs it on
+macOS, Linux and Windows. Answers start sooner, and code search needs no cgo and
+an older glibc.
+
+### Added
+
+- **`npm install -g mochiii`**, the same command in every shell on every OS (Node.js
+  18+). npm installs only the build for your computer, and on macOS and Linux the
+  `mochiii` command is the native binary itself. The curl and PowerShell lines stay
+  for machines without Node.js.
+- **Alpine and other musl Linux systems** get a static build without code search,
+  from both install commands. 1.2.0's regular Linux build needs glibc's loader.
+- **An upgrade restarts the old background service.** After
+  `npm install -g mochiii@latest`, the next `mochiii` in a folder restarts that
+  folder's service if it is an older version of the same install. A service from
+  another install, VS Code's own among them, is left running and named.
 
 ### Changed
 
+- **Answers start sooner.** The background service opens its connection to your
+  provider while you type, or as it starts, instead of when the question is sent.
+  Against a stand-in provider whose connections cost 0.3 s, as a real provider's
+  TLS handshake does (0.2-0.4 s measured, more on a cold DNS lookup), a question
+  typed after opening Mochiii arrived 0.3 s sooner, and a cold start in an indexed
+  project took 0.38 s instead of 0.79 s. Every Mochiii process starts 7 ms sooner.
+- **Go 1.26.10**, which fixes GO-2026-6809 in the certificate checks behind every
+  provider connection.
 - **One binary.** `mochiii` is now the terminal app, the background service
   (`mochiii daemon`) and the code-search helper in one file, with its default
   configuration built in. An install is that file: the archives drop from 22 MB

@@ -456,6 +456,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 	s.logger.Printf("handshake ok with client %q", hsReq.ClientName)
+	s.warmProvider() // a question usually follows: open its provider connection now (providerconn.go)
 
 	var raw json.RawMessage
 	if err := dec.Decode(&raw); err != nil {

@@ -5,6 +5,77 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## v1.2.0 — 2026-10-21
+
+### `npm install -g mochiii` installs Mochiii on any OS
+
+**What changed.** The install command is now the same in every shell on macOS,
+Linux and Windows, for anyone with Node.js 18 or later:
+
+```bash
+npm install -g mochiii
+```
+
+npm installs only the build for your computer. On macOS and Linux the `mochiii`
+command is then the native binary itself, so starting Mochiii does not start
+Node. The curl and PowerShell lines from 1.1.0 still work, for machines without
+Node.js. Update with `npm install -g mochiii@latest`; to remove Mochiii, run
+`mochiii --stop` in each project folder you used it in, then
+`npm uninstall -g mochiii`.
+
+### One program instead of three
+
+**What changed.** `mochiii` is now the terminal app, the background service and
+the code-search helper in one file, with its default configuration built in. The
+service's commands run as `mochiii index`, `mochiii download-model` and
+`mochiii connect`. The download is 15 MB instead of 22 MB. Upgrading a 1.1.0
+install stops its background service and replaces its three programs.
+
+### Answers start sooner
+
+**What changed.** Mochiii used to open its connection to your AI provider only
+when a question was sent, so the first question of a session, and the first
+after a pause, waited for DNS and a TLS handshake: 0.2-0.4 s measured to real
+providers, and 5 s once on a cold DNS lookup. The background service now opens
+that connection while you type, or as it starts, without your key and without
+sending anything. Only your provider's address is contacted, the same one your
+questions go to.
+
+Against a stand-in provider whose connections cost 0.3 s:
+
+- a question typed after opening Mochiii arrived in 16 ms instead of 327 ms;
+- a first question in an indexed project, with no service running yet, arrived
+  in 0.38 s instead of 0.79 s;
+- every Mochiii process starts in 11 ms instead of 18 ms.
+
+### After an npm upgrade, the old background service is replaced
+
+**What changed.** npm replaces the program but never stops the background
+service it left running. The next `mochiii` in a folder now notices a service of
+the same install at another version, says so, and restarts it. A service from
+another install, VS Code's own among them, is left running, and Mochiii names
+its version.
+
+### Alpine and other musl systems
+
+**What changed.** On Alpine, both install commands give you a build without code
+search; chat and agent mode work. Code search needs glibc, and since 1.2.0 the
+regular Linux build needs glibc to start at all. `mochiii index` says so on that
+build, and Mochiii never offers to index a folder there.
+
+### Code search needs no C compiler, and an older glibc
+
+**What changed.** The code-search helper calls ONNX Runtime directly instead of
+through cgo. On Linux, code search now needs glibc 2.27 (Ubuntu 18.04, Debian 10,
+RHEL 8 and later) instead of 2.34, and building Mochiii from source needs no C
+compiler. Search results are unchanged: the vectors match the old helper's bit
+for bit.
+
+### A Go security fix
+
+**What changed.** Mochiii is built with Go 1.26.10, which fixes GO-2026-6809 in
+the certificate checks behind every connection to your provider.
+
 ## v1.1.0 — 2026-10-18
 
 ### One command installs Mochiii, on macOS, Linux and Windows
