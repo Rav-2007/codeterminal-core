@@ -267,7 +267,7 @@ make check
 ```
 
 To run the terminal app from a checkout instead of an install, you need
-[Go 1.26.9 or newer](https://go.dev/dl/); no C compiler is needed:
+[Go 1.26.10 or newer](https://go.dev/dl/); no C compiler is needed:
 
 ```bash
 ./run-tui.sh
