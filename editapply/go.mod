@@ -1,6 +1,6 @@
 module mochiii/editapply
 
-go 1.26.9
+go 1.26.10
 
 require golang.org/x/text v0.39.0
 

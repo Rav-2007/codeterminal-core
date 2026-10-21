@@ -154,7 +154,7 @@ being asked for that folder. Other options:
 
 For working on Mochiii. Everyone else: [install it](#install-update-and-uninstall).
 
-**Requirements:** Go 1.26.9+, and nothing else: every program is pure Go and
+**Requirements:** Go 1.26.10+, and nothing else: every program is pure Go and
 builds with `CGO_ENABLED=0`, so no C compiler is needed. An older Go (1.21 or
 later) downloads that toolchain by itself on the first build, unless
 `GOTOOLCHAIN=local` is set.
