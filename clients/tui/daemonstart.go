@@ -261,7 +261,8 @@ func startInstalledDaemon(daemon, config, root string, status io.Writer) error {
 		answers: daemonAnswers,
 		logPath: logPath,
 		timeout: daemonStartTimeout,
-		poll:    150 * time.Millisecond,
+		poll:    10 * time.Millisecond,
+		maxPoll: 100 * time.Millisecond,
 	}.run()
 }
 
@@ -272,7 +273,11 @@ type daemonStart struct {
 	answers func() bool
 	logPath string
 	timeout time.Duration
-	poll    time.Duration
+	// poll is the first wait between probes, doubling up to maxPoll (none when
+	// 0). The flat 150 ms this replaced was most of a cold start: with a free
+	// provider connection, latency_test.go measured 176 ms from `mochiii` to the
+	// question at the provider before, 95 ms after (2026-10-20).
+	poll, maxPoll time.Duration
 }
 
 func (d daemonStart) run() error {
@@ -281,6 +286,7 @@ func (d daemonStart) run() error {
 		return err
 	}
 	deadline := time.Now().Add(d.timeout)
+	wait := d.poll
 	for {
 		if d.answers() {
 			return nil
@@ -297,9 +303,19 @@ func (d daemonStart) run() error {
 			}
 			return fmt.Errorf("Mochiii's background service stopped while starting (%v). The end of its log, %s:\n%s",
 				err, d.logPath, logTail(d.logPath, 15))
-		case <-time.After(d.poll):
+		case <-time.After(wait):
+			wait = nextPoll(wait, d.poll, d.maxPoll)
 		}
 	}
+}
+
+// nextPoll is the wait after wait: double, up to maxPoll; with no maxPoll, the
+// first wait again.
+func nextPoll(wait, poll, maxPoll time.Duration) time.Duration {
+	if wait *= 2; wait > maxPoll {
+		return max(maxPoll, poll)
+	}
+	return wait
 }
 
 // exitCode is a finished process's exit code, or -1 when err says nothing
