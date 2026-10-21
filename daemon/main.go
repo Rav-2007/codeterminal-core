@@ -423,6 +423,11 @@ func main() {
 	if realRoot != "" {
 		sweepStaleStages(realRoot)
 	}
+	// The provider connection opens now, beside the setup below, so the first
+	// question finds it open (providerconn.go). Same rule as warmProvider.
+	if (useProxy || strings.TrimSpace(apiKey) != "") && !isLoopbackBase(apiBase) {
+		warmer.warm(apiBase)
+	}
 
 	// EXPENSIVE SETUP STARTS HERE, and only here, because the address is now
 	// held: from this point on losing the race is impossible, so every resource

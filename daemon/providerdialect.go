@@ -258,7 +258,7 @@ func openCompletion(ctx context.Context, apiBase, apiKey, model string, messages
 			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 
-		resp, err := http.DefaultClient.Do(httpReq)
+		resp, err := providerHTTP.Do(httpReq)
 		if err != nil {
 			return nil, wrapTransport(err)
 		}
