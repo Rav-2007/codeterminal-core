@@ -34,8 +34,8 @@ import (
 // approximation extractLSPRange makes for display.
 
 // renameIdentifier is a name rename_symbol will write: one identifier, in any
-// script, never anything that could change the code's shape.
-var renameIdentifier = regexp.MustCompile(`^[\p{L}_][\p{L}\p{N}_]{0,99}$`)
+// script, never anything that could change the code's shape; at most 100 runes.
+var renameIdentifier = regexp.MustCompile(`^[\p{L}_][\p{L}\p{N}_]*$`) // not {0,99}: 3.4 ms to compile, every start
 
 // lspTextEdit is one edit of a WorkspaceEdit.
 type lspTextEdit struct {
@@ -55,7 +55,7 @@ func (s *Server) builtinRenameSymbol(ctx context.Context, raw json.RawMessage, p
 	if strings.TrimSpace(args.Path) == "" || strings.TrimSpace(args.Symbol) == "" {
 		return toolError("give path (the file that declares it) and symbol (its name)")
 	}
-	if !renameIdentifier.MatchString(args.NewName) {
+	if !renameIdentifier.MatchString(args.NewName) || utf8.RuneCountInString(args.NewName) > 100 {
 		return toolError("new_name must be one identifier: letters, digits and _, not starting with a digit")
 	}
 	st, err := p.workingCopy()

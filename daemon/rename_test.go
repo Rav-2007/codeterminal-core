@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"mochiii/editapply"
 )
@@ -276,6 +278,30 @@ func TestTrimDriveSlashGivesWindowsPathsTheirDrive(t *testing.T) {
 	} {
 		if got := trimDriveSlash(in); got != want {
 			t.Errorf("trimDriveSlash(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The name rule, pinned: the regexp lost its {0,99} (3.4 ms to compile at every
+// process start) and the length moved into the check beside it.
+func TestRenameAcceptsOneIdentifierOfAtMostAHundredRunes(t *testing.T) {
+	ok := func(name string) bool {
+		return renameIdentifier.MatchString(name) && utf8.RuneCountInString(name) <= 100
+	}
+	for name, want := range map[string]bool{
+		"x": true, "_": true, "newName2": true, "名前": true, "café_1": true, "x٣": true,
+		strings.Repeat("a", 100): true, "é" + strings.Repeat("é", 99): true,
+		strings.Repeat("a", 101): false, "": false, "2x": false, "a b": false, "a-b": false,
+		"a.b": false, "a\n": false, "a;b": false, "(x)": false,
+	} {
+		if got := ok(name); got != want {
+			t.Errorf("name %q: accepted=%v, want %v", name, got, want)
+		}
+	}
+	old := regexp.MustCompile(`^[\p{L}_][\p{L}\p{N}_]{0,99}$`)
+	for _, name := range []string{"x", "名前", strings.Repeat("a", 100), strings.Repeat("a", 101), "2x", "a b", "x٣", "_9"} {
+		if ok(name) != old.MatchString(name) {
+			t.Errorf("name %q: the new rule says %v, the old regexp %v", name, ok(name), old.MatchString(name))
 		}
 	}
 }
