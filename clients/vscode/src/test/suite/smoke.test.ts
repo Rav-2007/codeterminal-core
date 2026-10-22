@@ -42,9 +42,19 @@ suite('E2E smoke', () => {
     // Test files run in whatever order glob returns them, and other suites
     // drive a chat panel in an editor tab (chatSync, chatPanelTeam). Close any
     // they left, so what this asserts is what openChat does, not their order.
-    const leftover = vscode.window.tabGroups.all.flatMap((g) => g.tabs.filter((t) => t.label === PANEL_TITLE));
-    if (leftover.length > 0) {
-      await vscode.window.tabGroups.close(leftover);
+    //
+    // Closing more than once, and waiting: tabGroups.close can resolve before
+    // tabGroups.all drops the tab, and a panel an earlier suite revealed can
+    // land after it. Reading the tabs once, right after one close, failed on
+    // main with VS Code 1.143 (2026-10-21, and twice on 2026-10-22).
+    for (let waited = 0; chatTabOpen() && waited < 5000; waited += 100) {
+      const leftover = vscode.window.tabGroups.all.flatMap((g) => g.tabs.filter((t) => t.label === PANEL_TITLE));
+      try {
+        await vscode.window.tabGroups.close(leftover);
+      } catch {
+        // A tab that finished closing meanwhile is refused as not found.
+      }
+      await new Promise((r) => setTimeout(r, 100));
     }
     assert.ok(!chatTabOpen(), 'no chat tab should be open before the command runs');
     await vscode.commands.executeCommand('mochiii.openChat');
