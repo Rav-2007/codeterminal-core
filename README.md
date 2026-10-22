@@ -30,11 +30,16 @@ provider that answers.
 
 ## Install
 
-One command installs Mochiii on macOS, Linux or Windows, the same in every
-shell (it needs [Node.js](https://nodejs.org) 18 or later):
+One command installs Mochiii's terminal app. On **macOS or Linux**:
 
 ```bash
-npm install -g mochiii
+curl -fsSL https://mochiii.in/install | sh
+```
+
+On **Windows**, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://mochiii.in/install.ps1 | iex"
 ```
 
 Then, inside a project folder:
@@ -44,29 +49,17 @@ mochiii
 ```
 
 The first run asks which AI provider to use, for its API key and for a model,
-and offers to index the folder so Mochiii can search your code. The first
-index also downloads Mochiii's local code-search model, once per computer.
+and offers to index the folder so Mochiii can search your code.
 
-### No Node.js?
+The installer downloads the build for your computer from the
+[latest release](https://github.com/Rav-2007/codeterminal-core/releases/latest),
+checks it against the release's checksums, puts `mochiii` on your `PATH` and
+downloads the local code-search model, once per computer. It needs no
+administrator rights. The short address redirects to the installer in that
+release; the [reference](docs/REFERENCE.md#install-update-and-uninstall) gives
+the full address and every option.
 
-One command installs the same program. On **macOS or Linux**:
-
-```bash
-curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh
-```
-
-On **Windows**, in PowerShell:
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
-```
-
-These also download the code-search model, and add the Mochiii extension if
-VS Code is installed. They check every download against the release's
-checksums and need no administrator rights. If `npm install -g` asks for
-`sudo`, use the curl line instead.
-
-### VS Code only
+### VS Code
 
 Install **Mochiii** from the
 [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=MochiiiAIAgent.mochiii-vscode),
@@ -81,30 +74,20 @@ start asking.
 
 ### Update and uninstall
 
-Installed with npm, update with:
+To update, run the install command again. To remove Mochiii on macOS or Linux:
 
 ```bash
-npm install -g mochiii@latest
+curl -fsSL https://mochiii.in/install | sh -s -- --uninstall
 ```
 
-To remove Mochiii, first stop its background service: run this in each
-project folder you used Mochiii in (npm does not stop it):
+On Windows, in PowerShell:
 
-```bash
-mochiii --stop
+```powershell
+$env:MOCHIII_UNINSTALL="1"; irm https://mochiii.in/install.ps1 | iex
 ```
 
-then:
-
-```bash
-npm uninstall -g mochiii
-```
-
-Installed with the curl or PowerShell line, run it again to update. To remove
-Mochiii, add `--uninstall` (on Windows, set `$env:MOCHIII_UNINSTALL="1"`
-first). Either way, your keys, models and saved chats stay in `~/.mochiii`
-unless you also pass `--purge` to the installer. The
-[reference](docs/REFERENCE.md#install-update-and-uninstall) lists every option.
+Your keys, models and saved chats stay in `~/.mochiii` unless you also pass
+`--purge` (on Windows, set `$env:MOCHIII_PURGE="1"` too).
 
 ## Features
 

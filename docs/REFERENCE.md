@@ -17,48 +17,31 @@ it, and the commands most people use — is the [front page](../README.md).
 
 ## Install, update and uninstall
 
-With Node.js 18 or later, on any OS:
+On macOS and Linux:
 
 ```bash
-npm install -g mochiii
+curl -fsSL https://mochiii.in/install | sh
 ```
 
-The `mochiii` package depends on one `@mochiii/<platform>` package per build
-(`linux-x64`, `linux-arm64`, `linux-x64-musl`, `linux-arm64-musl`,
-`darwin-arm64`, `win32-x64`), and npm installs only the one that matches this
-computer. Each carries the same binary, byte for
-byte, that the installers below put in place. On macOS and Linux the package's
-install script puts that binary where the `mochiii` command points, so starting
-Mochiii does not start Node. With install scripts off (`--ignore-scripts`,
-pnpm's default) a small Node launcher runs it instead, as npm does on Windows.
-npm installs neither the code-search model, which the first index downloads,
-nor the VS Code extension.
+Windows (PowerShell):
 
-- Update: `npm install -g mochiii@latest`. The next `mochiii` in a folder
-  restarts that folder's background service if an older version of this same
-  install is still running it.
-- Remove: `mochiii --stop` in each project folder you used Mochiii in, then
-  `npm uninstall -g mochiii`. npm does not stop the background service.
-- On Alpine and other musl systems npm installs the `-musl` build, which has no
-  code search (see the troubleshooting below).
-- `npm install -g` failing with `EACCES`, or asking for `sudo`: npm's global
-  folder belongs to root on this machine. Use the curl line below, which
-  installs into your home folder.
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://mochiii.in/install.ps1 | iex"
+```
 
-Without Node.js, on macOS and Linux:
+`mochiii.in/install` and `mochiii.in/install.ps1` redirect to the installers
+attached to the latest release, so these full addresses do the same:
 
 ```bash
 curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh
 ```
-
-Windows (PowerShell):
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
 ```
 
 The installers live in [`install/`](../install/) and are attached to every
-release. In order, they:
+release. They install the terminal app only. In order, they:
 
 1. pick this machine's build;
 2. download it and refuse to go on unless it matches the release's
@@ -66,8 +49,7 @@ release. In order, they:
 3. unpack it beside the current install, check that it runs, and swap it in, so a
    failure part-way leaves the previous version working;
 4. put it on your `PATH`;
-5. download the code-search model;
-6. install the VS Code extension when VS Code is present and the platform has one.
+5. download the code-search model.
 
 They never use `sudo` or administrator rights, and they refuse to run as root or
 elevated unless told to. Before any release is drafted, its CI runs the real
@@ -78,17 +60,23 @@ on ARM.
 |---|---|---|
 | `--version 1.1.0` | `MOCHIII_VERSION=1.1.0` | Install that release instead of the latest |
 | `--no-model` | `MOCHIII_NO_MODEL=1` | Skip the code-search model download |
-| `--no-vscode` | `MOCHIII_NO_VSCODE=1` | Do not install the VS Code extension |
 | `--no-modify-path` | `MOCHIII_NO_MODIFY_PATH=1` | Leave your `PATH` alone |
 | `--uninstall` | `MOCHIII_UNINSTALL=1` | Remove Mochiii; keep `~/.mochiii` |
 | `--purge` | `MOCHIII_PURGE=1` | With uninstall, remove `~/.mochiii` too |
 | `--allow-root` | `MOCHIII_ALLOW_ROOT=1`; on Windows `MOCHIII_ALLOW_ADMIN=1` | Install even as root, or from an elevated PowerShell |
 
 With `curl | sh`, pass options after `sh -s --`, for example
-`curl -fsSL …/install.sh | sh -s -- --no-vscode`. `irm | iex` cannot pass
-parameters, so on Windows set the environment variable first. A variable counts
-only when it is exactly `1`, so `MOCHIII_PURGE=0` purges nothing. A saved
-`install.ps1` also takes them as parameters (`-NoModel`, `-AllowAdmin`, …).
+`curl -fsSL https://mochiii.in/install | sh -s -- --no-model`. `irm | iex`
+cannot pass parameters, so on Windows set the environment variable first. A
+variable counts only when it is exactly `1`, so `MOCHIII_PURGE=0` purges nothing.
+A saved `install.ps1` also takes them as parameters (`-NoModel`, `-AllowAdmin`,
+…). Until 1.2.1 the installers also installed the VS Code extension when they
+found VS Code; 1.1's `--no-vscode` (`MOCHIII_NO_VSCODE`) is still accepted and
+does nothing. The extension comes from the
+[Marketplace](https://marketplace.visualstudio.com/items?itemName=MochiiiAIAgent.mochiii-vscode).
+
+To update, run the install command again: it stops this install's background
+service and swaps in the new version.
 
 **Why Windows refuses an elevated PowerShell.** Installing elevated is harmless
 by itself, but running `mochiii` from that same window starts its background
@@ -131,9 +119,9 @@ being asked for that folder. Other options:
 - `mochiii: command not found` right after installing: open a new terminal. The
   installer added `~/.local/bin` to your shell's startup file.
 - Code search is off on Linux: it needs glibc 2.27+ (`ldd --version`). Chat and
-  agent tools work regardless. On Alpine and other musl systems both install
-  commands give you a static build without code search, since the regular one
-  cannot start without glibc; `mochiii index` says so.
+  agent tools work regardless. On Alpine and other musl systems the installer
+  gives you a static build without code search, since the regular one cannot
+  start without glibc; `mochiii index` says so.
 - Code search is off on Windows: install the Visual C++ runtime from
   <https://aka.ms/vs/17/release/vc_redist.x64.exe>.
 - A Windows upgrade or uninstall says "Close mochiii (process N)": a `mochiii`
@@ -146,6 +134,8 @@ being asked for that folder. Other options:
   giving up with the name of whatever holds the files.
 - An Intel Mac is refused: onnxruntime, which runs the code-search model, has no
   Intel Mac build.
+- The short command fails or prints a web page: use the full GitHub address
+  above, which is where `mochiii.in/install` redirects.
 - No warnings at install time: SmartScreen and Gatekeeper act on files a browser
   downloads, and the installers download with `curl` and PowerShell, which leave
   no such mark. The release's checksums are what make the download trustworthy.
