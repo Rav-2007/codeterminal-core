@@ -7,7 +7,6 @@
 #
 #   --version <v>      install release <v> instead of the latest    MOCHIII_VERSION
 #   --no-model         skip the code-search model download         MOCHIII_NO_MODEL=1
-#   --no-vscode        do not install the VS Code extension        MOCHIII_NO_VSCODE=1
 #   --no-modify-path   do not add ~/.local/bin to your shell PATH  MOCHIII_NO_MODIFY_PATH=1
 #   --uninstall        remove Mochiii, keeping ~/.mochiii          MOCHIII_UNINSTALL=1
 #   --purge            with --uninstall, remove ~/.mochiii too     MOCHIII_PURGE=1
@@ -25,8 +24,11 @@
 #      failure part-way leaves the previous version working;
 #   4. links `mochiii` into ~/.local/bin and, if that is not on your PATH, adds one
 #      marked line to your shell's startup file;
-#   5. downloads the code-search model (about 41 MB on Linux, 63 MB on macOS, once);
-#   6. installs the VS Code extension if VS Code is here and supports this platform.
+#   5. downloads the code-search model (about 41 MB on Linux, 63 MB on macOS, once).
+#
+# It installs the terminal app only. Until 1.2.1 it also installed the VS Code
+# extension when it found VS Code; that comes from the Marketplace now, and
+# 1.1's --no-vscode is still accepted and does nothing.
 #
 # It never uses sudo. Everything goes under your home directory: the programs in
 # ~/.mochiii/bin, your keys, models and chats in ~/.mochiii as before.
@@ -37,7 +39,6 @@
 set -eu
 
 REPO="Rav-2007/codeterminal-core"
-VSCODE_EXTENSION="MochiiiAIAgent.mochiii-vscode"
 MARKER="# Added by the Mochiii installer"
 
 say() { printf '%s\n' "$*"; }
@@ -66,7 +67,6 @@ env_flag() {
 parse_args() {
 	VERSION="${MOCHIII_VERSION:-}"
 	NO_MODEL=$(env_flag "${MOCHIII_NO_MODEL:-}")
-	NO_VSCODE=$(env_flag "${MOCHIII_NO_VSCODE:-}")
 	NO_MODIFY_PATH=$(env_flag "${MOCHIII_NO_MODIFY_PATH:-}")
 	UNINSTALL=$(env_flag "${MOCHIII_UNINSTALL:-}")
 	PURGE=$(env_flag "${MOCHIII_PURGE:-}")
@@ -80,7 +80,7 @@ parse_args() {
 			;;
 		--version=*) VERSION="${1#--version=}" ;;
 		--no-model) NO_MODEL=1 ;;
-		--no-vscode) NO_VSCODE=1 ;;
+		--no-vscode) ;; # 1.1's option: the installer no longer touches VS Code
 		--no-modify-path) NO_MODIFY_PATH=1 ;;
 		--uninstall) UNINSTALL=1 ;;
 		--purge) PURGE=1 ;;
@@ -346,22 +346,6 @@ fetch_model() {
 	fi
 }
 
-install_vscode() {
-	[ -z "$NO_VSCODE" ] || return 0
-	has code || return 0
-	case "$TARGET" in
-	linux-x64) ;;
-	*)
-		say "    VS Code found, but the Mochiii extension is not built for $TARGET yet; the terminal app is installed"
-		return 0
-		;;
-	esac
-	step "Installing the VS Code extension"
-	if ! code --install-extension "$VSCODE_EXTENSION" --force >/dev/null 2>&1; then
-		warn "VS Code would not install the extension; you can run: code --install-extension $VSCODE_EXTENSION"
-	fi
-}
-
 uninstall() {
 	step "Removing Mochiii"
 	stop_running
@@ -403,7 +387,6 @@ main() {
 	stop_running
 	link_and_path
 	fetch_model
-	install_vscode
 	say ""
 	say "${BOLD}Mochiii $INSTALLED is ready.${RESET}"
 	if [ -n "$NEEDS_PATH" ]; then

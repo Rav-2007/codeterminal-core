@@ -10,7 +10,8 @@
 #      machine has it today;
 #   2. this release installs OVER it while its background service runs: the old
 #      service is stopped, the old programs are gone, and the one binary's three
-#      roles (client, daemon, helper) report <version>;
+#      roles (client, daemon, helper) report <version>; and it installs the
+#      terminal app only, never running VS Code's `code` though one is on PATH;
 #   3. the code-search model downloads (real network, pinned checksums);
 #   4. `mochiii index` indexes a small project -- the embedder helper and
 #      onnxruntime really run on this OS;
@@ -51,6 +52,7 @@ mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME MOCHIII_API_KEY MOCHIII_HOME
 export PATH="$HOME/.local/bin:$PATH"
+# 1.1.0's installer adds the VS Code extension unless told not to.
 export MOCHIII_NO_VSCODE=1 NO_COLOR=1
 
 pids=""
@@ -109,9 +111,14 @@ old_service=$(running mochiii-daemon)
 [ -n "$old_service" ] || fail "no $previous background service was running, so the upgrade would prove nothing"
 pass "$previous installed from GitHub, and its background service is running"
 
-# 2. this release, over it
+# 2. this release, over it. With a `code` on PATH and MOCHIII_NO_VSCODE empty, an
+# installer that still added the VS Code extension would be seen doing it.
+mkdir -p "$work/fakebin"
+printf '#!/bin/sh\necho "$*" >>"%s"\n' "$work/code-calls" >"$work/fakebin/code"
+chmod +x "$work/fakebin/code"
 export MOCHIII_DOWNLOAD_BASE=http://127.0.0.1:18471
-sh "$installer" || fail "the installer failed"
+MOCHIII_NO_VSCODE='' PATH="$work/fakebin:$PATH" sh "$installer" || fail "the installer failed"
+[ ! -e "$work/code-calls" ] || fail "the installer ran \`code $(cat "$work/code-calls")\`; it must install the terminal app only"
 for pid in $old_service; do
 	if kill -0 "$pid" 2>/dev/null; then fail "upgrading left the $previous background service (process $pid) running"; fi
 done
