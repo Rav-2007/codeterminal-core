@@ -11,24 +11,6 @@ The first published 1.2 release. Version 1.2.0 was built but not published, so
 its changes, listed under it, reach you in this release, except npm: the
 packages are not on npm yet, so `npm install -g mochiii` does not work.
 
-### A short install command
-
-**What changed.** The install command now fits on one short line. On macOS and
-Linux:
-
-```bash
-curl -fsSL https://mochiii.in/install | sh
-```
-
-On Windows, in PowerShell:
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://mochiii.in/install.ps1 | iex"
-```
-
-Both addresses redirect to the installers in the latest GitHub release. The full
-GitHub addresses still work.
-
 ### The install commands install the terminal app only
 
 **What changed.** The install commands used to install the VS Code extension too,

@@ -20,21 +20,10 @@ it, and the commands most people use — is the [front page](../README.md).
 On macOS and Linux:
 
 ```bash
-curl -fsSL https://mochiii.in/install | sh
+curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh
 ```
 
 Windows (PowerShell):
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://mochiii.in/install.ps1 | iex"
-```
-
-`mochiii.in/install` and `mochiii.in/install.ps1` redirect to the installers
-attached to the latest release, so these full addresses do the same:
-
-```bash
-curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh
-```
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
@@ -66,7 +55,7 @@ on ARM.
 | `--allow-root` | `MOCHIII_ALLOW_ROOT=1`; on Windows `MOCHIII_ALLOW_ADMIN=1` | Install even as root, or from an elevated PowerShell |
 
 With `curl | sh`, pass options after `sh -s --`, for example
-`curl -fsSL https://mochiii.in/install | sh -s -- --no-model`. `irm | iex`
+`curl -fsSL …/install.sh | sh -s -- --no-model`. `irm | iex`
 cannot pass parameters, so on Windows set the environment variable first. A
 variable counts only when it is exactly `1`, so `MOCHIII_PURGE=0` purges nothing.
 A saved `install.ps1` also takes them as parameters (`-NoModel`, `-AllowAdmin`,
@@ -134,8 +123,6 @@ being asked for that folder. Other options:
   giving up with the name of whatever holds the files.
 - An Intel Mac is refused: onnxruntime, which runs the code-search model, has no
   Intel Mac build.
-- The short command fails or prints a web page: use the full GitHub address
-  above, which is where `mochiii.in/install` redirects.
 - No warnings at install time: SmartScreen and Gatekeeper act on files a browser
   downloads, and the installers download with `curl` and PowerShell, which leave
   no such mark. The release's checksums are what make the download trustworthy.

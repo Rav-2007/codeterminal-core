@@ -1,9 +1,6 @@
 # Mochiii installer for Windows.
 #
-#   powershell -ExecutionPolicy ByPass -c "irm https://mochiii.in/install.ps1 | iex"
-#
-# mochiii.in/install.ps1 redirects to this file in the latest GitHub release:
-#   https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1
+#   powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
 #
 # `irm | iex` cannot pass parameters, so options come from environment variables:
 #

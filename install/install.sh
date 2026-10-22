@@ -1,10 +1,7 @@
 #!/bin/sh
 # Mochiii installer for macOS and Linux.
 #
-#   curl -fsSL https://mochiii.in/install | sh
-#
-# mochiii.in/install redirects to this file in the latest GitHub release:
-#   https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh
+#   curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh
 #
 # Options go after `sh -s --`, or in the environment variable beside each:
 #

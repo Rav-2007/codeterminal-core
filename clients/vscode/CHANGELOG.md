@@ -11,10 +11,6 @@ npm yet, so `npm install -g mochiii` does not work.
 
 ### Changed
 
-- **A short install command.** `curl -fsSL https://mochiii.in/install | sh` on
-  macOS and Linux, and `irm https://mochiii.in/install.ps1 | iex` in PowerShell.
-  Both addresses redirect to the installers in the latest GitHub release, whose
-  full addresses still work.
 - **The install commands install the terminal app only.** They no longer install
   this extension when they find VS Code; install it from the Marketplace. 1.1's
   `--no-vscode` (`MOCHIII_NO_VSCODE`) is still accepted and does nothing.

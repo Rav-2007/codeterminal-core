@@ -33,13 +33,13 @@ provider that answers.
 One command installs Mochiii's terminal app. On **macOS or Linux**:
 
 ```bash
-curl -fsSL https://mochiii.in/install | sh
+curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh
 ```
 
 On **Windows**, in PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://mochiii.in/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
 ```
 
 Then, inside a project folder:
@@ -55,9 +55,8 @@ The installer downloads the build for your computer from the
 [latest release](https://github.com/Rav-2007/codeterminal-core/releases/latest),
 checks it against the release's checksums, puts `mochiii` on your `PATH` and
 downloads the local code-search model, once per computer. It needs no
-administrator rights. The short address redirects to the installer in that
-release; the [reference](docs/REFERENCE.md#install-update-and-uninstall) gives
-the full address and every option.
+administrator rights. The
+[reference](docs/REFERENCE.md#install-update-and-uninstall) lists every option.
 
 ### VS Code
 
@@ -77,13 +76,13 @@ start asking.
 To update, run the install command again. To remove Mochiii on macOS or Linux:
 
 ```bash
-curl -fsSL https://mochiii.in/install | sh -s -- --uninstall
+curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh -s -- --uninstall
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-$env:MOCHIII_UNINSTALL="1"; irm https://mochiii.in/install.ps1 | iex
+$env:MOCHIII_UNINSTALL="1"; irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex
 ```
 
 Your keys, models and saved chats stay in `~/.mochiii` unless you also pass
