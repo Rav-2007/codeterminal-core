@@ -5,7 +5,40 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## v1.2.1 — 2026-10-22
+
+The first published 1.2 release. Version 1.2.0 was built but not published, so
+its changes, listed under it, reach you in this release, except npm: the
+packages are not on npm yet, so `npm install -g mochiii` does not work.
+
+### A short install command
+
+**What changed.** The install command now fits on one short line. On macOS and
+Linux:
+
+```bash
+curl -fsSL https://mochiii.in/install | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://mochiii.in/install.ps1 | iex"
+```
+
+Both addresses redirect to the installers in the latest GitHub release. The full
+GitHub addresses still work.
+
+### The install commands install the terminal app only
+
+**What changed.** The install commands used to install the VS Code extension too,
+when they found VS Code. They now install only the terminal app. The extension
+comes from the VS Code Marketplace. `--no-vscode` (`MOCHIII_NO_VSCODE`) is still
+accepted and does nothing.
+
 ## v1.2.0 — 2026-10-21
+
+Built but not published: these changes reached users in v1.2.1, without npm.
 
 ### `npm install -g mochiii` installs Mochiii on any OS
 
