@@ -1,12 +1,14 @@
 # Mochiii installer for Windows.
 #
-#   powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://mochiii.in/install.ps1 | iex"
+#
+# mochiii.in/install.ps1 redirects to this file in the latest GitHub release:
+#   https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1
 #
 # `irm | iex` cannot pass parameters, so options come from environment variables:
 #
 #   $env:MOCHIII_VERSION = "1.1.0"      install that release instead of the latest
 #   $env:MOCHIII_NO_MODEL = "1"         skip the code-search model download
-#   $env:MOCHIII_NO_VSCODE = "1"        do not install the VS Code extension
 #   $env:MOCHIII_NO_MODIFY_PATH = "1"   do not add Mochiii to your PATH
 #   $env:MOCHIII_UNINSTALL = "1"        remove Mochiii; keeps %USERPROFILE%\.mochiii (keys, models, chats)
 #   $env:MOCHIII_PURGE = "1"            with uninstall, remove %USERPROFILE%\.mochiii as well
@@ -18,8 +20,12 @@
 # What it does: downloads the Windows build and its checksum from the GitHub
 # release and refuses to go on unless they match; unpacks it, checks it runs, and
 # swaps it in for any previous version; adds it to your user PATH; downloads the
-# code-search model; installs the VS Code extension if VS Code is here. It never
-# needs Administrator rights, and everything goes under your own profile.
+# code-search model. It never needs Administrator rights, and everything goes
+# under your own profile.
+#
+# It installs the terminal app only. Until 1.2.1 it also installed the VS Code
+# extension when it found VS Code; that comes from the Marketplace now, and
+# 1.1's -NoVSCode (MOCHIII_NO_VSCODE) is still accepted and does nothing.
 #
 # Windows on ARM gets the x64 build, which Windows runs under its built-in
 # emulation.
@@ -27,7 +33,7 @@
 param(
     [string]$Version = $env:MOCHIII_VERSION,
     [switch]$NoModel = ($env:MOCHIII_NO_MODEL -eq "1"),
-    [switch]$NoVSCode = ($env:MOCHIII_NO_VSCODE -eq "1"),
+    [switch]$NoVSCode, # 1.1's option: the installer no longer touches VS Code
     [switch]$NoModifyPath = ($env:MOCHIII_NO_MODIFY_PATH -eq "1"),
     [switch]$Uninstall = ($env:MOCHIII_UNINSTALL -eq "1"),
     [switch]$Purge = ($env:MOCHIII_PURGE -eq "1"),
@@ -42,7 +48,6 @@ function Install-Mochiii {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
     $repo = "Rav-2007/codeterminal-core"
-    $extension = "MochiiiAIAgent.mochiii-vscode"
     $root = Join-Path $env:LOCALAPPDATA "Programs\Mochiii"
     $bin = Join-Path $root "bin"
     $dataDir = Join-Path $env:USERPROFILE ".mochiii"
@@ -390,18 +395,6 @@ namespace MochiiiInstall {
         & (Join-Path $bin "mochiii.exe") download-model
         if ($LASTEXITCODE -ne 0) {
             Warn "The model download did not finish; Mochiii offers it again the first time you run it in a project."
-        }
-    }
-
-    if (-not $NoVSCode -and (Get-Command code -ErrorAction SilentlyContinue)) {
-        if ($arch -eq "ARM64") {
-            Note "VS Code found, but the Mochiii extension is not built for Windows on ARM yet; the terminal app is installed"
-        } else {
-            Step "Installing the VS Code extension"
-            & code --install-extension $extension --force *> $null
-            if ($LASTEXITCODE -ne 0) {
-                Warn "VS Code would not install the extension; you can run: code --install-extension $extension"
-            }
         }
     }
 

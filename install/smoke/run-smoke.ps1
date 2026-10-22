@@ -9,7 +9,9 @@
 #      machine has it today;
 #   2. install.ps1, run by Windows PowerShell 5.1, installs this release OVER it
 #      while its background service runs: the old service is stopped, the old
-#      programs are gone, and the one binary's three roles report -Version;
+#      programs are gone, and the one binary's three roles report -Version; and
+#      it installs the terminal app only, never running VS Code's `code` though
+#      one is on PATH;
 #   3. the code-search model downloads (real network, pinned checksums);
 #   4. `mochiii index` indexes a small project -- the embedder helper and
 #      onnxruntime really run here;
@@ -39,7 +41,7 @@ New-Item -ItemType Directory -Path $work | Out-Null
 $env:USERPROFILE = Join-Path $work "home"
 $env:LOCALAPPDATA = Join-Path $work "local"
 New-Item -ItemType Directory -Force -Path $env:USERPROFILE, $env:LOCALAPPDATA | Out-Null
-$env:MOCHIII_NO_VSCODE = "1"
+$env:MOCHIII_NO_VSCODE = "1" # 1.1.0's installer adds the VS Code extension unless told not to
 $env:MOCHIII_NO_MODIFY_PATH = "1"
 Remove-Item Env:MOCHIII_API_KEY, Env:MOCHIII_API_BASE, Env:MOCHIII_ALLOW_ADMIN -ErrorAction SilentlyContinue
 
@@ -307,10 +309,21 @@ $oldService = @(Get-Ours "mochiii-daemon" | ForEach-Object { $_.Id })
 if ($oldService.Count -eq 0) { Fail "no $previous background service was running, so the upgrade would prove nothing" }
 Pass "$previous installed from GitHub, and its background service is running"
 
-# 2. this release, over it
-if ((Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "install.log")) -ne 0) {
+# 2. this release, over it. With a `code` on PATH and MOCHIII_NO_VSCODE unset, an
+# installer that still added the VS Code extension would be seen doing it.
+$fakeBin = Join-Path $work "fakebin"
+$codeCalls = Join-Path $work "code-calls.txt"
+New-Item -ItemType Directory -Path $fakeBin | Out-Null
+Set-Content -LiteralPath (Join-Path $fakeBin "code.cmd") -Encoding ASCII -Value "@echo %* >> `"$codeCalls`""
+$savedPath = $env:Path
+$env:Path = "$fakeBin;$env:Path"
+Remove-Item Env:MOCHIII_NO_VSCODE
+$code = Invoke-Installer "http://127.0.0.1:18471" (Join-Path $work "install.log")
+$env:Path = $savedPath
+if ($code -ne 0) {
     Fail ("the installer failed:`n" + (Get-Content -Raw (Join-Path $work "install.log")))
 }
+if (Test-Path $codeCalls) { Fail ("the installer ran ``code " + (Get-Content -Raw $codeCalls).Trim() + "``; it must install the terminal app only") }
 foreach ($id in $oldService) {
     if (Get-Process -Id $id -ErrorAction SilentlyContinue) { Fail "upgrading left the $previous background service (process $id) running" }
 }
