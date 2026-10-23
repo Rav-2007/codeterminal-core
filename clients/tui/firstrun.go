@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"mochiii/protocol"
@@ -40,11 +41,63 @@ func folderIndexed(root string) bool {
 // indexableFolder reports whether root is a folder Mochiii may offer to index
 // on its own. The home directory and a filesystem root are never offered.
 func indexableFolder(root, home string) bool {
+	return notAProject(root, home, runtime.GOOS) == ""
+}
+
+// notAProject names what root is when it is the home directory or the top of
+// the file system, and is "" for any other folder. Windows compares the two
+// paths without regard to case, as it opens them.
+func notAProject(root, home, goos string) string {
 	clean := filepath.Clean(root)
 	if filepath.Dir(clean) == clean {
-		return false
+		if goos == "windows" {
+			return "the top of a drive"
+		}
+		return "the root of the file system"
 	}
-	return home == "" || clean != filepath.Clean(home)
+	if home == "" {
+		return ""
+	}
+	h := filepath.Clean(home)
+	if clean == h || (goos == "windows" && strings.EqualFold(clean, h)) {
+		return "your home folder"
+	}
+	return ""
+}
+
+// notAProjectNote is what the terminal app says when it starts in the home
+// folder or at the top of the file system, and "" anywhere else.
+//
+// Started there, Mochiii works on everything under it. It is never offered for
+// indexing, so code search stays off, and until 1.2.2 the daemon walked all of
+// it before answering: on Windows, `mochiii` in C:\Users\<name> (2026-10-23)
+// timed out at "did not answer within 30s" with no hint of why.
+func notAProjectNote(root, home, goos string) string {
+	what := notAProject(root, home, goos)
+	if what == "" {
+		return ""
+	}
+	return fmt.Sprintf("Note: %s is %s, not a project folder. Mochiii works on the folder it starts in, "+
+		"so start it inside a project: cd into one and run mochiii there.\n", root, what)
+}
+
+// sayIfNotAProject prints notAProjectNote for root, if there is one.
+func sayIfNotAProject(w io.Writer, root string) {
+	say(w, "%s", notAProjectNote(root, homeDir(), runtime.GOOS))
+}
+
+// homeDir is the user's home folder with symlinks resolved -- the form a
+// workspace root takes (editapply.ResolveRealWorkspaceRoot) -- so the two
+// compare. It is "" when there is none.
+func homeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		return real
+	}
+	return home
 }
 
 // folderSetup is everything the first-run offer needs, passed in so the

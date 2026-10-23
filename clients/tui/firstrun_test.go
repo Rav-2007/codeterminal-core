@@ -29,6 +29,58 @@ func TestIndexableFolderNeverOffersHomeOrARoot(t *testing.T) {
 	}
 }
 
+// Started in the home folder or at the top of the file system, the terminal
+// app says what that folder is and where to start instead; anywhere else it
+// says nothing. Windows matches the home folder whatever its letter case.
+func TestTheAppSaysWhenItStartsOutsideAProject(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.VolumeName(home) + string(filepath.Separator)
+	for _, c := range []struct {
+		dir, goos, want string
+	}{
+		{home, "linux", "your home folder"},
+		{home + string(filepath.Separator), "linux", "your home folder"},
+		{root, "linux", "the root of the file system"},
+		{root, "windows", "the top of a drive"},
+		{strings.ToUpper(home), "windows", "your home folder"},
+		{strings.ToUpper(home), "linux", ""},
+		{filepath.Join(home, "project"), "linux", ""},
+	} {
+		note := notAProjectNote(c.dir, home, c.goos)
+		if c.want == "" {
+			if note != "" {
+				t.Errorf("%s on %s: said %q; a project folder needs no note", c.dir, c.goos, note)
+			}
+			continue
+		}
+		if !strings.Contains(note, c.want) || !strings.Contains(note, "cd into one") {
+			t.Errorf("%s on %s: said %q, want it named as %q with where to start instead", c.dir, c.goos, note, c.want)
+		}
+	}
+	if note := notAProjectNote(filepath.Join(home, "project"), "", "linux"); note != "" {
+		t.Errorf("with no home folder known, a project got a note: %q", note)
+	}
+}
+
+// The home folder is compared in the form a workspace root takes, with its
+// symlinks resolved: a home reached through a link is still the home folder.
+func TestTheHomeFolderIsComparedWithItsSymlinksResolved(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "home")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	t.Setenv("HOME", link)
+	t.Setenv("USERPROFILE", link)
+	want, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := homeDir(); got != want {
+		t.Errorf("homeDir() = %q, want the resolved %q", got, want)
+	}
+}
+
 // An index directory is not an index until the run that built it finished and
 // wrote its stamp; an interrupted run leaves the directory without one.
 func TestAFolderIsIndexedOnlyWhenItsIndexFinished(t *testing.T) {

@@ -30,7 +30,7 @@ func prepareDaemon(workspaceRoot string, launch launchOptions, interactive bool)
 			say(os.Stderr, "Code search isn't in this build of Mochiii (the static one for musl Linux), so there is nothing to index.\n")
 		}
 	} else if interactive && (launch.forceIndex || !launch.noIndex) {
-		home, _ := os.UserHomeDir()
+		home := homeDir()
 		folderSetup{
 			root:     workspaceRoot,
 			home:     home,
