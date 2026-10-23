@@ -86,7 +86,7 @@
         "mochiii.sendEditorContext": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Send the file you have open with each question: its path, your cursor line, your selection, the names of your other open tabs, and the start of the file (up to 24 KB). This is what lets \"what does this function do?\" mean the function you are looking at.\n\nOnly files **inside the workspace** are ever sent, and only the focused editor's contents -- the other tabs contribute their names alone. Turn this off to send nothing but what you type; the model can still read workspace files with its `read_file` tool when it asks."
+          "markdownDescription": "Send the file you have open with each question: its path, your cursor line, your selection, the names of your other open tabs, and the file itself: the whole file when it is 6 KB or less, otherwise the lines around your cursor (or your selection), up to 6 KB, with the line range named so the model reads the rest with its `read_file` tool. This is what lets \"what does this function do?\" mean the function you are looking at.\n\nThis panel sends only the current copy with each question. The copies sent with earlier questions are still kept in the saved chat, which is why a chat can be titled \"--- editor state\": `/compact`, History and the terminal client read them there.\n\nOnly files **inside the workspace** are ever sent, and only the focused editor's contents -- the other tabs contribute their names alone. Turn this off to send nothing but what you type; the model can still read workspace files with its `read_file` tool when it asks."
         },
         "mochiii.toolActivity": {
           "type": "string",

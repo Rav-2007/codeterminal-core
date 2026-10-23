@@ -4,7 +4,11 @@ import * as vscode from 'vscode';
 import {
   EditorContext,
   clip,
+  EDITOR_STATE_CLOSE,
+  EDITOR_STATE_OPEN,
   formatEditorContext,
+  windowAround,
+  withoutEditorState,
   maxActiveFileBytes,
   maxSelectionBytes,
   relativeToWorkspace,
@@ -130,7 +134,7 @@ suite('editor context: boundedness', () => {
   test('the caps are the documented ones', () => {
     // Named so that raising them is a deliberate edit to a tested value rather
     // than a number changed in passing.
-    assert.strictEqual(maxActiveFileBytes, 24000);
+    assert.strictEqual(maxActiveFileBytes, 6000);
     assert.strictEqual(maxSelectionBytes, 8000);
   });
 });
@@ -273,5 +277,50 @@ suite('editor context: the other open folders', () => {
     const many = Array.from({ length: 13 }, (_, i) => ({ name: `f${i}`, path: `/p/f${i}` }));
     const out = formatEditorContext({ ...base(), workingFolder: 'w', otherFolders: many });
     assert.ok(out.includes('and 3 more') && !out.includes('f12 ('), out);
+  });
+});
+
+suite('editor context: the window and the stored turn', () => {
+  test('a file that fits is whole; a longer one is whole lines around the line asked for', () => {
+    assert.deepStrictEqual(windowAround('a\nb\nc', 2, 100), { body: 'a\nb\nc', range: [1, 3], clipped: false });
+    const text = Array.from({ length: 100 }, (_, i) => `line${String(i + 1).padStart(3, '0')}`).join('\n');
+    const w = windowAround(text, 50, 80); // 8 bytes a line with its newline: ten lines
+    assert.strictEqual(w.clipped, true);
+    assert.ok(w.range[0] <= 50 && 50 <= w.range[1], `line 50 is not inside ${w.range}`);
+    assert.strictEqual(w.range[1] - w.range[0] + 1, 10, 'it did not fill the budget');
+    assert.strictEqual(w.body, text.split('\n').slice(w.range[0] - 1, w.range[1]).join('\n'), 'not whole lines in order');
+    // At the edges it grows the only way it can.
+    assert.deepStrictEqual(windowAround(text, 1, 80).range, [1, 10]);
+    assert.deepStrictEqual(windowAround(text, 100, 80).range, [91, 100]);
+  });
+
+  test('a single line longer than the budget is clipped on its own', () => {
+    const w = windowAround('short\n' + 'x'.repeat(500) + '\nshort', 2, 100);
+    assert.deepStrictEqual(w.range, [2, 2]);
+    assert.ok(Buffer.byteLength(w.body) <= 100);
+  });
+
+  test('a stored turn loses its editor block and keeps the question', () => {
+    const block = formatEditorContext({ ...emptyCtx(), activeFile: 'a.ts', languageId: 'typescript', totalLines: 1, body: 'x', bodyClipped: false });
+    assert.strictEqual(withoutEditorState(`${block}\n\nwhat does this do?`), 'what does this do?');
+  });
+
+  test('a file that contains the end marker does not leave half of itself behind', () => {
+    // This repository's own editorContext.ts contains the marker.
+    const block = formatEditorContext({
+      ...emptyCtx(), activeFile: 'editorContext.ts', languageId: 'typescript', totalLines: 3,
+      body: `const a = 1;\nconst m = '${EDITOR_STATE_CLOSE}';\nconst b = 2;`, bodyClipped: false,
+    });
+    assert.strictEqual(withoutEditorState(`${block}\n\nexplain m`), 'explain m');
+  });
+
+  test('anything that is not a block-led turn is left exactly as it is', () => {
+    // Positive controls: these must NOT change.
+    for (const s of ['plain question', `quoting ${EDITOR_STATE_OPEN} mid-sentence`, `${EDITOR_STATE_OPEN}\nno end marker`]) {
+      assert.strictEqual(withoutEditorState(s), s);
+    }
+    // A turn that is only a block is kept: an empty turn is worse than a long one.
+    const only = `${EDITOR_STATE_OPEN}\n${EDITOR_STATE_CLOSE}`;
+    assert.strictEqual(withoutEditorState(only), only);
   });
 });

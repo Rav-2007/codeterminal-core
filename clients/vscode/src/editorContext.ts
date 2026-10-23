@@ -31,8 +31,17 @@ import * as vscode from 'vscode';
 // question about it. Everything here is filtered to the workspace root, and a
 // path that escapes it is dropped rather than clipped.
 
-/** Longest active-file body included inline. ~6k tokens at the repo's 4-chars/token estimate. */
-export const maxActiveFileBytes = 24000;
+/**
+ * Most of the active file included inline: ~1.5k tokens at the repo's
+ * 4-chars/token estimate. A file this size or smaller is sent whole; a larger
+ * one is sent as the lines AROUND THE CURSOR (windowAround), not its first
+ * bytes.
+ *
+ * It was 24000 bytes of the file's START (2026-10-23): "what does this
+ * function do?" about line 700 of a long file sent lines 1 to ~600 and not the
+ * function, and every question paid for all of it.
+ */
+export const maxActiveFileBytes = 6000;
 
 /** Longest selection included. A selection is the user pointing: it outranks the file body. */
 export const maxSelectionBytes = 8000;
@@ -54,8 +63,10 @@ export interface EditorContext {
   cursorLine: number;
   /** The active file's body, possibly clipped; '' when absent or over budget. */
   body: string;
-  /** True when body is a prefix rather than the whole file. */
+  /** True when body is part of the file rather than all of it. */
   bodyClipped: boolean;
+  /** 1-indexed inclusive lines body covers; absent when it is the whole file. */
+  bodyRange?: [number, number];
   /** The selected text, clipped to maxSelectionBytes; '' when the selection is empty. */
   selection: string;
   /** 1-indexed inclusive line range of the selection, [0, 0] when there is none. */
@@ -200,10 +211,17 @@ export function collectEditorContext(root: string): EditorContext {
 
       // getText() on the whole document is the one unbounded read here, and it
       // is bounded by VS Code: the document is already in memory because it is
-      // open in an editor. Clipping happens before the string reaches a prompt.
-      const whole = clip(editor.document.getText(), maxActiveFileBytes);
-      ctx.body = whole.text;
-      ctx.bodyClipped = whole.clipped;
+      // open in an editor. Windowing happens before the string reaches a prompt.
+      // Centred on the selection when there is one: that is what is pointed at.
+      const center = editor.selection.isEmpty
+        ? ctx.cursorLine
+        : Math.round((editor.selection.start.line + editor.selection.end.line) / 2) + 1;
+      const w = windowAround(editor.document.getText(), center, maxActiveFileBytes);
+      ctx.body = w.body;
+      ctx.bodyClipped = w.clipped;
+      if (w.clipped) {
+        ctx.bodyRange = w.range;
+      }
     }
   }
 
@@ -243,6 +261,81 @@ export function collectEditorContext(root: string): EditorContext {
 }
 
 /**
+ * windowAround is the part of text worth sending for a question asked with the
+ * cursor on line center (1-indexed): all of it when it fits in budget bytes,
+ * otherwise whole lines around center, added one below and one above in turn
+ * until the next would not fit. A single line longer than the budget is
+ * clipped on its own.
+ */
+export function windowAround(
+  text: string,
+  center: number,
+  budget: number,
+): { body: string; range: [number, number]; clipped: boolean } {
+  const lines = text.split('\n');
+  if (Buffer.byteLength(text, 'utf8') <= budget) {
+    return { body: text, range: [1, lines.length], clipped: false };
+  }
+  const c = Math.min(Math.max(center - 1, 0), lines.length - 1);
+  const size = (i: number) => Buffer.byteLength(lines[i], 'utf8') + 1;
+  if (size(c) > budget) {
+    return { body: clip(lines[c], budget).text, range: [c + 1, c + 1], clipped: true };
+  }
+  let lo = c;
+  let hi = c;
+  let used = size(c);
+  for (let grew = true; grew; ) {
+    grew = false;
+    if (hi + 1 < lines.length && used + size(hi + 1) <= budget) {
+      hi++;
+      used += size(hi);
+      grew = true;
+    }
+    if (lo > 0 && used + size(lo - 1) <= budget) {
+      lo--;
+      used += size(lo);
+      grew = true;
+    }
+  }
+  return { body: lines.slice(lo, hi + 1).join('\n'), range: [lo + 1, hi + 1], clipped: true };
+}
+
+/** The block's first line. withoutEditorState and the tests match it exactly. */
+export const EDITOR_STATE_OPEN = '--- editor state (what the user is looking at; not their words) ---';
+/** The block's last line. */
+export const EDITOR_STATE_CLOSE = '--- end editor state ---';
+
+/**
+ * withoutEditorState is a user turn as the user typed it: the editor-state
+ * block a turn was sent with taken off its front.
+ *
+ * WHY IT EXISTS (2026-10-23). The block rides in the prompt text, and the
+ * daemon stores the prompt text as the user's turn -- so every stored question
+ * carries a copy of the file as it was then. A panel that hydrates from the
+ * stored chat (on opening, on /compact, on catching up with another window)
+ * sent those copies back as history: MEASURED, a reopened chat's next request
+ * carried six blocks instead of one, and a compacted chat's carried four. They
+ * are stale by construction -- the current one rides with the new question --
+ * so history never needs them. (Not stored in the first place is the daemon's
+ * half; see docs/OPEN_ITEMS.md item 57.)
+ *
+ * The LAST end marker, because the file inside the block may itself contain
+ * the marker (this file does). A turn that does not start with the block, or
+ * would be left empty, is returned unchanged.
+ */
+export function withoutEditorState(content: string): string {
+  if (!content.startsWith(EDITOR_STATE_OPEN)) {
+    return content;
+  }
+  const end = content.lastIndexOf('\n' + EDITOR_STATE_CLOSE);
+  if (end < 0) {
+    return content;
+  }
+  const rest = content.slice(end + 1 + EDITOR_STATE_CLOSE.length).replace(/^\n+/, '');
+  return rest.trim() === '' ? content : rest;
+}
+
+/**
  * formatEditorContext renders a context block for the wire prompt, or '' when
  * there is nothing worth sending.
  *
@@ -263,7 +356,7 @@ export function formatEditorContext(ctx: EditorContext): string {
     return '';
   }
 
-  const lines: string[] = ['--- editor state (what the user is looking at; not their words) ---'];
+  const lines: string[] = [EDITOR_STATE_OPEN];
 
   if (others.length > 0) {
     const shown = others.slice(0, maxOtherFolders).map((f) => `${f.name} (${f.path})`);
@@ -278,7 +371,7 @@ export function formatEditorContext(ctx: EditorContext): string {
   }
 
   if (ctx.activeFile === '' && ctx.openTabs.length === 0) {
-    lines.push('--- end editor state ---');
+    lines.push(EDITOR_STATE_CLOSE);
     return lines.join('\n');
   }
 
@@ -304,9 +397,12 @@ export function formatEditorContext(ctx: EditorContext): string {
   if (ctx.body !== '') {
     lines.push('');
     if (ctx.bodyClipped) {
+      const where = ctx.bodyRange
+        ? `Lines ${ctx.bodyRange[0]}-${ctx.bodyRange[1]} of ${ctx.activeFile}, around the cursor`
+        : `Part of ${ctx.activeFile}`;
       lines.push(
-        `First ${maxActiveFileBytes} bytes of ${ctx.activeFile} (the file is longer; ` +
-          'use the read_file tool for the rest rather than assuming the file ends here):'
+        `${where} (the file is longer: ${ctx.totalLines} lines; use the read_file tool with start_line and ` +
+          'end_line for the rest rather than assuming what is outside these lines):'
       );
     } else {
       lines.push(`Full contents of ${ctx.activeFile}:`);
@@ -316,7 +412,7 @@ export function formatEditorContext(ctx: EditorContext): string {
     lines.push('```');
   }
 
-  lines.push('--- end editor state ---');
+  lines.push(EDITOR_STATE_CLOSE);
   return lines.join('\n');
 }
 

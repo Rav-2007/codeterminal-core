@@ -52,7 +52,7 @@ import { ChatPagesHost, currentPagesContext } from './chatPages/pagesHost';
 import { McpPopupHost, mcpPopupHost, setMcpPopupHost } from './mcpPopup';
 import { chatLookStyles } from './chatLook';
 import { mcpMarketplaceStyles } from './mcpMarketplace';
-import { editorContextForPrompt } from './editorContext';
+import { editorContextForPrompt, withoutEditorState } from './editorContext';
 import { SLASH_CATALOG, parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
 import {
   SpecGrants,
@@ -154,11 +154,19 @@ function showElsewhere(webview: vscode.Webview, viewId: string, where: ChatLocat
 // turnsFromWire keeps only "user"/"assistant" roles, mirroring
 // clients/tui/chat.go's turnsFromProtocol -- defense in depth even though
 // the daemon has already re-validated these roles server-side.
+//
+// And each user turn as the user TYPED it: the daemon stores the prompt text,
+// which carries the editor-state block the turn was sent with, and every turn
+// that enters this panel from the daemon comes through here. Without this a
+// reopened or compacted chat re-sent every stale copy of the open file as
+// history (withoutEditorState).
 function turnsFromWire(turns: Turn[] | undefined): Turn[] {
   if (!turns) {
     return [];
   }
-  return turns.filter((t) => t.role === 'user' || t.role === 'assistant');
+  return turns
+    .filter((t) => t.role === 'user' || t.role === 'assistant')
+    .map((t) => (t.role === 'user' ? { ...t, content: withoutEditorState(t.content) } : t));
 }
 
 // ChatPanel owns exactly one webview panel and the extension-host side of
