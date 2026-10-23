@@ -172,15 +172,21 @@ the provider from the key itself.
 | Moonshot | Hugging Face | SambaNova |
 | DashScope | Z.ai | |
 
-Or keep everything on your machine with a local model server such as Ollama,
-LM Studio, llama.cpp or vLLM:
+Or keep everything on your computer with a local model server: Ollama,
+LM Studio, llama.cpp or vLLM. Start one (for Ollama: `ollama serve`, then
+`ollama pull qwen2.5-coder:7b`), and in Mochiii pick **On this computer** from
+`/provider`, or run `/connect local`. No key is needed.
 
-```bash
-export MOCHIII_API_BASE=http://localhost:11434/v1
-export MOCHIII_MODEL=qwen2.5-coder:7b
-```
+A model on your computer gets the code that matters with each question, and no
+tools: small local models answer well about code they are given, but cannot run
+agent mode. `/agent on` gives a stronger model the tools, and `/web on` lets
+them reach the internet; both stay off until you turn them on. Mochiii also fits
+the code it sends into the model's context window, and says how to make that
+window bigger.
 
-In VS Code, use the `mochiii.apiBase` and `mochiii.model` settings instead.
+The environment variables work too (`MOCHIII_API_BASE=http://localhost:11434/v1`,
+`MOCHIII_MODEL=qwen2.5-coder:7b`); in VS Code, use the `mochiii.apiBase` and
+`mochiii.model` settings.
 Switch provider or model at any time with `/provider` and `/model`.
 
 ## Commands
@@ -190,6 +196,7 @@ Type `/` in the chat to see them all.
 | Command | What it does |
 |---|---|
 | `/provider` · `/model` | Choose a provider, key and model |
+| `/agent` · `/web` | Tools, and internet tools, for a model on your computer (off until you turn them on) |
 | `/account` | What you are connected to, and what you have spent |
 | `/spec` | Write a spec, then `/spec build` and `/spec check` |
 | `/debug` · `/fix` · `/refactor` · `/hunt` | Start a long task |

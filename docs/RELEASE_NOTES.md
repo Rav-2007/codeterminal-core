@@ -5,6 +5,32 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## v1.3.0 — 2026-10-23
+
+### Models on your computer, from the terminal app
+
+**What changed.** A model server on your computer (Ollama, LM Studio, llama.cpp
+or vLLM) used to need two environment variables set before Mochiii started. Now
+`/provider` lists **On this computer**, and `/connect local` finds the servers
+running on this machine, lists their models and connects with no key.
+
+### A local model gets your code, and no tools until you say so
+
+**What changed.** In our tests a small local model (qwen2.5-coder 3B on Ollama)
+answered correctly about the code Mochiii sent it, and could not run agent mode.
+So a model on your computer gets the code that matters with each question and no
+tools. `/agent on` gives a stronger model the tools. The internet tools — web
+search, page fetch and GitHub — stay off even then, until `/web on`, so nothing
+leaves your computer unless you allow it. The line under the prompt says which
+is in force.
+
+### The code sent fits the model's context window
+
+**What changed.** Ollama gives a model 4,096 tokens unless told otherwise and
+drops the rest of a request without an error, so answers quietly got worse.
+Mochiii now reads the model's real window from the server, sends only as much
+code as fits, and tells you once how to give the model more room.
+
 ## v1.2.2 — 2026-10-23
 
 ### Starting Mochiii outside a project no longer times out

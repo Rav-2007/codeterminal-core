@@ -382,10 +382,37 @@ The daemon reads plain environment variables and never parses `.env` itself.
 | `MOCHIII_PROXY_KEY` | Per-user Mochiii key; required in proxy mode — or `proxy_key` on stdin, which this variable outranks |
 
 **A model server on your own machine** (Ollama, LM Studio, llama.cpp, vLLM) needs
-no key: `MOCHIII_API_BASE=http://localhost:11434/v1` and
-`MOCHIII_MODEL=qwen2.5-coder:7b`. A local server also gets five minutes, not
-sixty seconds, before its first token — a CPU model reading a long prompt is
-silent, not stalled.
+no key. In the terminal app, pick **On this computer** from `/provider`, or run
+`/connect local`: Mochiii looks for a server on `127.0.0.1` at each one's usual
+port (11434, 1234, 8080, 8000), tells them apart by what they serve rather than
+by the port, lists their models, and connects with no key and without trying a
+model (each try would load one into memory). `/connect http://localhost:<port>/v1`
+connects to one elsewhere on this machine. Outside the app:
+`MOCHIII_API_BASE=http://localhost:11434/v1` and `MOCHIII_MODEL=qwen2.5-coder:7b`.
+A local server also gets five minutes, not sixty seconds, before its first token
+— a CPU model reading a long prompt is silent, not stalled.
+
+What the terminal app does differently for a model on this computer, measured
+with Ollama and qwen2.5-coder:3b on 2026-10-23:
+
+- **No tools until `/agent on`.** Chat with code search answered correctly;
+  agent mode did not — the model invented a tool, then called none. The model
+  gets the code Mochiii searched for, and no tools.
+- **No internet tools until `/web on`,** even with agent mode on: `web_search`,
+  `web_fetch` and `github` are neither offered nor run (`CapNoNetworkTools`).
+- **The code is fitted into the model's context window.** Ollama gives a model
+  4,096 tokens unless started with `OLLAMA_CONTEXT_LENGTH`, and drops what does
+  not fit without an error (a 4,893-token request arrived as 2,050). The app
+  reads the window from the server (Ollama `/api/ps`, LM Studio
+  `/api/v1/models`, llama.cpp `/props`, vLLM `max_model_len`), cuts the code it
+  sends to fit, and says so once, with how to give the model more room.
+
+**Pick a model of 7B or more.** The 3B model answered the same question about a
+two-file project right once in three runs; the code it was sent was the same
+each time. The pipeline works with any size; the answers need a bigger model.
+
+The two choices are kept in `local-models.json` in the app's state folder. The
+VS Code extension asks for none of this and is served as before.
 
 A stored credential (`mochiii-daemon connect`) fills in only what the
 environment did not say, **and only for the address it was saved for** — a
@@ -558,6 +585,10 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /provider nvidia       # skip the list (TUI); or /provider <its API address>
 /account               # TUI: the provider, key and model in use, and what was spent
 /connect               # the same screens as /provider, under their older name
+/connect local         # TUI: find a model server on this computer (also: ollama, lmstudio, llamacpp, vllm)
+/connect http://localhost:8080/v1   # TUI: a server on this computer at that address, no key
+/agent on              # TUI: tools for a model on this computer (off until turned on)
+/web on                # TUI: let those tools reach the internet (off until turned on)
 /connect show          # which key is in force (masked — never the key itself)
 /connect forget        # remove the stored key
 
