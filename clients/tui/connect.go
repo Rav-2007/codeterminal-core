@@ -141,6 +141,13 @@ const otherProviderHint = "A key only works with the provider that issued it, an
 // say which one they meant. The address is said back before the key is asked
 // for, because it is where the key is about to be sent.
 func (m chatModel) beginConnectTo(base string) (tea.Model, tea.Cmd) {
+	if base == localRowID || isLocalBase(base) {
+		m.setup = setupFlow{}
+		if base == localRowID {
+			return m.beginLocalSetup()
+		}
+		return m.setupConnectLocal(base) // a server on this computer wants no key
+	}
 	m.appendTurn(turn{role: roleAssistant, local: true, text: "Switching to " + providerLabel(base) + ".\n\n" +
 		"Paste the API key for it below — it is sent to that address to be checked, nothing is stored " +
 		"if the key is refused, and the key is not shown as you type. Esc keeps the provider and key in use now."})
@@ -322,6 +329,9 @@ func formatConnectResult(msg connectResultMsg) string {
 	var b strings.Builder
 	switch r.Outcome {
 	case protocol.ConnectAccepted:
+		if isLocalBase(r.APIBase) && r.MaskedKey == "" {
+			return localConnectedText(r) // localmodels.go
+		}
 		// "in use now" IS THE CLAIM THAT CAN BE FALSE. The daemon reports InUse,
 		// and it is false whenever a key in the daemon's environment wins. Saying
 		// it anyway produced a message that contradicted its own closing note.
@@ -482,6 +492,9 @@ func connectBaseArg(arg string) (string, bool) {
 	}
 	if p, ok := protocol.ProviderByName(arg); ok {
 		return p.APIBase, true
+	}
+	if localConnectWords[strings.ToLower(arg)] {
+		return localRowID, true // localmodels.go: look for one on this computer
 	}
 	u, err := url.Parse(arg)
 	if err != nil || u.Host == "" || u.User != nil {

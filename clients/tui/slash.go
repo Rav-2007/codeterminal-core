@@ -95,7 +95,9 @@ var slashCatalog = []slashDef{
 	{Name: "issues", Kind: slashLocal, Summary: "the open GitHub issues (/issues <label> narrows them)"},
 	{Name: "pr", Kind: slashLocal, Summary: "pull requests: /pr lists them, /pr <n> shows one, /pr <n> log says why its CI failed"},
 	{Name: "spec", Kind: slashLocal, Summary: "write a spec (/spec <goal>), then /spec build|check|use|off|show"},
-	{Name: "connect", Kind: slashLocal, Summary: "choose a provider, paste its key, choose a model (/connect <provider> skips the list; /connect show, /connect forget)"},
+	{Name: "connect", Kind: slashLocal, Summary: "choose a provider, paste its key, choose a model (/connect <provider> skips the list; /connect local finds a model server on this computer; /connect show, /connect forget)"},
+	{Name: "agent", Kind: slashLocal, Summary: "tools for a model on this computer: /agent on, /agent off (off until you turn it on)"},
+	{Name: "web", Kind: slashLocal, Summary: "internet tools for a model on this computer: /web on, /web off (off until you turn it on)"},
 	{Name: "exit", Kind: slashLocal, Summary: "quit the TUI"},
 
 	// /team is in the catalog to be FOUND, and parsed elsewhere.

@@ -357,7 +357,7 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 // the shared chat's revision (PromptRequest.ChatRevision) and a long task's
 // fields.
 func streamPromptWith(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, chatRev string, task taskFields, ch chan tea.Msg) {
-	sess, err := connectToDaemon(clientName, protocol.CapToolApproval)
+	sess, err := connectWithPolicy(clientName, promptCapabilities()) // localmodels.go
 	if err != nil {
 		if ctx.Err() != nil {
 			return

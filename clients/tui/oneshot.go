@@ -74,7 +74,7 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 		caps = append(caps, protocol.CapToolApproval)
 	}
 
-	sess, err := connectToDaemon(clientName, caps...)
+	sess, err := connectOneShot(clientName, caps) // localmodels.go: no tools for a model on this computer until /agent on
 	if err != nil {
 		say(env.err, "error: %v\n", err)
 		return 1
