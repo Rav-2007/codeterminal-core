@@ -29,6 +29,13 @@ Windows (PowerShell):
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
 ```
 
+With Node.js 18 or later, `npm install -g mochiii` installs the same program on
+every system: npm picks the one `@mochiii/<platform>` package that matches the
+computer, and on macOS and Linux the `mochiii` command is that native binary.
+Update with `npm install -g mochiii@latest`. To remove it, run `mochiii --stop`
+in each project folder you used, then `npm uninstall -g mochiii`; npm stops no
+background service.
+
 The installers live in [`install/`](../install/) and are attached to every
 release. They install the terminal app only. In order, they:
 
@@ -105,6 +112,12 @@ being asked for that folder. Other options:
 
 **Troubleshooting:**
 
+- `mochiii` prints "Note: … is your home folder, not a project folder": it
+  works on the folder it starts in, and code search is never offered there.
+  `cd` into a project and run it there.
+- "did not answer within 30s" when starting in your home folder, mostly on
+  Windows: 1.2.1 and earlier walked the whole folder before answering. Update to
+  1.2.2, or start Mochiii inside a project folder.
 - `mochiii: command not found` right after installing: open a new terminal. The
   installer added `~/.local/bin` to your shell's startup file.
 - Code search is off on Linux: it needs glibc 2.27+ (`ldd --version`). Chat and
