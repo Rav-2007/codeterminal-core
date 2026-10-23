@@ -1064,6 +1064,49 @@ export interface StreamHandlers {
   onError?: (err: Error) => void;
 }
 
+// A TURN THAT HEARS NOTHING ENDS, whatever the daemon does (2026-10-23).
+//
+// Observed: "Mochiii is answering" for nearly two hours, with no answer, no
+// error and nothing in the daemon log. Nothing on this side would ever have
+// ended it: the handshake has a deadline (HANDSHAKE_TIMEOUT_MS) and the turn
+// after it had none. The daemon bounds its own turns, but a client that trusts
+// that bound inherits every way it can fail to reach the client -- a wedged
+// daemon, a lost socket, a turn that never started.
+//
+// An IDLE limit, not a total one: legitimate turns run long and keep talking.
+// Each limit sits above the longest silence the daemon itself allows, so it
+// cannot cut a working turn short:
+//
+//   idleMs         10 min   twice the daemon's per-request ceiling
+//                           (daemon/provider.go requestTimeout, 5 min; its
+//                           retries are capped at 45 s, retry.go)
+//   toolRunningMs  35 min   while a tool reports "running": above run_command's
+//                           30-minute cap (daemon/runcommand.go), the longest a
+//                           built-in runs without a message
+//
+// The clock is STOPPED while an approval card waits on the user: that wait is
+// theirs, and the daemon bounds it at five minutes (approvalIdleTimeout).
+//
+// A variable so a test can shorten it; production never changes it.
+export const streamSilenceLimits = { idleMs: 10 * 60_000, toolRunningMs: 35 * 60_000 };
+
+// The error class a turn ended by that limit carries. Client-side: the daemon
+// never sends it, and the panel offers Try again for it.
+export const NO_RESPONSE_CLASS = 'no_response';
+
+function minutesText(ms: number): string {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  return m === 1 ? '1 minute' : `${m} minutes`;
+}
+
+export function noResponseMessage(silentMs: number, sinceSentMs: number): string {
+  return (
+    `No answer arrived. Mochiii heard nothing from its background service for ${minutesText(silentMs)} ` +
+    `(the question was sent ${minutesText(sinceSentMs)} ago), so it stopped waiting. Nothing is running now. ` +
+    'Try again, or run "Mochiii: Show Daemon Log" to see what happened.'
+  );
+}
+
 // streamPrompt opens a fresh connection, sends exactly one PromptRequest,
 // and dispatches every grounding/token/done/error onto handlers -- the TS
 // equivalent of clients/tui/stream.go's streamPrompt. A deliberate
@@ -1111,10 +1154,44 @@ export async function streamPrompt(
 
   let finished = false;
 
+  // The silence clock (streamSilenceLimits). Re-armed after every message;
+  // stopped while an approval is open and on every way the stream ends (each
+  // destroys the socket, and 'close' below clears it).
+  const sentAt = Date.now();
+  let lastHeard = sentAt;
+  let silence: ReturnType<typeof setTimeout> | undefined;
+  let approvalsOpen = 0;
+  const toolsRunning = new Set<string>();
+  const armSilence = () => {
+    if (silence !== undefined) {
+      clearTimeout(silence);
+      silence = undefined;
+    }
+    if (finished || signal.aborted || approvalsOpen > 0) {
+      return;
+    }
+    const limit = toolsRunning.size > 0 ? streamSilenceLimits.toolRunningMs : streamSilenceLimits.idleMs;
+    silence = setTimeout(() => {
+      if (finished || signal.aborted) {
+        return;
+      }
+      finished = true;
+      const now = Date.now();
+      handlers.onError?.(
+        Object.assign(new Error(noResponseMessage(now - lastHeard, now - sentAt)), {
+          errorClass: NO_RESPONSE_CLASS,
+          keyReplaceable: false,
+        }) as TurnError,
+      );
+      socket.destroy();
+    }, limit);
+  };
+
   const decoder = new LineDecoder((obj) => {
     if (finished) {
       return;
     }
+    lastHeard = Date.now();
     const tok = obj as TokenResponse;
     if (tok.error) {
       finished = true;
@@ -1143,13 +1220,23 @@ export async function streamPrompt(
       handlers.onProvider?.(tok.provider);
     }
     if (tok.tool_activity) {
-      handlers.onToolActivity?.(tok.tool_activity);
+      const a = tok.tool_activity;
+      if (a.phase === 'running') {
+        toolsRunning.add(a.call_id);
+      } else if (a.phase === 'succeeded' || a.phase === 'failed' || a.phase === 'denied') {
+        toolsRunning.delete(a.call_id);
+      }
+      handlers.onToolActivity?.(a);
     }
     if (tok.tasks) {
       handlers.onTasks?.(tok.tasks);
     }
     if (tok.tool_approval) {
-      askForApproval(socket, tok.tool_approval, handlers, () => finished);
+      approvalsOpen++;
+      askForApproval(socket, tok.tool_approval, handlers, () => finished, () => {
+        approvalsOpen--;
+        armSilence();
+      });
     }
     if (tok.token) {
       handlers.onToken?.(tok.token);
@@ -1191,7 +1278,9 @@ export async function streamPrompt(
       }
       handlers.onDone?.();
       socket.destroy();
+      return;
     }
+    armSilence();
   });
   socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
 
@@ -1208,6 +1297,10 @@ export async function streamPrompt(
   // already seen is treated as a clean end of stream, mirroring stream.go's
   // io.EOF-as-done handling.
   socket.once('close', () => {
+    if (silence !== undefined) {
+      clearTimeout(silence);
+      silence = undefined;
+    }
     if (finished || signal.aborted) {
       return;
     }
@@ -1249,6 +1342,7 @@ export async function streamPrompt(
     req.chat_revision = opts.chatRevision;
   }
   writeLine(socket, req);
+  armSilence();
 }
 
 /** fetchAvailableTiers asks the daemon status surface for models.json tiers. */
@@ -1305,7 +1399,8 @@ function askForApproval(
   socket: net.Socket,
   req: ToolApprovalRequest,
   handlers: StreamHandlers,
-  isFinished: () => boolean
+  isFinished: () => boolean,
+  onAnswered: () => void = () => {}
 ): void {
   let answered = false;
   const respond = (decision: string) => {
@@ -1313,6 +1408,7 @@ function askForApproval(
       return;
     }
     answered = true;
+    onAnswered();
     const resp: ToolApprovalResponse = {
       protocol_version: PROTOCOL_VERSION,
       approval:

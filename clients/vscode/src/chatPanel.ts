@@ -126,6 +126,10 @@ export const CHAT_VIEW_IDS: readonly string[] = [CHAT_VIEW_ID, CHAT_ACTIVITY_VIE
 // starts only when it is used (package.json activationEvents), so the command
 // that opened this panel is usually what started the daemon a moment ago --
 // and a panel VS Code restores after a restart always is.
+// The error class of a question held back because no key is in use
+// (connectThenStart). Client-side: the daemon never sends it.
+export const NO_KEY_CLASS = 'no_key';
+
 const PREFLIGHT_WAIT_MS = 15_000;
 const PREFLIGHT_RETRY_MS = 300;
 
@@ -1391,21 +1395,44 @@ export class ChatPanel {
   // would go out with no key; sending the question anyway would only turn it
   // into an authentication error. The connect box opens, and the question is
   // sent the moment a key is in use -- or handed back, unsent, if not.
+  //
+  // SAID AT ONCE, NOT AFTER THE BOX CLOSES (2026-10-23). The webview starts its
+  // "Mochiii is answering" state on send, and this used to say nothing until
+  // the popup settled -- which a refused key never does: the popup shows the
+  // refusal and waits for another. So a question that was never sent showed as
+  // being answered for as long as the popup stayed open, nearly two hours in
+  // the case that found this, with no prompt in the daemon log because none
+  // was ever sent. The error ends that state; the question is still sent if a
+  // key connects.
   private async connectThenStart(run: () => void): Promise<void> {
     this.needsApiKey = false; // no second box while this one is open
+    this.postSafe({
+      type: 'error',
+      message:
+        'Not sent yet: Mochiii has no model provider key in use, so this question could only fail. ' +
+        'Connect one in the box that opened (or run "Mochiii: Set API Key"); the question is sent as soon as a key works.',
+      errorClass: NO_KEY_CLASS,
+      keyReplaceable: false,
+    });
     const r = await this.openConnect();
     if (r.inUse) {
-      void this.host.webview.postMessage({ type: 'info', text: 'Key connected · sending your question' });
       void this.refreshModelAfterConnect();
+      // The composer was free while the box was open, so another turn may
+      // have started; two at once is not something this panel does.
+      if (this.inFlight || this.autoApplyRunInFlight) {
+        this.postSafe({ type: 'info', text: 'Key connected · your earlier question was not sent; send it again' });
+        return;
+      }
+      this.postSafe({ type: 'info', text: 'Key connected · sending your question' });
+      this.postSafe({ type: 'turnStarted' });
       run();
       return;
     }
     this.needsApiKey = true;
-    this.replyLocal(
-      'Your question was not sent: Mochiii needs a model provider key first, and none is in use.\n\n' +
-        r.message +
-        '\n\nRun /connect, then send the question again.',
-    );
+    this.postSafe({
+      type: 'info',
+      text: `Your question was not sent. ${r.message.split('\n')[0]} Run /connect, then send it again.`,
+    });
   }
 
   // THE CONNECT POPUP: the provider, its key, then a model -- the terminal's
