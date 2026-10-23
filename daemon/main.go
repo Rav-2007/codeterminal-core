@@ -565,7 +565,7 @@ func main() {
 	// it already assigned.
 	srv.lspBridge.logf = logger.Printf
 
-	srv.startWorkspaceWatcher()
+	srv.watchWorkspace()
 	// Which sandbox sandbox_exec will get, and why -- in the background, because
 	// finding out runs a probe or two and startup waits for neither.
 	go srv.logSandboxExecBackend()

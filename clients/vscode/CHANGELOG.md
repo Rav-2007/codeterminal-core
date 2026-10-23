@@ -3,6 +3,25 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [1.2.2] - 2026-10-23
+
+### Fixed
+
+- **Starting Mochiii outside a project no longer times out.** In a folder with no
+  index, such as your home folder, the background service no longer walks every
+  folder under it before it answers. On Windows that walk could take longer than
+  the 30 s the terminal app waits, which ended in "did not answer within 30s". In
+  an indexed project the walk now runs in the background, so the service answers
+  at once.
+
+### Added
+
+- **A note when the terminal app starts in your home folder** or at the top of a
+  drive: it works on the folder it starts in, so it says to start it inside a
+  project instead.
+- **`npm install -g mochiii`** works on every system with Node.js 18 or later.
+  The packages are on npm from 1.2.1.
+
 ## [1.2.1] - 2026-10-22
 
 The first published 1.2 release. 1.2.0 was built but not published, so its

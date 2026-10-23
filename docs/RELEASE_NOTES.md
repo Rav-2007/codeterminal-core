@@ -5,6 +5,29 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## v1.2.2 — 2026-10-23
+
+### Starting Mochiii outside a project no longer times out
+
+**What changed.** Started in your home folder, or in any folder with no index,
+the background service used to walk every folder under it before answering. On
+Windows that could take longer than the 30 seconds the terminal app waits, and
+`mochiii` stopped with "did not answer within 30s". A folder with no index now
+gets no walk at all, and in an indexed project the walk runs in the background,
+so the service answers at once.
+
+### A note when you start Mochiii in your home folder
+
+**What changed.** Mochiii works on the folder it starts in. Started in your home
+folder or at the top of a drive, it now says so and suggests starting it inside
+a project folder instead. It still runs.
+
+### `npm install -g mochiii`
+
+**What changed.** The npm packages are published, so with Node.js 18 or later
+`npm install -g mochiii` installs Mochiii on any system. Update with
+`npm install -g mochiii@latest`.
+
 ## v1.2.1 — 2026-10-22
 
 The first published 1.2 release. Version 1.2.0 was built but not published, so

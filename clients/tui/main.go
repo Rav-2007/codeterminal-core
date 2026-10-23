@@ -107,6 +107,7 @@ func runChat(workspace string, launch launchOptions) {
 		os.Exit(1)
 	}
 	setDaemonWorkspaceRoot(workspaceRoot)
+	sayIfNotAProject(os.Stderr, workspaceRoot)
 	prepareDaemon(workspaceRoot, launch, true)
 
 	preflight, err := connectToDaemon("mochiii-tui")

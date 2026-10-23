@@ -42,6 +42,13 @@ On **Windows**, in PowerShell:
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
 ```
 
+Or, with [Node.js](https://nodejs.org) 18 or later, the same command on every
+system:
+
+```bash
+npm install -g mochiii
+```
+
 Then, inside a project folder:
 
 ```bash
@@ -73,7 +80,8 @@ start asking.
 
 ### Update and uninstall
 
-To update, run the install command again. To remove Mochiii on macOS or Linux:
+To update, run the install command again (with npm:
+`npm install -g mochiii@latest`). To remove Mochiii on macOS or Linux:
 
 ```bash
 curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh -s -- --uninstall
@@ -86,7 +94,9 @@ $env:MOCHIII_UNINSTALL="1"; irm https://github.com/Rav-2007/codeterminal-core/re
 ```
 
 Your keys, models and saved chats stay in `~/.mochiii` unless you also pass
-`--purge` (on Windows, set `$env:MOCHIII_PURGE="1"` too).
+`--purge` (on Windows, set `$env:MOCHIII_PURGE="1"` too). Installed with npm,
+run `mochiii --stop` in each project folder you used, then
+`npm uninstall -g mochiii`.
 
 ## Features
 
