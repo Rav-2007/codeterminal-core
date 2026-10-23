@@ -116,38 +116,10 @@ func (s *Server) dropFromIndex(relSlash string) {
 	}
 }
 
-// watchWorkspace is how the daemon starts its watcher: in the background, and
-// only when there is an index for it to keep current.
-//
-// THE WALK USED TO STAND BETWEEN A NEW DAEMON AND ITS FIRST ANSWER. main ran
-// startWorkspaceWatcher before Serve, and its walk visits the workspace's
-// directories until maxWatchedDirs of them are watched. On Windows each watch
-// is a directory handle, and `mochiii` started in a user's home folder
-// (2026-10-23, after `npm install -g mochiii`) walked into AppData and did not
-// answer within the client's 30 s: "did not answer within 30s", and nothing else.
-//
-// NO INDEX, NO WATCHER. The watcher exists only to keep an index current
-// (applyIndexUpdate). A daemon that started without one never picks one up --
-// the client stops and restarts it after indexing (clients/tui/firstrun.go) --
-// and a home folder or a drive root is never offered for indexing, so the walk
-// there bought nothing at all.
-func (s *Server) watchWorkspace() {
-	if s.store == nil || s.embedder == nil {
-		s.logger.Print("watcher: off -- there is no index here to keep current")
-		return
-	}
-	go s.startWorkspaceWatcher()
-}
-
-// watcherWalkStarting runs as startWorkspaceWatcher begins. Tests hold it to
-// prove that nothing waits for the walk.
-var watcherWalkStarting = func() {}
-
 // startWorkspaceWatcher starts a recursive filesystem watcher on the workspace.
 // When a file is written (e.g. by the user in VS Code), it triggers a background
 // re-embedding via reindexFile to keep the vector store perfectly synced.
 func (s *Server) startWorkspaceWatcher() {
-	watcherWalkStarting()
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		s.logger.Printf("watcher: failed to create fsnotify watcher: %v", err)
@@ -158,7 +130,6 @@ func (s *Server) startWorkspaceWatcher() {
 	// Skip hidden directories (like .git) and node_modules.
 	dirCount := 0
 	failed := 0
-	walkStart := time.Now()
 	err = filepath.WalkDir(s.workspace, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -188,7 +159,6 @@ func (s *Server) startWorkspaceWatcher() {
 		_ = watcher.Close()
 		return
 	}
-	s.logger.Printf("watcher: watching %d directories (the walk took %s)", dirCount, time.Since(walkStart).Round(time.Millisecond))
 	// Say so rather than degrading in silence. A watcher covering half the
 	// workspace looks identical to one covering all of it right up until the
 	// assistant answers from a stale index -- the failure mode the whole

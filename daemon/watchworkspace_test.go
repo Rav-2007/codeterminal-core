@@ -30,7 +30,7 @@ func holdWatcherWalk(t *testing.T) (started <-chan struct{}, release func()) {
 
 // THE POINT OF IT: a daemon answers without waiting for its watcher's walk.
 // The walk over a big tree took longer than the client's 30 s on Windows, and
-// the person saw "did not answer within 30s" (watcher.go, watchWorkspace).
+// the person saw "did not answer within 30s" (watchstart.go).
 //
 // Neuter check: make watchWorkspace call startWorkspaceWatcher directly instead
 // of in a goroutine, and this test fails at its 5 s deadline.
