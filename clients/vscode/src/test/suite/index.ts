@@ -8,7 +8,9 @@ import Mocha = require('mocha');
 import { glob } from 'glob';
 
 export async function run(): Promise<void> {
-  const mocha = new Mocha({ ui: 'tdd', color: true, timeout: 20000 });
+  // MOCHIII_TEST_GREP runs only the tests whose titles match, for iterating on
+  // one suite (or neutering a fix) without the whole host run. Unset: all.
+  const mocha = new Mocha({ ui: 'tdd', color: true, timeout: 20000, grep: process.env.MOCHIII_TEST_GREP ? new RegExp(process.env.MOCHIII_TEST_GREP) : undefined });
   const testsRoot = path.resolve(__dirname);
 
   const files = await glob('**/*.test.js', { cwd: testsRoot });

@@ -3249,8 +3249,13 @@
   function addErrorActions(body, errorClass, keyReplaceable) {
     /** @type {[string, () => void][]} */
     const actions = [];
-    if (errorClass === 'rate_limited' || errorClass === 'upstream_unavailable') {
+    // no_response: the panel stopped waiting for a daemon that said nothing
+    // (daemonClient streamSilenceLimits). no_key: the question was held back
+    // because no key is in use (chatPanel connectThenStart).
+    if (errorClass === 'rate_limited' || errorClass === 'upstream_unavailable' || errorClass === 'no_response') {
       actions.push(['Try again', retryLastPrompt]);
+    } else if (errorClass === 'no_key') {
+      actions.push(['Connect a key', () => vscode.postMessage({ type: 'connect' })]);
     } else if ((errorClass === 'auth' || errorClass === 'quota_exceeded') && keyReplaceable) {
       actions.push(['Change key', () => vscode.postMessage({ type: 'connect' })]);
     } else if (errorClass === 'context_too_large') {
@@ -3705,6 +3710,14 @@
         break;
       case 'info':
         addInfoLine(String(msg.text || ''));
+        break;
+      // A question held back for a key is being sent now that one connected
+      // (chatPanel connectThenStart): back into the answering state its 'error'
+      // took it out of.
+      case 'turnStarted':
+        if (!streaming) {
+          beginTurnView();
+        }
         break;
       // The turn was stopped by the user (the Stop button). Said in the
       // transcript, because a reply that simply stops mid-sentence with nothing
