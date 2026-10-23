@@ -1463,7 +1463,7 @@ func (s *Server) resolveExecutable(
 		s.count(func(c *counters) { c.toolNamesCanonicalized.Add(1) })
 	}
 
-	spec, policy, err := registry.Lookup(ctx, qualified)
+	spec, policy, err := lookupForTurn(ctx, registry, qualified) // localhandler.go
 	if err != nil {
 		// The model named something that does not exist. Told plainly so it can
 		// pick a real tool rather than retry the same wrong name.
@@ -1787,7 +1787,7 @@ func (s *Server) advertisedToolSpecsFor(ctx context.Context, registry *mcp.Regis
 	tools, errs := registry.AdvertisedFor(ctx, query)
 	specs = make([]toolSpec, 0, len(tools))
 	for _, tool := range tools {
-		if !role.allowsTool(tool) {
+		if !role.allowsTool(tool) || dropsNetworkTool(ctx, tool) {
 			if role != nil && tool.Lane != protocol.LaneFirstParty {
 				excludedThirdParty = append(excludedThirdParty, tool.QualifiedName())
 			}

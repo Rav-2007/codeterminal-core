@@ -598,9 +598,12 @@ func (s *Server) serveBudgetAction(enc *json.Encoder, req protocol.PromptRequest
 func (s *Server) features() []string {
 	out := []string{protocol.FeatureSavedChats, protocol.FeatureModelChoice, protocol.FeatureMCPAdmin,
 		protocol.FeatureMCPManage, protocol.FeatureMCPTools, protocol.FeatureMCPEnv, protocol.FeatureMCPSecrets, protocol.FeatureMCPCheck, protocol.FeatureMCPRemote, protocol.FeatureMCPOAuth, protocol.FeatureMCPProject, protocol.FeatureAttachedOutput, protocol.FeatureRules,
-		protocol.FeatureGitHub}
+		protocol.FeatureGitHub, protocol.FeatureLocalModels}
 	if s.spend != nil {
 		out = append(out, protocol.FeatureSpendLimits)
+	}
+	if _, base := s.credentials(); isLoopbackBase(base) {
+		out = append(out, protocol.FeatureLocalInForce) // localfit.go: a model on this machine
 	}
 	return out
 }

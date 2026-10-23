@@ -154,7 +154,7 @@ func main() {
 			}
 			envKey := apiKey
 			apiKey, apiBase = fillFromStored(apiKey, apiBase, stored, logger.Printf)
-			if envKey == "" && stored.configured() && apiKey == stored.APIKey {
+			if envKey == "" && stored.inForce(apiKey, apiBase) {
 				connected = stored
 			}
 		}

@@ -190,6 +190,9 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 	}
 
 	key := strings.TrimSpace(req.APIKey)
+	if key == "" && isLoopbackBase(req.APIBase) {
+		return s.connectLocal(ctx, req.APIBase, path, envOverride) // localconnect.go
+	}
 	if err := validateKeyShape(key); err != nil {
 		return protocol.ConnectResponse{Error: err.Error() + "; nothing was saved"}
 	}
@@ -415,7 +418,7 @@ func (s *Server) chooseModel(path, name string, envOverride bool) protocol.Conne
 		resp.Detail = "kept until this daemon stops: its key comes from the environment, so there is no stored key to save the choice beside"
 	case loadErr != nil:
 		resp.Detail = "kept until this daemon stops: the stored key could not be read (" + loadErr.Error() + ")"
-	case !stored.configured() || !stored.issuedFor(firstNonEmpty(inUseBase, defaultAPIBase)):
+	case !stored.usable() || !stored.issuedFor(firstNonEmpty(inUseBase, defaultAPIBase)):
 		resp.Detail = "kept until this daemon stops: no key is stored for the provider in use, so there is nothing to save the choice beside"
 	default:
 		stored.ChosenModel = name
