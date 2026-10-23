@@ -65,6 +65,26 @@ type storedCredential struct {
 // configured reports whether there is a key here at all.
 func (c storedCredential) configured() bool { return strings.TrimSpace(c.APIKey) != "" }
 
+// keylessLocal reports a model server on this machine, connected with no key
+// (/connect local): a credential with an address and nothing to send it.
+func (c storedCredential) keylessLocal() bool {
+	return strings.TrimSpace(c.APIKey) == "" && isLoopbackBase(c.APIBase)
+}
+
+// usable reports whether prompts can go out with this credential: a key, or a
+// server on this machine that wants none.
+func (c storedCredential) usable() bool { return c.configured() || c.keylessLocal() }
+
+// inForce reports whether this credential is the one a daemon started with
+// apiKey and apiBase is using. A keyless local server is told by its address,
+// since it has no key to compare.
+func (c storedCredential) inForce(apiKey, apiBase string) bool {
+	if c.configured() {
+		return apiKey == c.APIKey
+	}
+	return c.keylessLocal() && apiKey == "" && sameAPIBase(apiBase, c.APIBase)
+}
+
 // issuedFor reports whether this key was saved for apiBase.
 //
 // A KEY GOES ONLY TO THE ADDRESS IT WAS SAVED FOR. The stored key used to fill

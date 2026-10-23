@@ -151,6 +151,7 @@ func connectToDaemon(clientName string, capabilities ...string) (*daemonSession,
 		return nil, fmt.Errorf("daemon rejected handshake: %s (this client speaks protocol v%d; make sure client and daemon are the same build)", hsResp.Error, protocol.ProtocolVersion)
 	}
 
+	rememberDaemonFeatures(hsResp) // localmodels.go: what a local model's questions may ask of it
 	return &daemonSession{conn: conn, enc: enc, dec: dec, handshake: hsResp}, nil
 }
 

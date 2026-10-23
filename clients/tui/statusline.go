@@ -192,7 +192,11 @@ func (m chatModel) handleSideAnswer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleModelChoice(msg)
 	case connInfoMsg:
 		m.conn = connInfo{known: true, resp: msg.resp, err: msg.err}
-		return m, nil
+		return m.afterConnInfo() // localmodels.go
+	case localServersMsg:
+		return m.handleLocalServers(msg)
+	case localFitMsg:
+		return m.handleLocalFit(msg)
 	case accountMsg:
 		return m.handleAccount(msg)
 	case rulesResultMsg: // not the line's, but chat.go has one case for all of these
@@ -277,6 +281,9 @@ func (m chatModel) statusLine() string {
 			parts = append(parts, statusModelStyle.Render(model))
 		}
 		plain(sanitizeText(provider))
+		if label := localModeLabel(m.conn.connectedBase()); label != "" {
+			plain(label)
+		}
 	}
 	if t := m.sessionUsage; t.turns > 0 {
 		plain(compactTokens(t.prompt+t.completion) + " tokens")

@@ -68,6 +68,9 @@ type serverExtras struct {
 	githubCredPath string
 	// github is what the daemon knows about GitHub (github.go).
 	github githubState
+	// localFit is the last fit of the code budget into a local model's
+	// context window (localfit.go).
+	localFit localFitState
 }
 
 // handleConnectOrMCP answers whichever of the two requests serveConn's connect
@@ -86,6 +89,16 @@ type serverExtras struct {
 // and is not logged either. A GitHubRequest (githubrequest.go) followed on
 // 2026-10-15: one of them carries a GitHub token.
 func (s *Server) handleConnectOrMCP(ctx context.Context, enc *json.Encoder, raw json.RawMessage, connectReq protocol.ConnectRequest) {
+	if isLocalRequest(raw) {
+		var localReq protocol.LocalRequest
+		if err := json.Unmarshal(raw, &localReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
+			s.logger.Print("local request decode error")
+			return
+		}
+		s.handleLocal(ctx, enc, localReq)
+		return
+	}
 	if isGitHubRequest(raw) {
 		var githubReq protocol.GitHubRequest
 		if err := json.Unmarshal(raw, &githubReq); err != nil {

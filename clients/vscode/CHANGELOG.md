@@ -3,6 +3,22 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [1.3.0] - 2026-10-23
+
+The extension is unchanged in this release; what is new is in the terminal app.
+
+### Added
+
+- **Models on your computer, from the terminal app.** `/provider` lists **On this
+  computer**, and `/connect local` finds a running Ollama, LM Studio, llama.cpp or
+  vLLM server, lists its models and connects with no key.
+- **A local model gets your code and no tools** until `/agent on`, and no internet
+  tools until `/web on`. Small local models answered well about the code they were
+  given and could not run agent mode in our tests.
+- **The code sent to a local model fits its context window.** Ollama gives a
+  model 4,096 tokens by default and drops the rest without saying so; Mochiii now
+  reads the window, sends what fits, and says how to raise it.
+
 ## [1.2.2] - 2026-10-23
 
 ### Fixed

@@ -47,6 +47,7 @@ const (
 	setupChecking                  // the daemon is asking the provider
 	setupModel                     // the list of the provider's models
 	setupAccount                   // /account: what is connected, and the spend (account.go)
+	setupLocal                     // the model servers on this computer (localmodels.go)
 )
 
 // setupFlow is where the setup is. The zero value is "not showing".
@@ -81,6 +82,8 @@ type setupFlow struct {
 	// after that must not say "nothing was sent" -- something was, and the
 	// line above it in the transcript says what became of it.
 	sent bool
+	// localServers are the servers on this computer the setupLocal list shows.
+	localServers []protocol.LocalServer
 	// modelOnly is set when the model list was opened to change the model --
 	// by /model, or by keeping the key in use -- and not reached by connecting
 	// a key. Nothing was just connected, so the screen does not say so; and a
@@ -153,6 +156,7 @@ func providerRows(currentBase string) []pickerRow {
 		Hint:  "the provider is told from the key",
 		Match: "any auto detect recognise paste",
 	}}
+	rows = append(rows, localProviderRow(currentBase))
 	for _, p := range protocol.Providers() {
 		rows = append(rows, pickerRow{
 			ID: p.ID, Label: p.Name, Hint: hostOfBase(p.APIBase),
@@ -410,6 +414,9 @@ func (m chatModel) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.setupListKey(msg), nil
 
+	case setupLocal:
+		return m.setupLocalKey(msg)
+
 	case setupProvider:
 		switch msg.String() {
 		case "esc":
@@ -423,6 +430,10 @@ func (m chatModel) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setup.notice = ""
 			if row.ID == anyKeyRowID {
 				return m.beginSetupKey("", "")
+			}
+			if row.ID == localRowID {
+				m.setup.viaList = true
+				return m.beginLocalSetup()
 			}
 			p, known := protocol.ProviderByName(row.ID)
 			if !known {
@@ -567,6 +578,10 @@ func (m chatModel) handleSetupConnectResult(msg connectResultMsg) (tea.Model, te
 	r := msg.resp
 
 	switch {
+	case msg.err != nil && isLocalBase(m.setup.base):
+		return m.localConnectFailed("could not reach the daemon: " + msg.err.Error())
+	case r.Error != "" && isLocalBase(m.setup.base):
+		return m.localConnectFailed(r.Error)
 	case msg.err != nil:
 		m.setup.notice = "could not reach the daemon: " + sanitizeText(msg.err.Error())
 		return m.beginSetupKey(m.setup.base, m.setup.provider)
@@ -712,7 +727,7 @@ func (m chatModel) setupSize() (width, height int) {
 
 // setupHasList reports whether the step showing is one of the two lists.
 func (m chatModel) setupHasList() bool {
-	return m.setup.step == setupProvider || (m.setup.step == setupModel && !m.setup.loading)
+	return m.setup.step == setupProvider || ((m.setup.step == setupModel || m.setup.step == setupLocal) && !m.setup.loading)
 }
 
 // setupFit decides how the current step is drawn so that it fits: how many list
@@ -840,10 +855,14 @@ func (m chatModel) setupBlock(listRows int, logo bool, detail int) string {
 		help = setupCheckingHelp
 		body = m.spinner.View() + " " + wrapText(setupTextStyle, "checking the key with "+m.setup.checking+
 			" and finding a model that answers", inner-2)
-		if detail == setupFull {
+		if isLocalBase(m.setup.base) {
+			body = m.spinner.View() + " " + wrapText(setupTextStyle, "asking "+m.setup.checking+" for its models", inner-2)
+		} else if detail == setupFull {
 			body += "\n\n" + wrapText(pickerHintStyle, "This is a real request to the provider. It can take up to "+
 				"20 seconds when the provider lists many models.", inner)
 		}
+	case setupLocal:
+		help, body = m.renderSetupLocal(picker, inner, listRows, detail)
 	case setupAccount:
 		help = accountHelp
 		body = m.renderAccount(inner, detail)

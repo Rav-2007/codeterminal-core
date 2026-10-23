@@ -327,7 +327,7 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	// function the locate eval calls too, so the eval measures this path and
 	// not a copy of it.
 	d := deliverWithinBudget(direct, similar, s.workspace, s.resolvedExpandPolicy(),
-		s.retrievalTopK, s.contextBudgetChars, s.noScrub())
+		s.retrievalTopK, s.budgetChars(), s.noScrub())
 	if len(d.Chunks) == 0 {
 		// Prefer the specific cause when there is one. "No relevant chunks found
 		// in index" is a lie to a user who has no index.
@@ -368,7 +368,7 @@ func (s *Server) gatherDirectRefs(prompt string) retrievalOutcome {
 		return retrievalOutcome{Skipped: true, Reason: agentSearchReason}
 	}
 	d := deliverWithinBudget(direct, nil, s.workspace, s.resolvedExpandPolicy(),
-		s.retrievalTopK, s.contextBudgetChars, s.noScrub())
+		s.retrievalTopK, s.budgetChars(), s.noScrub())
 	return retrievalOutcome{
 		Chunks:          d.Chunks,
 		Truncated:       d.Truncated,

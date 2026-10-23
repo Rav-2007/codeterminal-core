@@ -511,7 +511,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// Before the prompt path like the rest, and deliberately NOT logged with its
 	// payload: a ConnectRequest carries a provider key, and the one thing that
 	// must never happen to it is being written down. See connect_handler.go.
-	if isConnectRequest(raw) || isMCPRequest(raw) || isRulesRequest(raw) || isGitHubRequest(raw) { // handleConnectOrMCP
+	if isConnectRequest(raw) || isMCPRequest(raw) || isRulesRequest(raw) || isGitHubRequest(raw) || isLocalRequest(raw) { // handleConnectOrMCP
 		var connectReq protocol.ConnectRequest
 		if err := json.Unmarshal(raw, &connectReq); err != nil {
 			s.count(func(c *counters) { c.malformed.Add(1) })
@@ -936,7 +936,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		// from the client AFTER its request: an approval answer comes back on
 		// this same connection, needs this same decoder, and needs lc to widen
 		// the idle deadline to human scale for the duration of the ask.
-		s.runAgentTurn(ctx, enc, dec, lc, promptReq, decision.Slug, messages, routing, &full, spec, task)
+		s.runAgentTurn(withClientCaps(ctx, hsReq), enc, dec, lc, promptReq, decision.Slug, messages, routing, &full, spec, task)
 		return
 	}
 

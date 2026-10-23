@@ -242,6 +242,9 @@ func parseVSCodeCatalog(t *testing.T) map[string]tsSlashDef {
 // summaryMayDiffer lists commands whose one-line summary is ALLOWED to differ,
 // with the reason. Anything not listed here must match exactly.
 var summaryMayDiffer = map[string]string{
+	"connect": "the TUI's /connect also takes `local` (or a server's name) to find a model " +
+		"server on this computer, a terminal-only feature by the owner's decision " +
+		"(2026-10-23); the extension's /connect takes a provider and a key only",
 	// Both read the provider's own bill rather than estimating -- VS Code's
 	// stopped estimating in Stage 3 of the 0.2.0 overhaul, which is why this
 	// moved out of notYetPorted. What differs is the WINDOW each reports over:
@@ -277,6 +280,11 @@ var tuiOnlyCommands = map[string]string{
 	"mouse": "it toggles terminal mouse reporting, which decides whether the " +
 		"terminal handles click-drag selection itself. The extension is a " +
 		"webview: the editor owns selection there and there is nothing to trade",
+	"agent": "it sets what a model on this computer may do, and models on this " +
+		"computer are a terminal feature by the owner's decision (2026-10-23): " +
+		"the extension reaches one only through its mochiii.apiBase setting",
+	"web": "it lets a model on this computer reach the internet, part of the " +
+		"same terminal-only feature as /agent (owner, 2026-10-23)",
 }
 
 // vscodeOnlyCommands is tuiOnlyCommands' mirror: commands that exist in the VS
