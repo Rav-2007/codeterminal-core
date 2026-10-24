@@ -94,6 +94,12 @@ type agentTurn struct {
 
 	// request is the user's own words for this turn (lastUserQuestion).
 	request string
+	// prompt is the index in messages of the question itself, which a request
+	// made smaller to fit a provider's limit never touches (sizelimit.go).
+	prompt int
+	// lastCallAt is when this loop's last model call finished, for a limit per
+	// minute: a minute that already holds that call holds less.
+	lastCallAt time.Time
 	// emptyInARow counts empty replies in a row: the first is asked again on
 	// the same host, the second elsewhere, the third ends the turn. A reply with
 	// anything in it resets it, so empties apart are each asked again.
@@ -299,6 +305,10 @@ type turnLedger struct {
 	// segment, when set, makes this loop one SEGMENT of a long task
 	// (longtask.go), bounded by the task's budget instead of the turn's.
 	segment *segmentBudget
+	// shrunk records that a request refused as too large was already made
+	// smaller and sent again. Once per turn, every phase included: the second
+	// refusal ends the turn (fitToLimit).
+	shrunk bool
 }
 
 // segmentBudget bounds one segment of a long task.
@@ -592,6 +602,7 @@ func (s *Server) runAgentLoop(
 	// connect is still dated by when the user asked.
 	augmented, steered := applyTurnContext(turn.messages, webAvailable, turnStart)
 	turn.messages = augmented
+	turn.prompt = len(turn.messages) - 1
 	if steered {
 		s.logger.Print("agent: this question looks like it depends on current facts; asking for a lookup before the answer")
 	}
@@ -651,6 +662,9 @@ func (s *Server) runAgentLoop(
 			func(reason string) { finishReason = reason },
 			s.logger,
 		)
+		if err == nil {
+			turn.lastCallAt = time.Now()
+		}
 		if err != nil {
 			// A STOP IS NOT A PROVIDER FAILURE. The client hung up (a failed write
 			// cancelled the turn, turnwriter.go) or the daemon is shutting down.
@@ -658,6 +672,21 @@ func (s *Server) runAgentLoop(
 			// to nobody and saved the stopped turn to memory as though it had run.
 			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 				return agentResult{FinalText: full.String(), Iterations: turn.iteration}, err
+			}
+			// A REQUEST REFUSED AS TOO LARGE is sent once more, smaller, when the
+			// provider's own figures say a smaller one can get through -- and the
+			// user is told what was left out, as they are told of the nudge
+			// below. When it cannot, err says why in numbers (sizelimit.go).
+			if me := asModelError(err); me.Class == ClassContextTooLarge && full.Len() == textBefore {
+				notice, refusal := s.fitToLimit(ctx, turn, ledger, tools, me)
+				if notice != "" {
+					if err := onToken(notice); err != nil {
+						return agentResult{}, err
+					}
+					full.WriteString(notice)
+					continue
+				}
+				err = refusal
 			}
 			// A FAILURE PART-WAY THROUGH IS AN INCOMPLETE TURN, NOT A VOID ONE
 			// (QA gate 2026-08-01, P1-1).
@@ -681,12 +710,19 @@ func (s *Server) runAgentLoop(
 			}
 			s.logger.Printf("agent: stopping at iteration %d after a provider failure, keeping %d byte(s) of answer: %v",
 				turn.iteration, full.Len(), asModelError(err).Detail())
+			detail := "this task stopped part-way because the model provider failed — what you " +
+				"see above is everything that was done, and it is yours to keep. Ask again to continue."
+			// Refused as too large, the provider did not fail: it said no, and
+			// how far over. "Ask again" would meet the same no.
+			if me := asModelError(err); me.Class == ClassContextTooLarge {
+				detail = "this task stopped part-way: " + me.Error() + ". What you see above is everything " +
+					"that was done, and it is yours to keep."
+			}
 			return agentResult{
 				FinalText: full.String(),
 				Incomplete: &protocol.IncompleteInfo{
 					Reason: protocol.IncompleteProviderError,
-					Detail: "this task stopped part-way because the model provider failed — what you " +
-						"see above is everything that was done, and it is yours to keep. Ask again to continue.",
+					Detail: detail,
 				},
 				ToolNames:      turn.toolNames,
 				ToolSignatures: turn.toolSignatures,
