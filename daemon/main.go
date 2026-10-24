@@ -262,7 +262,7 @@ func main() {
 	// A model named explicitly above is left alone: that is a more specific
 	// instruction than "whatever the provider offers".
 	var tierCfg *Config
-	if !modelNamed && !usesRoutingDialect(apiBase) {
+	if !modelNamed && (!usesRoutingDialect(apiBase) || connected.keylessLocal()) { // localconnect.go
 		switch tierCfg = providerTierConfig(cfg, providerName(apiBase), connected.Models, connected.QuietModels, connected.DefaultModel); {
 		case tierCfg != nil:
 			logger.Printf("models: %d served by %s, as listed when the key was connected; default %s (models.json's tiers name another provider's models and are not offered)",
