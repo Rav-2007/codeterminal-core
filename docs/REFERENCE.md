@@ -392,14 +392,47 @@ connects to one elsewhere on this machine. Outside the app:
 A local server also gets five minutes, not sixty seconds, before its first token
 — a CPU model reading a long prompt is silent, not stalled.
 
-What the terminal app does differently for a model on this computer, measured
-with Ollama and qwen2.5-coder:3b on 2026-10-23:
+What the terminal app does differently for a model on this computer:
 
-- **No tools until `/agent on`.** Chat with code search answered correctly;
-  agent mode did not — the model invented a tool, then called none. The model
-  gets the code Mochiii searched for, and no tools.
+- **No tools until `/agent on`.** The model gets the code Mochiii searched for,
+  and no tools.
+- **`/agent on` checks the model first (1.4.0).** Whether a model can use tools
+  depends on the model, not on its size or on its server's label: measured on
+  2026-10-24, `qwen2.5-coder:3b`, which Ollama lists as able to use tools, made
+  no valid tool call in 15 tries. So Mochiii tries the model, up to three times,
+  with one tool and a question only that tool answers, on this computer. It then
+  works in one of three ways, shown on the line under the prompt:
+  - **Full agent**: the model's window is 24,576 tokens or more, and it called
+    the tool again when tried with the full agent's own instructions. It gets
+    the full instructions and tools.
+  - **Compact agent**: the model called the tool with short instructions, and
+    its window is 8,192 tokens or more, but either the window is under 24,576
+    or the model did not call the tool under the full instructions. It gets
+    short instructions and five tools (`read_file`, `search_code`,
+    `list_directory`, `propose_edit`, `run_command`). The full agent's first
+    request alone is 6,000–7,000 tokens, and measured on 2026-10-24,
+    `qwen2.5-coder:7b` called tools under short instructions but never under
+    the full ones (0 of 6).
+  - **Chat**: the model did not call the tool, its server says it has no tools,
+    or its window is under 8,192 tokens. It answers with your code, and any
+    edit it proposes is shown for review.
+
+  The check is kept per model and window in `local-models.json`. A model given
+  a bigger window is checked again, and `/agent check` repeats the check. A
+  call the model writes as JSON text in its answer, instead of in the server's
+  tool-call format, is run as the call it names, with the same approvals.
 - **No internet tools until `/web on`,** even with agent mode on: `web_search`,
   `web_fetch` and `github` are neither offered nor run (`CapNoNetworkTools`).
+- **A server that refuses tools gets the question without them.** Ollama
+  refuses any request with tools for a model that has none, and vLLM refuses
+  one unless it was started with `--enable-auto-tool-choice` and a
+  `--tool-call-parser`. Such a question is asked again with no tools, you are
+  told once, and that model is asked without tools from then on.
+- **Requests every local server accepts.** A server identified as Ollama,
+  LM Studio, llama.cpp or vLLM gets the plain OpenAI request. Its output cap
+  leaves the prompt room in the model's window, because vLLM refuses a request
+  whose prompt and cap together exceed it. Thinking that a model writes into its
+  answer as `<think>…</think>` is shown as thinking, not as the answer.
 - **The code is fitted into the model's context window.** Ollama gives a model
   4,096 tokens unless started with `OLLAMA_CONTEXT_LENGTH`, and drops what does
   not fit without an error (a 4,893-token request arrived as 2,050). The app
@@ -587,7 +620,8 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /connect               # the same screens as /provider, under their older name
 /connect local         # TUI: find a model server on this computer (also: ollama, lmstudio, llamacpp, vllm)
 /connect http://localhost:8080/v1   # TUI: a server on this computer at that address, no key
-/agent on              # TUI: tools for a model on this computer (off until turned on)
+/agent on              # TUI: tools for a model on this computer (off until turned on); checks the model first
+/agent check           # TUI: check again what the model in use can do
 /web on                # TUI: let those tools reach the internet (off until turned on)
 /connect show          # which key is in force (masked — never the key itself)
 /connect forget        # remove the stored key
