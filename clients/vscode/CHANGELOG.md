@@ -3,6 +3,38 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [1.3.1] - 2026-10-24
+
+### Fixed
+
+- **A question that was never sent no longer shows as being answered.** With no
+  key connected, the panel held the question back and showed "Mochiii is
+  answering", and a refused key left it that way for good. It now says at once
+  that the question was not sent and why, offers **Connect a key**, and sends the
+  question once a key works.
+- **A turn that hears nothing ends.** After 10 minutes with no word from the
+  background service (35 while a tool is running, not counting time spent waiting
+  for your approval), the panel says no answer arrived and how long it waited, and
+  offers **Try again**.
+- **A chat no longer grows with every copy of the open file.** Once a chat was
+  reopened or compacted, the copy of your open file sent with each earlier question
+  was sent again with every new one, so a few questions could make the chat too
+  large. Only the current copy is sent now.
+- **The terminal app: a model on your computer is still the one asked after a
+  restart.** In 1.3.0, once the background service restarted, it forgot the models
+  of the local server it was connected to and asked it for a cloud model instead,
+  so every question failed until `/connect local` was run again.
+- **The terminal app: a failed question to a model on your computer says what to
+  check.** A stopped server now gets "start it again (for Ollama: ollama serve)",
+  and a model deleted from the server gets "/connect local lists the ones it has
+  now", where both used to get only the cloud provider's wording.
+
+### Changed
+
+- **`mochiii.sendEditorContext` sends at most 6 KB of the open file:** the whole
+  file when it is 6 KB or less, otherwise the lines around your cursor or
+  selection. It used to send the first 24 KB.
+
 ## [1.3.0] - 2026-10-23
 
 The extension is unchanged in this release; what is new is in the terminal app.

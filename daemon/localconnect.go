@@ -20,6 +20,16 @@ import (
 // real requests, which against a server on this machine means loading each of
 // them into memory in turn. The server's own list is taken as it is, its first
 // model is the default, and the person picks the one they want next.
+//
+// THE LIST IS KEPT ACROSS A RESTART (1.3.1). At startup main.go puts a
+// provider's recorded models in force only for a provider models.json was not
+// written for, and it told those apart by the request dialect alone. An address
+// no provider list names -- every server on this machine -- takes OpenRouter's
+// routing dialect, so in 1.3.0 the first daemon after a restart passed the
+// recorded list over and asked the local server for models.json's default,
+// which it never has: every question failed until /connect local was run
+// again. Found 2026-10-24 by restarting against a real Ollama. A keyless local
+// credential now counts as a provider with models of its own.
 
 // connectLocal connects to the server at base, which is on this machine.
 func (s *Server) connectLocal(ctx context.Context, base, path string, envOverride bool) protocol.ConnectResponse {
