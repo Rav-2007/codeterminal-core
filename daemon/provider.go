@@ -700,7 +700,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		}
 	}()
 
-	accumulator := newToolCallAccumulator()
+	accumulator, think := newToolCallAccumulator(), newThinkSplitter(apiBase) // thinktags.go
 	// finishReason is the most recent non-empty SSE finish_reason seen. The
 	// provider reports it on the terminal content chunk (before the "[DONE]"
 	// sentinel), so by the time either success return is reached it holds the
@@ -730,7 +730,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 			if err := failedEmpty(); err != nil {
 				return nil, err
 			}
-			return finishStream(accumulator, finishReason, onFinish)
+			return finishStream(accumulator, finishReason, think.finishing(onToken, onReasoning, onFinish))
 		}
 
 		var chunk chatCompletionChunk
@@ -788,7 +788,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		if reasoning := chunk.Choices[0].Delta.Reasoning + chunk.Choices[0].Delta.ReasoningContent; reasoning != "" && onReasoning != nil {
 			onReasoning(reasoning)
 		}
-		content := chunk.Choices[0].Delta.Content
+		content := think.answer(chunk.Choices[0].Delta.Content, onReasoning)
 		if content == "" {
 			continue
 		}
@@ -807,7 +807,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 	if err := failedEmpty(); err != nil {
 		return nil, err
 	}
-	return finishStream(accumulator, finishReason, onFinish)
+	return finishStream(accumulator, finishReason, think.finishing(onToken, onReasoning, onFinish))
 }
 
 // finishReasonError is the finish_reason OpenRouter sends with an error raised

@@ -197,6 +197,8 @@ func (m chatModel) handleSideAnswer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleLocalServers(msg)
 	case localFitMsg:
 		return m.handleLocalFit(msg)
+	case localCheckMsg:
+		return m.handleLocalCheck(msg) // localagent.go
 	case accountMsg:
 		return m.handleAccount(msg)
 	case rulesResultMsg: // not the line's, but chat.go has one case for all of these

@@ -30,6 +30,8 @@ func resetLocalState(t *testing.T) string {
 		localState.active, localState.supported, localState.loaded = false, false, false
 		localState.policy = localPolicy{}
 		localState.fitKey, localState.lastFit, localState.noted = "", nil, nil
+		localState.checkSupported, localState.base, localState.model = false, "", ""
+		localState.window, localState.fitted, localState.checking = 0, false, ""
 	}
 	clear()
 	t.Cleanup(func() {

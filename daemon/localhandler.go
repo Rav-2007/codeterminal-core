@@ -35,8 +35,10 @@ func (s *Server) handleLocal(ctx context.Context, enc *json.Encoder, req protoco
 		cancel()
 	case req.Fit:
 		resp = s.fitLocal(ctx)
+	case req.Check:
+		resp = s.checkLocal(ctx)
 	default:
-		resp = protocol.LocalResponse{Error: "a local request asks to discover or to fit"}
+		resp = protocol.LocalResponse{Error: "a local request asks to discover, to fit or to check"}
 	}
 	if err := enc.Encode(resp); err != nil {
 		s.logger.Printf("writing local response: %v", err)
@@ -57,7 +59,10 @@ type noNetworkToolsKey struct{}
 // withClientCaps carries what the client asked for into the turn's context.
 func withClientCaps(ctx context.Context, hs protocol.HandshakeRequest) context.Context {
 	if hs.HasCapability(protocol.CapNoNetworkTools) {
-		return context.WithValue(ctx, noNetworkToolsKey{}, true)
+		ctx = context.WithValue(ctx, noNetworkToolsKey{}, true)
+	}
+	if hs.HasCapability(protocol.CapCompactAgent) {
+		ctx = withTurnMenu(ctx, turnMenu{compact: true})
 	}
 	return ctx
 }
@@ -76,12 +81,21 @@ func dropsNetworkTool(ctx context.Context, tool mcp.Tool) bool {
 // errNetworkToolOff is the lookup error for an internet tool in such a turn.
 var errNetworkToolOff = errors.New("internet tools are off for this model")
 
-// lookupForTurn is registry.Lookup for one turn: an internet tool, in a turn
-// whose client asked for none, does not exist.
+// errToolNotOffered is the lookup error for any other tool this turn leaves
+// off its menu (localprofile.go).
+var errToolNotOffered = errors.New("that tool is not offered to this model")
+
+// lookupForTurn is registry.Lookup for one turn: a tool the turn leaves off its
+// menu -- an internet tool when the client asked for none, or one the compact
+// agent does not offer -- does not exist.
 func lookupForTurn(ctx context.Context, registry *mcp.Registry, qualified string) (mcp.Tool, mcp.Policy, error) {
 	tool, policy, err := registry.Lookup(ctx, qualified)
-	if err == nil && dropsNetworkTool(ctx, tool) {
+	switch {
+	case err != nil:
+	case dropsNetworkTool(ctx, tool):
 		return mcp.Tool{}, mcp.PolicyDeny, errNetworkToolOff
+	case dropsForTurn(ctx, tool):
+		return mcp.Tool{}, mcp.PolicyDeny, errToolNotOffered
 	}
 	return tool, policy, err
 }

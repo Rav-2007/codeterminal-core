@@ -112,6 +112,7 @@ func (s *Server) fitLocal(ctx context.Context) protocol.LocalResponse {
 	fctx, cancel := context.WithTimeout(ctx, localFitTimeout)
 	defer cancel()
 	w := localContextWindow(fctx, base, model)
+	rememberLocalModel(base, model, w) // the request wording follows it: localdialect.go
 	chars, fitted := fitBudgetChars(w.window, s.contextBudgetChars)
 	s.localFit.store(base, model, chars, fitted)
 	if fitted {

@@ -98,6 +98,9 @@ func (s *Server) runAgentTurn(
 	// And what Mochiii itself is set up with: its servers, as this turn found
 	// them (agentsetup.go: asked which servers it had, it said "none").
 	messages = s.withAgentSetup(ctx, registry, promptReq.Mode, model, messages)
+	// A compact agent's turn (a model on this machine with a small window) gets
+	// short instructions in place of all of the above (localprofile.go).
+	messages = compactTurnMessages(ctx, messages)
 
 	// A server that would not start costs the user its tools, not the turn.
 	// Reported the same way every other reduced subsystem is, so it reaches the
@@ -189,9 +192,12 @@ func (s *Server) runAgentTurn(
 		}
 		if len(phases) == 0 {
 			// Unorchestrated: exactly the call this function has always made,
-			// with a nil role meaning "no scoping, no phase prompt".
-			return s.runAgentLoop(ctx, turnStart, registry, model, promptReq.Mode, messages, routing, appr,
-				onToken, onActivity, onProvider, onReasoning, onDegraded, nil, nil)
+			// with a nil role meaning "no scoping, no phase prompt" -- asked again
+			// with no tools if the model's server refuses them (localprofile.go).
+			return s.withoutToolsIfRefused(ctx, model, onDegraded, func(ctx context.Context) (agentResult, error) {
+				return s.runAgentLoop(ctx, turnStart, registry, model, promptReq.Mode, messages, routing, appr,
+					onToken, onActivity, onProvider, onReasoning, onDegraded, nil, nil)
+			})
 		}
 		return s.runOrchestrated(ctx, turnStart, registry, model, promptReq.Mode, messages, routing, appr,
 			onToken, onActivity, onProvider, onReasoning, onDegraded, phases)

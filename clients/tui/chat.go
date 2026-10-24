@@ -571,7 +571,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setupTiersMsg:
 		return m.handleSetupTiers(msg)
 
-	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg:
+	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg, localCheckMsg:
 		return m.handleSideAnswer(msg)
 
 	case mcpResultMsg:

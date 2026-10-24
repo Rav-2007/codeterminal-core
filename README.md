@@ -178,11 +178,18 @@ LM Studio, llama.cpp or vLLM. Start one (for Ollama: `ollama serve`, then
 `/provider`, or run `/connect local`. No key is needed.
 
 A model on your computer gets the code that matters with each question, and no
-tools: small local models answer well about code they are given, but cannot run
-agent mode. `/agent on` gives a stronger model the tools, and `/web on` lets
-them reach the internet; both stay off until you turn them on. Mochiii also fits
-the code it sends into the model's context window, and says how to make that
-window bigger.
+tools, until you type `/agent on`. Mochiii then checks what that model can do,
+with a few small test questions on your computer, and uses it the way it can:
+
+- **Full agent:** tools to read, search, run and edit.
+- **Compact agent:** five tools and short instructions, for a model with a small
+  context window, or one that only uses tools when its instructions are short.
+- **Chat:** for a model that cannot call tools. It answers with your code, and
+  you review any edit it proposes.
+
+`/web on` lets the tools reach the internet; it stays off until you turn it on.
+Mochiii also fits the code it sends into the model's context window, and says
+how to make that window bigger.
 
 The environment variables work too (`MOCHIII_API_BASE=http://localhost:11434/v1`,
 `MOCHIII_MODEL=qwen2.5-coder:7b`); in VS Code, use the `mochiii.apiBase` and
