@@ -59,6 +59,10 @@ type taskRun struct {
 	// handoffs at segments' ends. COUNTED here as well as billed by the tally:
 	// a provider that sends no usage must not make the call budget unlimited.
 	doneCalls, segCalls, nested, wrapUps int
+	// shrunk carries turnLedger.shrunk from segment to segment: a request made
+	// smaller to fit a provider's limit is once per turn, and a long task is
+	// one turn however many segments it runs (sizelimit.go).
+	shrunk bool
 	// investigate runs one investigation (investigate.go); set by runLongTask.
 	investigate func(ctx context.Context, question string) (string, error)
 	// budgetStop is the run's budget verdict once there is one; it sticks.
@@ -449,7 +453,7 @@ func (s *Server) runLongTask(
 		before := run.progressMark(proposals)
 		s.logger.Printf("task %s: segment %d (%s)", run.ledger.ID, segment, run.ledger.Mode)
 
-		ledger := &turnLedger{grants: grants, segment: &segmentBudget{
+		ledger := &turnLedger{grants: grants, shrunk: run.shrunk, segment: &segmentBudget{
 			calls: run.budget.segmentCalls, deadline: run.deadline, check: run.check, wrapUp: run.wrapUpNote,
 			closed: run.closed,
 			// Time at an approval prompt is the user's, not the run's.
@@ -469,6 +473,7 @@ func (s *Server) runLongTask(
 		res, err := s.runAgentLoop(ctx, turnStart, registry, model, run.ledger.Mode,
 			s.withRulesBesideTheQuestion(run.segmentMessages(system, history, segment, closing)), routing, appr,
 			onToken, onActivity, segmentProvider, onReasoning, onDegraded, nil, ledger)
+		run.shrunk = ledger.shrunk
 
 		combined.ToolNames = append(combined.ToolNames, res.ToolNames...)
 		combined.ToolSignatures = append(combined.ToolSignatures, res.ToolSignatures...)

@@ -108,6 +108,10 @@ type ModelError struct {
 	// answered. Kept because the class alone cannot say "this model is not there"
 	// (404) apart from every other unclassified refusal.
 	status int
+	// size is what the provider said about a request it refused as too large
+	// (sizeLimitFrom): its limit and the request's size, in tokens. Zero when it
+	// gave no numbers.
+	size sizeLimit
 }
 
 func (e *ModelError) Error() string {
@@ -118,6 +122,9 @@ func (e *ModelError) Error() string {
 	}
 	if e.Class == ClassUnavailableTier && e.modelName != "" {
 		return fmt.Sprintf(clientMessages[ClassUnavailableTier], e.modelName)
+	}
+	if e.Class == ClassContextTooLarge && e.size.known() {
+		return e.size.message()
 	}
 	if msg, ok := clientMessages[e.Class]; ok {
 		return msg
@@ -295,13 +302,13 @@ func classifyHTTPStatus(status int, statusLine, body string) *ModelError {
 		return &ModelError{Class: ClassUnavailableTier, detail: detail}
 	case isWindowRateLimit(lower):
 		if status == http.StatusRequestEntityTooLarge || strings.Contains(lower, "request too large") {
-			return &ModelError{Class: ClassContextTooLarge, detail: detail}
+			return &ModelError{Class: ClassContextTooLarge, detail: detail, size: sizeLimitFrom(body)}
 		}
 		return &ModelError{Class: ClassRateLimited, detail: detail}
 	case containsAny(lower, quotaPhrases):
 		return &ModelError{Class: ClassQuotaExceeded, detail: detail}
 	case containsAny(lower, contextLengthPhrases):
-		return &ModelError{Class: ClassContextTooLarge, detail: detail}
+		return &ModelError{Class: ClassContextTooLarge, detail: detail, size: sizeLimitFrom(body)}
 	}
 
 	switch {
@@ -314,7 +321,7 @@ func classifyHTTPStatus(status int, statusLine, body string) *ModelError {
 	case status == http.StatusTooManyRequests:
 		return &ModelError{Class: ClassRateLimited, detail: detail}
 	case status == http.StatusRequestEntityTooLarge:
-		return &ModelError{Class: ClassContextTooLarge, detail: detail}
+		return &ModelError{Class: ClassContextTooLarge, detail: detail, size: sizeLimitFrom(body)}
 	case status >= 500:
 		return &ModelError{Class: ClassUpstreamUnavailable, detail: detail}
 	}

@@ -57,7 +57,10 @@ func (s *Server) newInvestigator(run *taskRun, turnStart time.Time, registry *mc
 			{Role: "system", Content: system + "\n\n" + investigatorDirective},
 			{Role: "user", Content: "Question: " + neutralizeDelimiters(question)},
 		}
-		ledger := &turnLedger{grants: grants, segment: &segmentBudget{
+		// shrunk from the start: what this sub-run streams reaches the model,
+		// never the user, and a request made smaller without telling the user is
+		// not made at all (sizelimit.go). A refusal fails the investigation.
+		ledger := &turnLedger{grants: grants, shrunk: true, segment: &segmentBudget{
 			calls: investigateCalls, deadline: run.deadline,
 			// n of the sub-run's calls, PLUS the main segment's call that asked
 			// for it: the main loop counts a call at its next step, and this
