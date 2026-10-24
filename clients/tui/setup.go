@@ -391,14 +391,14 @@ func (m chatModel) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.setup.loading {
 			if msg.String() == "esc" {
 				cmd := m.leaveSetup("")
-				return m, cmd
+				return m.fitAfterPicking(cmd) // localmodels.go
 			}
 			return m, nil
 		}
 		switch msg.String() {
 		case "esc":
 			cmd := m.leaveSetup("")
-			return m, cmd
+			return m.fitAfterPicking(cmd) // localmodels.go
 		case "enter":
 			row, ok := m.setup.picker.selected()
 			if !ok {
@@ -407,7 +407,7 @@ func (m chatModel) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			inForce := m.setup.inForce
 			focus := m.leaveSetup("")
 			if row.ID == inForce {
-				return m, focus
+				return m.fitAfterPicking(focus) // localmodels.go
 			}
 			next, cmd := m.chooseModel(row.ID, row.Match)
 			return next, tea.Batch(focus, cmd)

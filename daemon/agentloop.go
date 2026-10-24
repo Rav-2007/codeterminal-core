@@ -607,7 +607,7 @@ func (s *Server) runAgentLoop(
 		s.logger.Print("agent: this question looks like it depends on current facts; asking for a lookup before the answer")
 	}
 
-	var full strings.Builder
+	var full, guard = strings.Builder{}, localCallGuard{} // localguard.go
 
 	for turn.iteration = 1; ; turn.iteration++ {
 		if stop := s.budgetStop(turn, bud); stop != nil {
@@ -647,10 +647,10 @@ func (s *Server) runAgentLoop(
 		// it -- kept so an empty reply can be routed around (below).
 		servedBy := ""
 		apiKey, apiBase := s.credentials()
-		calls, err := streamWithRetry(ctx, apiBase, apiKey, model, turn.messages, tools, routing,
+		calls, err := streamWithRetry(ctx, apiBase, apiKey, model, guard.messages(turn.messages), guard.menu(tools), routing, // localguard.go
 			func(token string) error {
 				full.WriteString(token)
-				return onToken(token)
+				return guard.show(apiBase, tools, token, onToken) // localguard.go
 			},
 			func(provider string) {
 				servedBy = provider
@@ -764,7 +764,7 @@ func (s *Server) runAgentLoop(
 		// the model was mid-way through a tool call (finishStream drops it).
 		// Asking again would stop at the same cap; it ends below as a cut-off
 		// answer instead.
-		if calls = s.rescueTextCall(apiBase, tools, calls, &full, textBefore); len(calls) == 0 && full.Len() == textBefore && finishReason != protocol.IncompleteLength { // localtextcall.go
+		if calls = guard.step(s, apiBase, tools, calls, &full, textBefore, onDegraded); len(calls) == 0 && full.Len() == textBefore && finishReason != protocol.IncompleteLength { // localguard.go
 			turn.emptyInARow++
 			switch turn.emptyInARow {
 			case 1:

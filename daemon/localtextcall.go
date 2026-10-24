@@ -96,7 +96,10 @@ func offeredTool(tools []toolSpec) func(string) (string, bool) {
 // rescueTextCall is the agent loop's step for a reply with no tool call: when
 // a server on this machine sent text that is a call to a tool on the menu, the
 // text is taken back out of the answer and the call is returned to be run.
-// Every other reply, and every other provider's, is returned as it was.
+// What the model wrote before the call stays, cut where the screen stopped
+// showing it (splitAtCall, localguard.go); a call written anywhere else takes
+// the whole reply with it. Every other reply, and every other provider's, is
+// returned as it was.
 func (s *Server) rescueTextCall(apiBase string, tools []toolSpec, calls []toolCall, full *strings.Builder, textBefore int) []toolCall {
 	if len(calls) > 0 || len(tools) == 0 || !isLoopbackBase(apiBase) || full.Len() <= textBefore {
 		return calls
@@ -107,7 +110,11 @@ func (s *Server) rescueTextCall(apiBase string, tools []toolSpec, calls []toolCa
 		return calls
 	}
 	s.logger.Printf("agent: the model wrote a call to %s as text; running it as the call it names", call.Function.Name)
+	kept := answer[:textBefore]
+	if before, _, opens := splitAtCall(answer[textBefore:]); opens {
+		kept += before
+	}
 	full.Reset()
-	full.WriteString(answer[:textBefore])
+	full.WriteString(kept)
 	return []toolCall{call}
 }

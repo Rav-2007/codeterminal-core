@@ -48,6 +48,10 @@ const CapCompactAgent = "compact_agent"
 // so the question was answered without them.
 const DegradedLocalNoTools = "local_no_tools"
 
+// DegradedLocalToolsStopped names the notice that the model made tool calls in
+// a row that could not run, so the rest of the turn was asked without tools.
+const DegradedLocalToolsStopped = "local_tools_stopped"
+
 // LocalRequest asks about model servers on this machine. Local is the
 // discriminator; one of Discover, Fit and Check says what to do.
 type LocalRequest struct {

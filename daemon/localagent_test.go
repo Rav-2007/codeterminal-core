@@ -337,6 +337,14 @@ func TestTheToolCheckDecidesHowAModelWorks(t *testing.T) {
 		}
 		return prose
 	}
+	// A model that looks up what it is asked about, under either stage.
+	looksUp := func(req map[string]any) []string {
+		messages, _ := req["messages"].([]any)
+		if len(messages) > 1 && messages[1].(map[string]any)["content"] == localFullCheckQuestion {
+			return toolCallSSE("c2", "builtin__search_code", `{"query":"parseConfig"}`)
+		}
+		return call
+	}
 	for _, tc := range []struct {
 		name                  string
 		capabilities          []string
@@ -347,8 +355,11 @@ func TestTheToolCheckDecidesHowAModelWorks(t *testing.T) {
 		fullTried, fullPassed int
 	}{
 		{"the server says no tools", []string{"completion"}, 32768, always(call), protocol.LocalWayChat, 0, 0, 0, 0},
-		{"calls under both, in a big window", []string{"completion", "tools"}, 32768, always(call), protocol.LocalWayFull, 2, 2, 2, 2},
-		{"calls under short instructions only", []string{"tools"}, 32768, shortOnly, protocol.LocalWayCompact, 2, 2, 2, 0},
+		{"looks the code up under both, in a big window", []string{"completion", "tools"}, 32768, looksUp, protocol.LocalWayFull, 2, 2, 3, 3},
+		{"calls under short instructions only", []string{"tools"}, 32768, shortOnly, protocol.LocalWayCompact, 2, 2, 1, 0},
+		// What passed the full stage until 2026-10-24: reading the file named in
+		// the compact stage's question, whatever was asked.
+		{"reads the named file but never looks the code up", []string{"tools"}, 32768, always(call), protocol.LocalWayCompact, 2, 2, 1, 0},
 		{"calls, in a middling window", []string{"tools"}, 8192, always(call), protocol.LocalWayCompact, 2, 2, 0, 0},
 		{"calls written as text count", []string{"tools"}, 16384, always(written), protocol.LocalWayCompact, 2, 2, 0, 0},
 		{"calls, but the window is too small", []string{"tools"}, 4096, always(call), protocol.LocalWayChat, 2, 2, 0, 0},
@@ -508,5 +519,38 @@ func TestAToolRefusalOverTheSocketIsAnsweredWithoutTools(t *testing.T) {
 	}
 	if !notified {
 		t.Error("the person was not told the model cannot use tools")
+	}
+}
+
+// THE FULL STAGE OFFERS THE FULL AGENT'S MENU, filtered as a turn filters it:
+// one tool made the stage pass a model that then called nothing with fifteen.
+//
+// Neuter check: make fullAgentMenu return []toolSpec{localCheckTool}, and the
+// menu has one tool; drop its withTurnMenu, and a connection that declared the
+// compact agent gets five. With no agent tools at all it offers none, so the stage
+// cannot pass.
+func TestTheFullStageOffersTheFullAgentsMenu(t *testing.T) {
+	s := &Server{cfg: &Config{MCP: MCPConfig{Enabled: true}}, logger: log.New(io.Discard, "", 0)}
+	// Measured in the real app, the check's connection declares neither of a
+	// chat's capabilities; whichever it declares, the menu is the same.
+	ctx := withClientCaps(context.Background(), protocol.HandshakeRequest{Capabilities: []string{protocol.CapCompactAgent}})
+	var names []string
+	for _, spec := range s.fullAgentMenu(ctx) {
+		names = append(names, strings.TrimPrefix(spec.Function.Name, "builtin__"))
+	}
+	joined := " " + strings.Join(names, " ") + " "
+	if len(names) < 10 {
+		t.Errorf("the full stage offers %d tools (%v), want the full agent's menu", len(names), names)
+	}
+	for _, want := range []string{"read_file", "search_code", "run_command", "propose_edit"} {
+		if !strings.Contains(joined, " "+want+" ") {
+			t.Errorf("the full stage's menu lacks %s: %v", want, names)
+		}
+	}
+	if strings.Contains(joined, " web_search ") || strings.Contains(joined, " web_fetch ") {
+		t.Errorf("the check offered internet tools, which a model on this computer has only after /web on: %v", names)
+	}
+	if menu := (&Server{cfg: &Config{}, logger: log.New(io.Discard, "", 0)}).fullAgentMenu(ctx); len(menu) != 0 {
+		t.Errorf("a daemon whose agent has no tools offered %d in the check", len(menu))
 	}
 }
