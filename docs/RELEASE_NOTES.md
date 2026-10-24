@@ -5,6 +5,47 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## v1.3.1 — 2026-10-24
+
+### A model on your computer is still the one asked after a restart
+
+**What changed.** Connected to a model on your computer, Mochiii 1.3.0 forgot that
+server's models whenever the background service started again (after
+`mochiii --stop`, a reboot, or in another project) and asked the server for a
+cloud model it does not have, so every question failed until `/connect local` was
+run again. The service now keeps the server's models, and the model you chose
+with `/model`, across a restart.
+
+**How to tell.** After a restart, the line under the prompt names your local
+model, not `deepseek/deepseek-v4-pro`.
+
+### A failed question to a model on your computer says what to check
+
+**What changed.** With the server stopped, a question got "unreachable … this is
+usually temporary", and a model deleted from the server got only "calling model
+API failed". With a model on your computer in force, the first now adds "start it
+again (for Ollama: ollama serve)", and the second adds that `/connect local` lists
+the models the server has now. `/model` keeps showing the list from when the
+server was connected.
+
+### VS Code: a question that was never sent says so
+
+**What changed.** With no key connected, the panel held a question back while
+showing "Mochiii is answering", and a refused key left it that way for good. It
+now says at once that the question was not sent and why, with **Connect a key**,
+and sends it once a key works. Separately, a turn that hears nothing from the
+background service for 10 minutes (35 while a tool runs; time waiting for your
+approval does not count) now ends with "No answer arrived" and **Try again**.
+
+### VS Code: chats no longer grow with every copy of the open file
+
+**What changed.** Once a chat was reopened or compacted, the copy of your open
+file sent with each earlier question was sent again with every new one, so a few
+questions could make the chat too large. Only the current copy is sent now, and
+`mochiii.sendEditorContext` sends at most 6 KB of a file: the whole file when it
+is that small, otherwise the lines around your cursor or selection (it used to
+send the first 24 KB).
+
 ## v1.3.0 — 2026-10-23
 
 ### Models on your computer, from the terminal app
