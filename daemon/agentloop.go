@@ -728,7 +728,7 @@ func (s *Server) runAgentLoop(
 		// the model was mid-way through a tool call (finishStream drops it).
 		// Asking again would stop at the same cap; it ends below as a cut-off
 		// answer instead.
-		if len(calls) == 0 && full.Len() == textBefore && finishReason != protocol.IncompleteLength {
+		if calls = s.rescueTextCall(apiBase, tools, calls, &full, textBefore); len(calls) == 0 && full.Len() == textBefore && finishReason != protocol.IncompleteLength { // localtextcall.go
 			turn.emptyInARow++
 			switch turn.emptyInARow {
 			case 1:
@@ -1787,7 +1787,7 @@ func (s *Server) advertisedToolSpecsFor(ctx context.Context, registry *mcp.Regis
 	tools, errs := registry.AdvertisedFor(ctx, query)
 	specs = make([]toolSpec, 0, len(tools))
 	for _, tool := range tools {
-		if !role.allowsTool(tool) || dropsNetworkTool(ctx, tool) {
+		if !role.allowsTool(tool) || dropsForTurn(ctx, tool) {
 			if role != nil && tool.Lane != protocol.LaneFirstParty {
 				excludedThirdParty = append(excludedThirdParty, tool.QualifiedName())
 			}

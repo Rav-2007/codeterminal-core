@@ -29,8 +29,27 @@ const FeatureLocalInForce = "local_model_in_force"
 // turned web tools on, so a private setup stays private by default.
 const CapNoNetworkTools = "no_network_tools"
 
+// AN AGENT THAT FITS THE MODEL (1.4.0). Whether a model can drive the agent is
+// a property of that model -- measured 2026-10-24, a 3B coder model Ollama
+// lists with "tools" made no valid tool call in 15 tries -- so the terminal app
+// asks the daemon to try (LocalRequest.Check) and, from the answer, asks each
+// question as chat, the compact agent (CapCompactAgent) or the full agent.
+
+// FeatureLocalAgentCheck: this daemon answers LocalRequest.Check and honours
+// CapCompactAgent.
+const FeatureLocalAgentCheck = "local_agent_check"
+
+// CapCompactAgent is a handshake capability: in agent mode, give this client's
+// model short instructions and the five tools a coding question needs, rather
+// than the full agent's, which do not fit a small context window.
+const CapCompactAgent = "compact_agent"
+
+// DegradedLocalNoTools names the notice that the model's server refused tools,
+// so the question was answered without them.
+const DegradedLocalNoTools = "local_no_tools"
+
 // LocalRequest asks about model servers on this machine. Local is the
-// discriminator; one of Discover and Fit says what to do.
+// discriminator; one of Discover, Fit and Check says what to do.
 type LocalRequest struct {
 	ProtocolVersion int  `json:"protocol_version"`
 	Local           bool `json:"local"`
@@ -39,6 +58,45 @@ type LocalRequest struct {
 	// Fit finds the context window of the model in force, when the daemon's
 	// address is a server on this machine, and fits the code context into it.
 	Fit bool `json:"fit,omitempty"`
+	// Check asks the server what the model in force can do and tries whether
+	// it calls tools, and says how it should work (LocalCheck).
+	Check bool `json:"check,omitempty"`
+}
+
+// The ways a model on this machine can work, in LocalCheck.Way.
+const (
+	LocalWayChat    = "chat"    // no tools: the code that fits, and edits written as text
+	LocalWayCompact = "compact" // the compact agent: CapCompactAgent
+	LocalWayFull    = "full"    // the full agent
+)
+
+// LocalCheck is what Check found about the model in force.
+type LocalCheck struct {
+	APIBase string `json:"api_base"`
+	Kind    string `json:"kind"`
+	Model   string `json:"model"`
+	Window  int    `json:"window"`
+	// Params is the model's size as the server names it ("7.6B"); "" if unknown.
+	Params string `json:"params,omitempty"`
+	// Tools is what the server says about the model's tool calling: "yes",
+	// "no", or "" when it does not say.
+	Tools string `json:"tools,omitempty"`
+	// Tried and Passed count the test requests: how many were made, and how
+	// many came back as a valid call. Tried is 0 when the server's own answer
+	// settled it.
+	Tried  int `json:"tried"`
+	Passed int `json:"passed"`
+	// FullTried and FullPassed are the same with the full agent's
+	// instructions, tried only when the window holds the full agent: a model
+	// that calls tools under short instructions may not under the full ones.
+	FullTried  int `json:"full_tried,omitempty"`
+	FullPassed int `json:"full_passed,omitempty"`
+	// Way is how the model should work: LocalWayChat, LocalWayCompact or
+	// LocalWayFull. Reason says why, in a sentence for the person.
+	Way    string `json:"way"`
+	Reason string `json:"reason"`
+	// Raise says how to give the model more room on this server, "" if unknown.
+	Raise string `json:"raise,omitempty"`
 }
 
 // LocalServer is one model server found on this machine.
@@ -81,4 +139,5 @@ type LocalResponse struct {
 	Error   string        `json:"error,omitempty"`
 	Servers []LocalServer `json:"servers,omitempty"`
 	Context *LocalContext `json:"context,omitempty"`
+	Check   *LocalCheck   `json:"check,omitempty"`
 }

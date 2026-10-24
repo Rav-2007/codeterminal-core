@@ -51,6 +51,10 @@ type requestDialect struct {
 	// noReasoningEffort stops sending reasoning_effort once a provider has
 	// refused it for this model; the turn then runs at the model's default.
 	noReasoningEffort bool
+	// window is the model's context in tokens, when it is on a server on this
+	// machine whose window was read: the output cap then leaves the prompt room
+	// in it (localdialect.go). Zero for every other provider.
+	window int
 }
 
 const (
@@ -88,13 +92,13 @@ func dialectKey(apiBase, model string) string {
 
 // dialectFor is the dialect to open a request to model at apiBase with.
 func dialectFor(apiBase, model string) requestDialect {
-	if usesRoutingDialect(apiBase) {
+	if usesRoutingDialect(apiBase) && !servedLocally(apiBase) {
 		return requestDialect{routing: true}
 	}
 	if d, ok := dialectMemo.Load(dialectKey(apiBase, model)); ok {
 		return d.(requestDialect)
 	}
-	return requestDialect{streamOptions: true, maxTokensField: fieldMaxTokens}
+	return requestDialect{streamOptions: true, maxTokensField: fieldMaxTokens, window: localWindowFor(apiBase, model)}
 }
 
 // plainChatRequest is the OpenAI chat-completions body with nothing added: the
@@ -149,9 +153,9 @@ func (d requestDialect) body(model string, messages []chatMessage, tools []toolS
 	}
 	switch d.maxTokensField {
 	case fieldMaxTokens:
-		req.MaxTokens = d.outputCap(routing.maxTokens)
+		req.MaxTokens = fitOutputCap(d.outputCap(routing.maxTokens), d.window, messages, tools)
 	case fieldMaxCompletionTokens:
-		req.MaxCompletionTokens = d.outputCap(routing.maxTokens)
+		req.MaxCompletionTokens = fitOutputCap(d.outputCap(routing.maxTokens), d.window, messages, tools)
 	}
 	return json.Marshal(req)
 }
@@ -201,6 +205,14 @@ func (d requestDialect) adapt(status int, body string, tierCap int) (requestDial
 	}
 	lower := strings.ToLower(body)
 
+	// A SERVER ON THIS MACHINE refused a cap already fitted to its own window:
+	// stepping 32,768 down to 16,384 would not get below it, and renaming the
+	// field (below) would not help either -- vLLM's refusal names both fields
+	// and accepts both. Its own limit is what is left (localdialect.go).
+	if d.window > 0 && d.maxTokensField != "" && (containsAny(lower, outputLimitPhrases) || containsAny(lower, contextLengthPhrases)) {
+		d.maxTokensField, d.maxTokens = "", 0
+		return d, true
+	}
 	// "Unsupported parameter: 'max_tokens' ... use 'max_completion_tokens'".
 	if d.maxTokensField == fieldMaxTokens && strings.Contains(lower, fieldMaxCompletionTokens) {
 		d.maxTokensField = fieldMaxCompletionTokens

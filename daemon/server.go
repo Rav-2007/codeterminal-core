@@ -931,7 +931,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		messages = buildChatMessages(greetingSystemPrompt, nil, cleanPrompt)
 		s.logger.Printf("a greeting (%d bytes): answered without tools, history or the full system prompt", len(cleanPrompt))
 	}
-	if s.agentModeEngaged(hsReq) && !greeting {
+	if s.agentModeEngaged(hsReq) && !greeting && s.localModelTakesTools(decision.Slug) { // localprofile.go
 		// dec and lc go with enc because agent mode is the one path that reads
 		// from the client AFTER its request: an approval answer comes back on
 		// this same connection, needs this same decoder, and needs lc to widen
