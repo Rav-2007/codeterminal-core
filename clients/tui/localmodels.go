@@ -611,3 +611,24 @@ func localModeStatus(name string, p localPolicy, active bool) string {
 	}
 	return s
 }
+
+// localFailureHint is what a failed question adds when the model in force is
+// on this computer, where the likely causes are not a cloud provider's. The
+// daemon's words name no server, on purpose (daemon/modelerror.go): measured
+// 2026-10-24 against a real Ollama, a stopped server was "usually temporary"
+// and a model deleted from it got "calling model API failed", each within 2 s
+// and with nothing to say what to do. /model would not help with the second:
+// it lists the models as they were when the server was connected. "" when
+// there is nothing to add.
+func localFailureHint(class string) string {
+	if !localActive() {
+		return ""
+	}
+	switch class {
+	case "upstream_unavailable":
+		return " -- if the model server on this computer has stopped, start it again (for Ollama: ollama serve)"
+	case "unknown":
+		return " -- if the model is no longer on the server, /connect local lists the ones it has now"
+	}
+	return ""
+}

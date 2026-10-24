@@ -1115,7 +1115,7 @@ func (m chatModel) handleStreamErr(msg streamErrMsg) (tea.Model, tea.Cmd) {
 		if msg.sent {
 			role = roleUnanswered
 		}
-		m.appendTurn(turn{role: role, text: sanitizeText(msg.err.Error())})
+		m.appendTurn(turn{role: role, text: sanitizeText(msg.err.Error() + localFailureHint(msg.class))}) // localmodels.go
 	}
 	m.state = stateError
 	m.statusErr = sanitizeText(msg.err.Error())
