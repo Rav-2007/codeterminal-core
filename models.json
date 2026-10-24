@@ -22,6 +22,7 @@
     "provider_sort": "price"
   },
   "mcp": {
+    "budget": { "max_iterations": 24, "max_turn_iterations": 32 },
     "enabled": true,
     "web": { "disabled": true },
     "builtin": {
