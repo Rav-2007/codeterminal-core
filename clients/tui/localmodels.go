@@ -327,6 +327,15 @@ func (m chatModel) afterConnInfo() (tea.Model, tea.Cmd) {
 	if !local {
 		return m, nil
 	}
+	// NOT WHILE A MODEL IS BEING PICKED. Connecting to a server puts its first
+	// model in force while the list is still open, and fitting that one loads
+	// it into memory -- measured 2026-10-24, 2.5 GB held for ten minutes for a
+	// model nobody chose, beside the one then picked. The model picked is
+	// fitted when its choice lands, and an unchanged one when the list closes
+	// (fitAfterPicking).
+	if m.setup.step == setupModel {
+		return m, nil
+	}
 	key := base + "\x00" + m.statusModel()
 	localState.mu.Lock()
 	if localState.fitKey == key {
@@ -337,6 +346,14 @@ func (m chatModel) afterConnInfo() (tea.Model, tea.Cmd) {
 	localState.base, localState.model, localState.window, localState.fitted = base, m.statusModel(), 0, false
 	localState.mu.Unlock()
 	return m, fitLocalCmd(m.clientName, key)
+}
+
+// fitAfterPicking is for the model list closing with no new choice, which
+// brings no new connInfo: the model in force is fitted now, as afterConnInfo
+// would have when the list was open.
+func (m chatModel) fitAfterPicking(focus tea.Cmd) (tea.Model, tea.Cmd) {
+	next, fit := m.afterConnInfo()
+	return next, tea.Batch(focus, fit)
 }
 
 // handleLocalFit says, once, what the fit changed -- and nothing when it
