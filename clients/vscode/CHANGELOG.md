@@ -3,6 +3,37 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [1.4.0] - 2026-10-24
+
+### Changed
+
+- **An agent task has 24 steps,** not 8: a real task ran out of steps before
+  it could check its own work.
+- **A request refused as too large is made smaller and sent once more.** When
+  that cannot work, the answer says the provider's numbers and what would
+  change them (a model with a higher limit, or a key on a plan that allows
+  more), instead of suggesting `/compact`.
+- **A model on your computer that cannot use tools is answered without them.**
+  With `mochiii.apiBase` set to a server on this machine and agent mode on, a
+  model with no tool support (on Ollama: codellama, deepseek-coder and others)
+  failed every question with "calling model API failed", because the server
+  refuses any request that offers tools. The question is now asked again without
+  them, you are told once, and later questions to that model skip the tools.
+- **A tool call that a local model writes as text runs as that call.** Some
+  models, such as qwen2.5-coder, write the call as JSON in their answer instead
+  of in the server's tool-call format. It now runs, with the same approvals as
+  any other call, and is not shown as part of the answer.
+- **Two unusable tool calls in a row end a local model's tools for that
+  question.** A call to a tool that does not exist, or with arguments the tool
+  cannot read, used to cost a full round trip each until the step limit. After
+  two in a row, the model is asked to answer from what it has already read.
+- **Thinking that a local model writes as `<think>…</think>` is shown as
+  thinking,** not as the start of the answer.
+- **The terminal app: `/agent on` checks what a model on your computer can do,**
+  and uses it as the full agent, a compact agent with five tools and short
+  instructions, or as chat. vLLM no longer refuses questions because of the size
+  of the answer requested.
+
 ## [1.3.1] - 2026-10-24
 
 ### Fixed

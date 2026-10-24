@@ -402,9 +402,12 @@ What the terminal app does differently for a model on this computer:
   no valid tool call in 15 tries. So Mochiii tries the model, up to three times,
   with one tool and a question only that tool answers, on this computer. It then
   works in one of three ways, shown on the line under the prompt:
-  - **Full agent**: the model's window is 24,576 tokens or more, and it called
-    the tool again when tried with the full agent's own instructions. It gets
-    the full instructions and tools.
+  - **Full agent**: the model's window is 24,576 tokens or more, and when
+    given the full agent's own instructions and tools and asked about code it
+    has not seen, it looked the code up in all three tries instead of guessing.
+    It gets the full instructions and tools. Measured on 2026-10-24,
+    `qwen2.5-coder:7b` passed an easier version of this stage and then, as the
+    full agent, called no tool at all; asked this way it guessed 5 times in 5.
   - **Compact agent**: the model called the tool with short instructions, and
     its window is 8,192 tokens or more, but either the window is under 24,576
     or the model did not call the tool under the full instructions. It gets
@@ -418,9 +421,21 @@ What the terminal app does differently for a model on this computer:
     edit it proposes is shown for review.
 
   The check is kept per model and window in `local-models.json`. A model given
-  a bigger window is checked again, and `/agent check` repeats the check. A
+  a bigger window is checked again, and `/agent check` repeats the check. On a
+  laptop's CPU it can take a few minutes for a model with a big window (4 min
+  28 s for `qwen2.5-coder:7b` at 24,576 tokens), and questions are answered
+  without tools until it is done. A
   call the model writes as JSON text in its answer, instead of in the server's
-  tool-call format, is run as the call it names, with the same approvals.
+  tool-call format, is run as the call it names, with the same approvals. It
+  is not shown: from a `{` or a code fence, the answer is held for the few
+  characters that tell whether a call starts there. A call and anything after
+  it in that reply are dropped, and what came before stays.
+- **Two unusable tool calls in a row end the turn's tools.** A call is unusable
+  when it names a tool that is not offered, its arguments are not a JSON object,
+  or it leaves out an argument the tool requires. After two in a row, the rest
+  of the turn is asked with no tools and told to answer from what the model has
+  already read, and you are told once (`local_tools_stopped`). A call that can
+  run, even one that fails or that you refuse, starts the count again.
 - **No internet tools until `/web on`,** even with agent mode on: `web_search`,
   `web_fetch` and `github` are neither offered nor run (`CapNoNetworkTools`).
 - **A server that refuses tools gets the question without them.** Ollama

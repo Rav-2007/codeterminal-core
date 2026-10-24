@@ -5,6 +5,88 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## v1.4.0 — 2026-10-24
+
+1.3.0 and 1.3.1 were not published on their own, so 1.4.0 brings their changes
+too. They are listed below this release's.
+
+### The agent adjusts itself to each model on your computer
+
+**What changed.** Whether a model can use tools depends on the model, not on its
+size or on what its server says: in our tests, `qwen2.5-coder:3b`, which Ollama
+lists as able to use tools, made no valid tool call in 15 tries. So `/agent on`
+now tries the model in force, with a few small questions on your computer, and
+uses it the way it can:
+
+- **Full agent:** all the tools and instructions, for a model with a context
+  window of 24,576 tokens or more that, given them, looks code up in every try
+  instead of guessing.
+- **Compact agent:** five tools (read, search, list, edit, run) and short
+  instructions, for a model that used a tool under short instructions and has a
+  window of 8,192 tokens or more. `qwen2.5-coder:7b` works this way, even
+  with a bigger window: given the full agent's instructions, it guessed
+  instead of reading the code. In our test the compact agent read files, ran
+  commands and made edits on its own. But one edit rewrote more than it was
+  asked to, so read each diff before you apply it.
+- **Chat:** for every other model. It answers with your code, and you review any
+  edit it proposes.
+
+The result is kept per model and window. `/agent check` tries again, and a model
+given a bigger window is checked again by itself.
+
+**How to tell.** `/agent on` says which way the model works and why. The line
+under the prompt says `agent · web off`, `agent (compact) · web off` or
+`chat · this model can't use tools`.
+
+### Local models that used to fail now answer
+
+**What changed.**
+
+- **A model with no tool support** (on Ollama: codellama, deepseek-coder and
+  others) failed every question in agent mode, because the server refuses any
+  request that offers tools. The question is now asked again without them, and
+  you are told once.
+- **vLLM** refused every question to a model with a window of 32,768 tokens or
+  less, because Mochiii asked for a 32,768-token answer. The answer asked for now
+  fits the window.
+- **A tool call the model writes as text** (qwen2.5-coder writes its calls as
+  JSON in the answer) now runs as that call, with the same approvals, and is not
+  shown as part of the answer.
+- **Two unusable tool calls in a row,** such as a call to a tool that does not
+  exist, end the tools for that question. The model is asked to answer from what
+  it has already read, instead of trying again until the step limit.
+- **Thinking written as `<think>…</think>`** is shown as thinking, not as the
+  answer.
+
+In VS Code, with `mochiii.apiBase` set to a server on your computer, all of
+these apply except the vLLM fix. The check, the compact agent and the vLLM fix
+need the terminal app, which reads the model's window from the server.
+
+### A request refused as too large is made smaller, or explained
+
+**What changed.** When a provider refused a request as too large, either for
+the model's context window or for a plan's tokens per minute, the agent stopped
+and suggested `/compact`, which often could not help. It now removes what it
+can from the request and sends it once more, and says so in the answer. When a
+smaller request could not get through, it says the provider's numbers and what
+would change them: a model with a higher limit (`/model`), or a key on a plan
+that allows more (`/connect`).
+
+### VS Code: an agent task has 24 steps
+
+**What changed.** An agent task in VS Code stopped after 8 steps, sometimes
+before it could check its own work. It now has 24. The terminal app's limit is
+unchanged.
+
+### Picking a model on your computer loads only that model
+
+**What changed.** Connecting to a server put the first model it lists in force
+while the model list was still open, and the terminal app read that model's
+window, which loads it into memory: on Ollama, for ten minutes, beside the model
+you then picked. On a laptop that can be the memory the model you picked needed.
+A model's window is now read only once you pick it, or when you close the list
+keeping the model in force.
+
 ## v1.3.1 — 2026-10-24
 
 ### A model on your computer is still the one asked after a restart
