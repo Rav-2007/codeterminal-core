@@ -96,7 +96,7 @@ var slashCatalog = []slashDef{
 	{Name: "pr", Kind: slashLocal, Summary: "pull requests: /pr lists them, /pr <n> shows one, /pr <n> log says why its CI failed"},
 	{Name: "spec", Kind: slashLocal, Summary: "write a spec (/spec <goal>), then /spec build|check|use|off|show"},
 	{Name: "connect", Kind: slashLocal, Summary: "choose a provider, paste its key, choose a model (/connect <provider> skips the list; /connect local finds a model server on this computer; /connect show, /connect forget)"},
-	{Name: "agent", Kind: slashLocal, Summary: "tools for a model on this computer: /agent on, /agent off (off until you turn it on)"},
+	{Name: "agent", Kind: slashLocal, Summary: "tools for a model on this computer: /agent on (checks what the model can do), /agent off, /agent check"},
 	{Name: "web", Kind: slashLocal, Summary: "internet tools for a model on this computer: /web on, /web off (off until you turn it on)"},
 	{Name: "exit", Kind: slashLocal, Summary: "quit the TUI"},
 

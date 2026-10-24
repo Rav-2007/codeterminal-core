@@ -51,6 +51,9 @@ var localConnectWords = map[string]bool{
 type localPolicy struct {
 	Agent bool `json:"agent"`
 	Web   bool `json:"web"`
+	// Checked is each model's tool check, by address, model and window
+	// (localagent.go).
+	Checked map[string]localCheckEntry `json:"checked,omitempty"`
 }
 
 // localState is this client's view of local models. One per process.
@@ -68,6 +71,14 @@ var localState struct {
 	fitKey  string
 	lastFit *protocol.LocalContext
 	noted   map[string]bool
+	// checkSupported: the daemon names protocol.FeatureLocalAgentCheck. base,
+	// model and window are the model in force (window once fitted is set), and
+	// checking is the check under way, if any (localagent.go).
+	checkSupported bool
+	base, model    string
+	window         int
+	fitted         bool
+	checking       string
 }
 
 // localPolicyPath is where the policy is kept. A var so tests keep theirs in a
@@ -145,6 +156,7 @@ func rememberDaemonFeatures(hs protocol.HandshakeResponse) {
 	localState.mu.Lock()
 	defer localState.mu.Unlock()
 	localState.supported = hasFeature(hs, protocol.FeatureLocalModels)
+	localState.checkSupported = hasFeature(hs, protocol.FeatureLocalAgentCheck)
 }
 
 // promptCapabilities is what a question declares in its handshake.
@@ -164,6 +176,8 @@ func promptCapabilities() []string {
 	switch {
 	case !localState.policy.Agent:
 		return nil
+	case localState.checkSupported:
+		return checkedCapabilitiesLocked() // localagent.go
 	case localState.policy.Web:
 		return []string{protocol.CapToolApproval}
 	case !localState.supported:
@@ -232,9 +246,14 @@ func localModeLabel(base string) string {
 		return ""
 	}
 	p := currentLocalPolicy()
+	localState.mu.Lock()
+	checks := localState.checkSupported
+	localState.mu.Unlock()
 	switch {
 	case !p.Agent:
 		return "tools off"
+	case checks:
+		return checkedModeLabel() // localagent.go
 	case p.Web:
 		return "tools on · web on"
 	}
@@ -315,6 +334,7 @@ func (m chatModel) afterConnInfo() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	localState.fitKey = key
+	localState.base, localState.model, localState.window, localState.fitted = base, m.statusModel(), 0, false
 	localState.mu.Unlock()
 	return m, fitLocalCmd(m.clientName, key)
 }
@@ -327,6 +347,9 @@ func (m chatModel) handleLocalFit(msg localFitMsg) (tea.Model, tea.Cmd) {
 	}
 	c := msg.resp.Context
 	localState.mu.Lock()
+	if msg.key == localState.fitKey {
+		localState.window, localState.fitted = c.Window, true
+	}
 	localState.lastFit = c
 	if localState.noted == nil {
 		localState.noted = map[string]bool{}
@@ -335,13 +358,19 @@ func (m chatModel) handleLocalFit(msg localFitMsg) (tea.Model, tea.Cmd) {
 	seen := localState.noted[noteKey]
 	localState.noted[noteKey] = true
 	localState.mu.Unlock()
-	if seen {
-		return m, nil
+	m, check, checking := m.maybeCheckLocal(false) // localagent.go
+	note := ""
+	if !seen {
+		note = localFitNote(*c, currentLocalPolicy())
 	}
-	if note := localFitNote(*c, currentLocalPolicy()); note != "" {
-		return m.sayLocally(note)
+	if checking != "" {
+		note = strings.TrimSpace(note + " " + checking)
 	}
-	return m, nil
+	if note == "" {
+		return m, check
+	}
+	next, say := m.sayLocally(note)
+	return next, tea.Batch(say, check)
 }
 
 // localFitNote explains a fit in a sentence or three, or is "" when there is
@@ -552,7 +581,17 @@ func (m chatModel) handleLocalModeCommand(name, args string) (tea.Model, tea.Cmd
 	var on bool
 	switch strings.ToLower(strings.TrimSpace(args)) {
 	case "", "status":
-		return m.sayLocally(localModeStatus(name, p, localActive()))
+		return m.sayLocally(localModeStatus(name, p, localActive()) + localAgentReply())
+	case "check":
+		if name != "agent" {
+			return m.sayLocally("/web takes on or off.")
+		}
+		next, cmd, checking := m.maybeCheckLocal(true) // localagent.go
+		if cmd == nil {
+			return next.sayLocally("Nothing to check: /agent check tries the model on this computer in use, with agent mode on.")
+		}
+		said, say := next.sayLocally(checking)
+		return said, tea.Batch(say, cmd)
 	case "on":
 		on = true
 	case "off":
@@ -570,8 +609,13 @@ func (m chatModel) handleLocalModeCommand(name, args string) (tea.Model, tea.Cmd
 	}
 	reply := localModeStatus(name, p, localActive())
 	localState.mu.Lock()
-	last := localState.lastFit
+	last, checks := localState.lastFit, localState.checkSupported
 	localState.mu.Unlock()
+	if name == "agent" && on && checks {
+		next, cmd, checking := m.maybeCheckLocal(false) // localagent.go
+		said, say := next.sayLocally(strings.TrimSpace(reply + localAgentReply() + " " + checking))
+		return said, tea.Batch(say, cmd)
+	}
 	if name == "agent" && on && last != nil && last.Window > 0 && !last.AgentFits {
 		reply += fmt.Sprintf(" The model in use has room for %s tokens, and agent mode needs at least %s.",
 			groupDigits(last.Window), groupDigits(8192))
