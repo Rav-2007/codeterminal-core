@@ -25,7 +25,17 @@ import (
 // instructions, and asked for the file to be pasted every time under the full
 // agent's -- with one tool or fifteen. So a model is tried first with the
 // compact agent's instructions, and only a model that passes, with a window
-// that holds the full agent, is tried with the full agent's as well.
+// that holds the full agent, is tried as the full agent as well.
+//
+// THE FULL STAGE IS THE FULL AGENT'S OWN SITUATION (localFullCheck). It first
+// offered one tool and asked to read a named file, as the compact stage does,
+// and the 7B passed it at a 24,576-token window (2 of 2) -- then, working as
+// the full agent in the real app, called no tool at all: it made up a
+// greet.go and answered about it, and "ran" ls without running it. Asked with
+// the full agent's instructions and menu about code it had not seen, it
+// guessed the answer in 5 of 5 tries. So the full stage now offers the full
+// agent's menu, asks such a question, and needs a look-up in every try: a
+// model that guesses once is the compact agent, which still works.
 //
 // The server's own answer comes first and can settle it: an Ollama model
 // without the "tools" capability is refused any request carrying tools, so it
@@ -35,6 +45,9 @@ import (
 const (
 	localCheckTries  = 3
 	localCheckPasses = 2
+	// localFullCheckPasses is how many of localCheckTries the full stage needs:
+	// all of them, so it stops at the first guess.
+	localFullCheckPasses = localCheckTries
 	// localCheckAnswerTokens caps each try's reply: a call fits easily, and a
 	// model that starts writing prose instead stops soon.
 	localCheckAnswerTokens = 256
@@ -48,8 +61,13 @@ const (
 	localCheckTimeout = localPreloadTimeout + 3*time.Minute
 )
 
-// localCheckQuestion is what each try asks: a question only the tool answers.
+// localCheckQuestion is what each compact-stage try asks: a question only the
+// tool answers.
 const localCheckQuestion = "Read the file notes/todo.txt in this project and tell me what its first line says."
+
+// localFullCheckQuestion is what each full-stage try asks: about code the model
+// has not seen, as a real question is, which only a look-up answers right.
+const localFullCheckQuestion = "What does parseConfig in config/loader.go return when the file is empty?"
 
 // localCheckTool is the one tool each try offers, worded as the real read_file.
 var localCheckTool = toolSpec{Type: "function", Function: toolSpecFunction{
@@ -78,9 +96,9 @@ func (s *Server) checkLocal(ctx context.Context) protocol.LocalResponse {
 		localKnown.noTools.Store(dialectKey(base, model), true)
 	} else {
 		localKnown.noTools.Delete(dialectKey(base, model))
-		check.Tried, check.Passed = s.localCheckTries(cctx, base, apiKey, model, compactAgentPrompt)
+		check.Tried, check.Passed = s.localCheckTries(cctx, base, apiKey, model, localCompactCheck)
 		if check.Passed >= localCheckPasses && facts.window >= localFullAgentNeedTokens {
-			check.FullTried, check.FullPassed = s.localCheckTries(cctx, base, apiKey, model, s.fullAgentPrompt())
+			check.FullTried, check.FullPassed = s.localCheckTries(cctx, base, apiKey, model, s.localFullCheck(cctx))
 		}
 	}
 	check.Way, check.Reason = localWay(facts, check, serverName(facts.kind))
@@ -89,15 +107,72 @@ func (s *Server) checkLocal(ctx context.Context) protocol.LocalResponse {
 	return protocol.LocalResponse{Ok: true, Check: check}
 }
 
-// localCheckTries asks up to localCheckTries times under system, stopping as
-// soon as the outcome is settled, and counts the right calls.
-func (s *Server) localCheckTries(ctx context.Context, base, apiKey, model, system string) (tried, passed int) {
+// localCheckStage is one stage of the check: what each try sends, which call
+// passes it, and how many of localCheckTries must pass.
+type localCheckStage struct {
+	system, question string
+	tools            []toolSpec
+	passes           func(toolCall) bool
+	need             int
+}
+
+// localCompactCheck is the compact agent's stage: its instructions, one tool,
+// and a file to read by name.
+var localCompactCheck = localCheckStage{
+	system: compactAgentPrompt, question: localCheckQuestion, tools: []toolSpec{localCheckTool},
+	passes: func(c toolCall) bool {
+		return strings.TrimPrefix(c.Function.Name, "builtin__") == "read_file" && strings.Contains(c.Function.Arguments, "todo.txt")
+	},
+	need: localCheckPasses,
+}
+
+// localFullCheck is the full agent's stage: its instructions, the menu it would
+// offer this client's model now, and a question about code it has not seen.
+func (s *Server) localFullCheck(ctx context.Context) localCheckStage {
+	return localCheckStage{system: s.fullAgentPrompt(), question: localFullCheckQuestion, tools: s.fullAgentMenu(ctx),
+		passes: looksUpTheCode, need: localFullCheckPasses}
+}
+
+// looksUpTheCode reports whether c looks up what localFullCheckQuestion names
+// rather than guessing it: a read or search that names it, or a look at the
+// project's layout.
+func looksUpTheCode(c toolCall) bool {
+	switch strings.TrimPrefix(c.Function.Name, "builtin__") {
+	case "list_directory", "find_files", "repo_map":
+		return true
+	case "read_file", "search_code", "grep", "query_compiler_definition", "query_compiler_references":
+		return containsAny(c.Function.Arguments, []string{"loader", "parseConfig", "config"})
+	}
+	return false
+}
+
+// fullAgentMenu is the tools a full agent's turn offers a model on this
+// computer: the built-in ones, without the internet tools -- they cannot
+// answer the stage's question, and such a model has them only after /web on --
+// and never the compact menu, whatever this connection declared. The user's
+// own MCP servers are not on it: a check never starts them. A daemon whose
+// agent has no tools offers none, and the stage then cannot pass.
+func (s *Server) fullAgentMenu(ctx context.Context) []toolSpec {
+	cfg, _ := s.agentConfig()
+	if cfg == nil {
+		return nil
+	}
+	registry := s.builtinRegistry(cfg, s.logger, nil, "")
+	defer func() { _ = registry.Close() }()
+	ctx = withTurnMenu(context.WithValue(ctx, noNetworkToolsKey{}, true), turnMenu{})
+	specs, _, _ := s.advertisedToolSpecs(ctx, registry, nil)
+	return specs
+}
+
+// localCheckTries asks up to localCheckTries times, stopping as soon as the
+// stage's outcome is settled, and counts the tries that passed.
+func (s *Server) localCheckTries(ctx context.Context, base, apiKey, model string, stage localCheckStage) (tried, passed int) {
 	for tried < localCheckTries {
 		tried++
-		if s.localCheckTry(ctx, base, apiKey, model, system) {
+		if s.localCheckTry(ctx, base, apiKey, model, stage) {
 			passed++
 		}
-		if passed >= localCheckPasses || tried-passed > localCheckTries-localCheckPasses {
+		if passed >= stage.need || tried-passed > localCheckTries-stage.need {
 			break
 		}
 	}
@@ -112,14 +187,15 @@ func (s *Server) fullAgentPrompt() string {
 	return defaultSystemPrompt
 }
 
-// localCheckTry asks once, and reports whether the reply was the right call.
-func (s *Server) localCheckTry(ctx context.Context, base, apiKey, model, system string) bool {
+// localCheckTry asks once, and reports whether the reply was a call that
+// passes the stage.
+func (s *Server) localCheckTry(ctx context.Context, base, apiKey, model string, stage localCheckStage) bool {
 	var text strings.Builder
 	messages := []chatMessage{
-		{Role: "system", Content: system},
-		{Role: "user", Content: localCheckQuestion},
+		{Role: "system", Content: stage.system},
+		{Role: "user", Content: stage.question},
 	}
-	calls, err := streamCompletion(ctx, base, apiKey, model, messages, []toolSpec{localCheckTool},
+	calls, err := streamCompletion(ctx, base, apiKey, model, messages, stage.tools,
 		providerRouting{maxTokens: localCheckAnswerTokens},
 		func(token string) error { text.WriteString(token); return nil }, nil, nil, nil)
 	if err != nil {
@@ -127,14 +203,13 @@ func (s *Server) localCheckTry(ctx context.Context, base, apiKey, model, system 
 		return false
 	}
 	if len(calls) == 0 {
-		call, ok := textToolCall(text.String(), offeredTool([]toolSpec{localCheckTool}))
+		call, ok := textToolCall(text.String(), offeredTool(stage.tools))
 		if !ok {
 			return false
 		}
 		calls = []toolCall{call}
 	}
-	name := calls[0].Function.Name
-	return (name == localCheckTool.Function.Name || name == "read_file") && strings.Contains(calls[0].Function.Arguments, "todo.txt")
+	return stage.passes(calls[0])
 }
 
 // localWay is how a model with these facts and check results should work, and
@@ -151,13 +226,13 @@ func localWay(f localModelFacts, c *protocol.LocalCheck, server string) (way, re
 	case f.window > 0 && f.window < localAgentNeedTokens:
 		return protocol.LocalWayChat, fmt.Sprintf("it can call tools, but its %s-token window is too small for agent mode, "+
 			"which needs %s, so %s", groupThousands(f.window), groupThousands(localAgentNeedTokens), chat)
-	case c.FullPassed >= localCheckPasses:
-		return protocol.LocalWayFull, fmt.Sprintf("it called the tool in %d of %d tries with the full agent's instructions, "+
-			"and its %s-token window has room for them", c.FullPassed, c.FullTried, groupThousands(f.window))
+	case c.FullPassed >= localFullCheckPasses:
+		return protocol.LocalWayFull, fmt.Sprintf("given the full agent's instructions and tools, it looked the code up "+
+			"in %d of %d tries, and its %s-token window has room for them", c.FullPassed, c.FullTried, groupThousands(f.window))
 	case c.FullTried > 0:
-		return protocol.LocalWayCompact, fmt.Sprintf("it called the tool with short instructions (%d of %d tries) but not "+
-			"with the full agent's (%d of %d), so it works as the compact agent: five tools and short instructions",
-			passed, tried, c.FullPassed, c.FullTried)
+		return protocol.LocalWayCompact, fmt.Sprintf("it called the tool with short instructions (%d of %d tries), but given "+
+			"the full agent's instructions and tools it guessed instead of looking (looked in %d of %d), so it works as "+
+			"the compact agent: five tools and short instructions", passed, tried, c.FullPassed, c.FullTried)
 	case f.window == 0:
 		return protocol.LocalWayCompact, fmt.Sprintf("it called the tool in %d of %d tries; its window could not be read, "+
 			"so it works as the compact agent: five tools and short instructions", passed, tried)
