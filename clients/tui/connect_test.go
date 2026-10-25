@@ -651,9 +651,9 @@ func TestAKeyTypedAfterConnectIsNotRecalled(t *testing.T) {
 			t.Fatal("the refused key was written into the transcript")
 		}
 	}
-	m = press(m, tea.KeyUp)
+	m = press(m, tea.KeyCtrlUp) // recall: ctrl+up since 2026-10-25
 	if strings.Contains(m.input.Value(), tuiTestKey) {
-		t.Errorf("up recalled the refused key in clear: %q", m.input.Value())
+		t.Errorf("ctrl+up recalled the refused key in clear: %q", m.input.Value())
 	}
 
 	for raw, want := range map[string]bool{

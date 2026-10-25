@@ -77,7 +77,7 @@ var slashCatalog = []slashDef{
 	{Name: "mcp-server", Kind: slashLocal, Summary: "the tools this daemon offers; add or remove an MCP server (/mcp-server add <name> <command>)"},
 	{Name: "clear", Kind: slashLocal, Summary: "start a new chat (same as ctrl+n)"},
 	{Name: "compact", Kind: slashLocal, Summary: "summarise the earlier part of this chat to save context (the full chat stays in History)"},
-	{Name: "mouse", Kind: slashLocal, Summary: "toggle mouse capture: on scrolls with the wheel, off lets you select text"},
+	{Name: "mouse", Kind: slashLocal, Summary: "toggle mouse capture: off (the start) lets a drag select text; on scrolls by wheel where ↑/↓ do not"},
 	{Name: "context", Kind: slashLocal, Summary: "show workspace, model tier, and last grounding"},
 	{Name: "git", Kind: slashLocal, Summary: "show git status for the workspace"},
 	{Name: "init", Kind: slashLocal, Summary: "quick start checklist for this workspace"},
@@ -287,6 +287,10 @@ func formatSlashHelp() string {
 	b.WriteString("  esc            stop the turn in flight; the transcript is kept\n")
 	b.WriteString("  ctrl+c         stop the turn in flight, or quit when nothing is running\n")
 	b.WriteString("  ctrl+n         start a new chat (same as /clear); /save first to keep this one\n")
+	b.WriteString("  ↑ ↓            scroll the chat (the wheel sends these too)\n")
+	b.WriteString("  ctrl+↑ ctrl+↓  the prompts you sent before (alt+↑ alt+↓ too)\n")
+	b.WriteString("  drag           select text; " + copyKey() + " copies it (the terminal's own copy)\n")
+	b.WriteString(fmt.Sprintf("  %-15spaste (the terminal's own paste)\n", pasteKey()))
 
 	// THE AUTOMATIC BOUND, said here because /help is where someone goes after
 	// seeing the eviction marker and wondering what took their transcript.

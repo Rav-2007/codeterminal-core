@@ -118,10 +118,10 @@ func (t turn) plainAnswer() bool { return t.local || t.verbatim }
 // PromptRequest.History (see buildHistory), so follow-ups can build on
 // earlier turns. ctrl+n clears the transcript to start a fresh conversation
 // with no carried-over history.
-// helpText names /mouse because the thing it toggles is invisible until it
-// bites: with capture on, dragging to select text does nothing and there is no
-// error to search for.
-const helpText = "enter send · ↑↓ history · shift+drag to select · ctrl+n new · ctrl+c quit"
+// It names the copy key, which is the terminal's own and differs on a Mac, and
+// where prompt history went: ctrl+↑/↓, because ↑/↓ are what the wheel sends now
+// that a drag selects in the terminal itself (keyhints.go, 2026-10-25).
+var helpText = idleHelpText()
 
 // reviewHelpText is shown instead of helpText while reviewing edit blocks.
 const reviewHelpText = "y apply · n skip · q cancel remaining"
@@ -170,10 +170,10 @@ type chatModel struct {
 	refreshScheduled bool
 
 	// mouseCaptured mirrors whether the terminal is reporting mouse events to
-	// us rather than handling selection itself. See handleMouseToggle.
+	// us rather than handling selection itself. It starts false (main.go,
+	// 2026-10-25): the terminal keeps the mouse, so a drag selects and its
+	// copy key copies. See handleMouseToggle.
 	mouseCaptured bool
-	// pasteHintShown keeps the ctrl+v hint to once per session.
-	pasteHintShown bool
 
 	// Prompt history for up/down (see prompthistory.go).
 	promptHistory []string
@@ -445,10 +445,10 @@ func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []
 	return chatModel{
 		state:           stateSplash,
 		streamAssistant: -1,
-		// ON, matching main.go: the wheel must arrive as MOUSE events, because
-		// with capture off the terminal sends it as up/down keys -- and those
-		// are prompt history. Copying is shift+drag, named in helpText.
-		mouseCaptured: true,
+		// OFF, matching main.go: the terminal keeps the mouse, so a drag selects
+		// and its copy key copies. The wheel then arrives as up/down keys, which
+		// scroll; prompt history is ctrl+up/down (ADR-001, 2026-10-25).
+		mouseCaptured: false,
 		limits:        loadTranscriptLimits(),
 		input:         ti,
 		spinner:       sp,
@@ -782,17 +782,9 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "up", "down":
-		// ALREADY BROWSING HISTORY: stay in it. A recalled "/clear" opens the
-		// slash popup, and without this the next up would walk the popup
-		// instead of going further back.
-		if m.promptLive() && m.historyIdx != -1 {
-			if msg.String() == "up" {
-				m.historyUp()
-			} else {
-				m.historyDown()
-			}
-			return m, nil
-		}
+		// UP AND DOWN SCROLL THE CHAT: with mouse capture off (2026-10-25) the
+		// wheel arrives as these keys. Prompt history is ctrl/alt+up/down,
+		// below. The slash popup keeps them, to walk its highlighted command.
 		if m.promptLive() {
 			matches := m.slashMatches()
 			if len(matches) > 0 {
@@ -811,26 +803,34 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		// No popup: up/down walk the prompts sent before, like a shell.
+		if msg.String() == "up" {
+			m.viewport.ScrollUp(1)
+		} else {
+			m.viewport.ScrollDown(1)
+		}
+		return m, nil
+	case "ctrl+up", "ctrl+down", "alt+up", "alt+down":
+		// The prompts sent before, like a shell's up and down. alt too,
+		// because a Mac gives ctrl+up and ctrl+down to Mission Control.
 		if m.promptLive() {
-			if msg.String() == "up" {
+			if msg.String() == "ctrl+up" || msg.String() == "alt+up" {
 				m.historyUp()
 			} else {
 				m.historyDown()
 			}
-			return m, nil
 		}
+		return m, nil
 	case "ctrl+v":
 		// ctrl+v reads the system clipboard through a helper program (xclip,
-		// xsel or wl-paste), and with none installed it did nothing at all.
-		// Say how to paste instead -- the terminal's own ctrl+shift+v always
-		// works, because it arrives as typed text.
+		// xsel or wl-paste); with none installed there is nothing it can read.
+		//
+		// IT THEN DOES NOTHING, QUIETLY. Until 2026-10-25 it added a note to the
+		// chat naming clipboard programs to install, and the owner wants neither
+		// the note nor the programs: "the mark should not be visible anywhere",
+		// after "no new clipboards". The terminal's own paste key always works,
+		// because it arrives as typed text, and /help lists it (keyhints.go).
 		if !clipboardToolAvailable() {
-			if !m.pasteHintShown {
-				m.pasteHintShown = true
-				m.appendTurn(turn{role: roleSystem, text: "to paste, use ctrl+shift+v (ctrl+v needs a clipboard tool such as wl-clipboard or xclip)"})
-				m.refreshViewport()
-			}
+			// Not the input's own paste either: it looks for the same helpers.
 			return m, nil
 		}
 	case "ctrl+n":
@@ -3403,32 +3403,32 @@ func withThousands(n int) string {
 
 // MOUSE CAPTURE IS A TRADE, AND IT USED TO BE MADE SILENTLY.
 //
-// tea.WithMouseCellMotion (main.go) tells the terminal to report mouse events to
-// this program. It buys exactly one thing: wheel scrolling in the transcript
-// viewport. It costs the terminal's own click-drag text selection, so copying
-// anything out of the client requires holding Shift -- a convention that is
-// real, but is not written anywhere the user can see and does not behave
-// identically across terminals.
+// tea.EnableMouseCellMotion tells the terminal to report mouse events to this
+// program. It buys wheel scrolling as mouse events. It costs the terminal's own
+// click-drag text selection -- and with it the terminal's copy key, which
+// copies only what the terminal itself selected -- so copying needed Shift
+// held, a convention written nowhere the user can see.
 //
-// That trade is a bad one to make silently for a CODING assistant, where
-// copying the code the model just wrote is among the most common things anyone
-// does with the output. Someone who does not know about Shift does not conclude
-// "mouse reporting is on"; they conclude "I cannot copy from this program".
+// For a CODING assistant that is the wrong way round: copying what the model
+// just wrote is among the most common things anyone does with the output, and
+// someone who does not know about Shift concludes "I cannot copy from this
+// program". The owner did, twice; on 2026-10-25 they chose capture OFF from the
+// start (main.go), with the wheel's up/down keys scrolling and prompt history
+// moved to ctrl+up/down (handleKey).
 //
-// So it is now a toggle with a name, reachable as /mouse, reported in /help and
-// named in the idle hint. See docs/ADR-001-mouse-capture.md for the argument
-// that the DEFAULT should also change, which is a product decision rather than
-// an engineering one and is left explicitly open there.
+// This toggle is the way back, for a terminal whose wheel does nothing in the
+// alternate screen: reachable as /mouse and listed in /help. See
+// docs/ADR-001-mouse-capture.md for each time the default was decided.
 func (m chatModel) handleMouseToggle() (tea.Model, tea.Cmd) {
 	m.mouseCaptured = !m.mouseCaptured
 	var cmd tea.Cmd
 	var reply string
 	if m.mouseCaptured {
 		cmd = tea.EnableMouseCellMotion
-		reply = "mouse capture ON — the wheel scrolls the transcript; hold shift to select text"
+		reply = "mouse capture ON — the wheel scrolls as mouse events; hold shift to select text, then " + copyKey()
 	} else {
 		cmd = tea.DisableMouse
-		reply = "mouse capture OFF — select and copy with the mouse as usual; pgup/pgdown scroll"
+		reply = "mouse capture OFF — drag to select, " + copyKey() + " to copy; the wheel and ↑/↓ scroll"
 	}
 	m.appendTurn(turn{role: roleSystem, text: reply})
 	m.resizeViewport()
