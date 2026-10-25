@@ -4,7 +4,7 @@
   "description": "A local-first AI coding assistant. Your code is indexed, embedded and retrieved on your own machine.",
   "version": "1.4.0",
   "publisher": "MochiiiAIAgent",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "Apache-2.0",
   "icon": "media/icon.png",
   "galleryBanner": {
     "color": "#2B1B24",

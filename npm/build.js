@@ -71,7 +71,7 @@ function platformFields(target) {
 
 const common = (version) => ({
   version,
-  license: 'SEE LICENSE IN LICENSE',
+  license: 'Apache-2.0',
   homepage: 'https://github.com/Rav-2007/codeterminal-core',
   repository: { type: 'git', url: 'https://github.com/Rav-2007/codeterminal-core.git' },
   bugs: { url: 'https://github.com/Rav-2007/codeterminal-core/issues' },
