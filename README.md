@@ -281,6 +281,7 @@ To run the terminal app from a checkout instead of an install, you need
 
 ## License
 
-Proprietary. See [LICENSE](LICENSE). The source is public to read, but Mochiii
-is not open source. Third-party licences are listed in
+Apache License 2.0. See [LICENSE](LICENSE). Contributions are made under the
+same licence, with a DCO sign-off on each commit: see
+[CONTRIBUTING.md](CONTRIBUTING.md). Third-party licences are listed in
 [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).

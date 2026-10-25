@@ -4000,3 +4000,19 @@ License: The package.json of @tesseract.js-data/eng declares MIT. The model
          above for tesseract.js). Neither statement is contradicted by the other
          but the package ships no license file, so this entry records both.
 Source:  https://github.com/tesseract-ocr/tessdata_best
+
+Correction, 2026-10-25 (added below the original text, which is left unchanged):
+  - The file shipped is not a tessdata_best file. It is the "Integerized
+    Version of Tessdata Best" that naptha/tessdata publishes as 4.0.0_best_int
+    (its gh-pages README; added in commit b8674656, 2023-08-21). naptha/tessdata
+    is the repository that @tesseract.js-data/eng's package.json names.
+  - naptha/tessdata carries an Apache License 2.0 LICENSE file (commit 9c2fee3d,
+    2023-08-21). So the package's own repository says Apache-2.0 while its
+    package.json says MIT. "Neither statement is contradicted by the other"
+    above understates that disagreement.
+  - tesseract-ocr/tessdata_best states: "All data in the repository are licensed
+    under the Apache-2.0 License". Neither repository has a NOTICE file.
+  Both repositories the model data comes from state Apache-2.0. The MIT appears
+  only in the npm package's metadata. The Apache-2.0 text is reproduced above,
+  under tesseract.js.
+Converted by: https://github.com/naptha/tessdata (branch gh-pages, 4.0.0_best_int)

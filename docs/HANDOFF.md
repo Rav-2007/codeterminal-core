@@ -81,9 +81,10 @@ plan without one, it is the current plan.
   junction-resolution claims specifically have not been exercised. It is no
   longer true that "Windows does not run at all" — see
   `MASTER_PLAN_2026-08-07.md` §2.
-- **`LICENSE` exists** — 122 lines, proprietary, "All rights reserved". It is
-  *not* an open-source licence, and that is a constraint on marketplace framing
-  rather than a missing file.
+- **`LICENSE` is Apache-2.0** (since 2026-10-25). Until then it was a 122-line
+  proprietary EULA, "All rights reserved". Contributions are made under
+  Apache-2.0 with a DCO sign-off on each commit (`../CONTRIBUTING.md`). The
+  sign-off check is advisory, not yet required.
 - **Active plan:** [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md)
   — packaging. Stages 3.0–3.4 are **done**; Stage 3.3 is written but has never
   fired (no tag pushed); **Stage 3.5 (signing) has not started** and is blocked

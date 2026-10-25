@@ -348,6 +348,10 @@ none.
 rights reserved". The listing must not imply open source, and the `license` field
 must point at the real file.
 
+> **Annotated 2026-10-25: no longer true.** `LICENSE` is now Apache-2.0, and
+> `clients/vscode/package.json`'s `license` field is `"Apache-2.0"`. This item
+> is left as written, because it records the constraint that applied at the time.
+
 **5. What does *not* change, and must be re-stated in the listing.** Lane B stays
 **unconfined** — consent and audit, never "sandboxed". Secret scrubbing stays
 heuristic and client-side. A stale index still reports `grounded ✓`. Packaging

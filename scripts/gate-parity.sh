@@ -120,6 +120,7 @@ latency-bench.sh|manual|Benchmark. Reports numbers, asserts nothing.
 fetch-eval-repos.sh|manual|Fetches the four pinned outside repositories TestExternalRepoRetrieval scores against (daemon/testdata/evalrepos/repos.txt). A setup step for a manual eval that is in no gate yet; it reaches the network and checks nothing itself.
 wire-drill.sh|manual|Diagnostic for the wire protocol, run by hand when something is wrong.
 gate-parity.sh|both|
+dco.sh|ci|It checks the commits a pull request adds, so it needs the pull request's base and head, and only .github/workflows/dco.yml has them. In `make check` there is no pull request to check, and every branch made before 2026-10-25 would fail on commits written before the rule existed. It is ADVISORY there too (continue-on-error until the repository variable DCO_ENFORCE is "true"). The header of dco.yml says what has to happen before it can be required.
 install-tools.sh|ci|Installs the pinned analysis tools. CI runs it; locally `make check` does not, because it would reinstall four binaries on every gate run. scripts/lint.sh CHECKS the versions instead and prints this script as the remedy.
 toolpins.sh|lib|Sourced by lint.sh, errcheck-ceiling.sh and govulncheck.sh to read scripts/tool-pins.txt. Not executable as a gate and has no exit status of its own.
 MANIFEST
