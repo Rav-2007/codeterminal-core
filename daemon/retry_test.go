@@ -180,6 +180,9 @@ func TestRetry_NeverRetriesOnceTokensHaveStreamed(t *testing.T) {
 const retryAfterDelay = 2 * time.Second
 
 func TestRetry_HonoursRetryAfter(t *testing.T) {
+	// Our own rate-limit wait starts at seconds since 2026-10-25 (retry.go);
+	// shrunk here so that only Retry-After can explain the wait asserted below.
+	withFastRateLimits(t)
 	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if requests.Add(1) == 1 {
@@ -201,8 +204,8 @@ func TestRetry_HonoursRetryAfter(t *testing.T) {
 		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger()); err != nil {
 		t.Fatalf("want recovery, got: %v", err)
 	}
-	// Our own first backoff is well under a second; only Retry-After explains a
-	// wait this long. Compared against the delay the server actually sent.
+	// Our own first wait is shrunk to milliseconds above; only Retry-After
+	// explains a wait this long. Compared against the delay the server sent.
 	if elapsed := time.Since(start); elapsed < retryAfterDelay {
 		t.Errorf("waited %s, want at least the %s the upstream asked for", elapsed, retryAfterDelay)
 	}

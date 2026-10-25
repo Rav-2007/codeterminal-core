@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"math/rand/v2"
 	"time"
+
+	"mochiii/protocol"
 )
 
 // Retry bounds. There was no retry anywhere in the request path, so a single
@@ -25,6 +28,66 @@ const (
 // totalRetryBudget is the whole-retry budget described above. A var so tests
 // can shorten it.
 var totalRetryBudget = 45 * time.Second
+
+// A RATE LIMIT IS WAITED OUT, NOT HURRIED (2026-10-25). The three quick tries
+// above were built for a dropped connection, and a rate limit is not one.
+// MEASURED on the owner's NVIDIA key: an agent task made 8 calls in 21 seconds,
+// the 9th got 429, both retries -- 0.7 s and 1 s later -- got 429 too, and a task
+// the user had been watching stopped with "the model provider failed". A
+// provider counts requests (and often tokens) over a minute, so a second try
+// inside the same second is spent before it starts. A rate limit gets five
+// tries, waits that start at 5 seconds and double to 30, and 75 seconds in all,
+// and the user is told about every wait (withRetryNotice).
+const (
+	maxRateLimitAttempts = 5
+	maxRateLimitBackoff  = 30 * time.Second
+)
+
+// baseRateLimitBackoff is the first rate-limit wait, doubling from there, and
+// rateLimitBudget the whole wait a rate limit may take. Vars so tests can
+// shorten them.
+var (
+	baseRateLimitBackoff = 5 * time.Second
+	rateLimitBudget      = 75 * time.Second
+)
+
+// rateLimitBackoffFor is backoffFor for a rate limit: at least half the doubling
+// wait, so a draw near zero cannot spend a try inside the same window, and the
+// provider's own Retry-After when it asks for longer, up to the cap.
+func rateLimitBackoffFor(attempt int, retryAfter time.Duration) time.Duration {
+	exp := min(baseRateLimitBackoff<<(attempt-1), maxRateLimitBackoff)
+	delay := exp/2 + time.Duration(rand.Int64N(int64(exp/2)+1))
+	return min(max(delay, retryAfter), maxRateLimitBackoff)
+}
+
+// retryNoticeKey carries a turn's way of telling its user that a model call is
+// waiting out a rate limit. Unset, the wait is silent -- a spinner, still turning.
+type retryNoticeKey struct{}
+
+// withRetryNotice returns ctx carrying notice, which streamWithRetry calls with
+// the length of each rate-limit wait before it starts it.
+func withRetryNotice(ctx context.Context, notice func(wait time.Duration)) context.Context {
+	return context.WithValue(ctx, retryNoticeKey{}, notice)
+}
+
+// rateLimitWait is what a user is shown while a call waits out a rate limit: a
+// step line, as a pipeline's phases are (no call id, so each wait is its own
+// line), naming no provider -- the Gate-7 line clientMessages keeps.
+func rateLimitWait(wait time.Duration) protocol.ToolActivity {
+	return protocol.ToolActivity{
+		Phase: protocol.ToolPhaseStep, Tool: protocol.ToolWaiting, DurationMS: wait.Milliseconds(),
+		Detail: fmt.Sprintf("the model provider is rate-limiting requests; trying again in %ds", int(wait.Round(time.Second)/time.Second)),
+	}
+}
+
+// stoppedBecause is the reason in a task's stop notice: the kind of failure in
+// the user's terms, never its detail (clientMessages' rule).
+func stoppedBecause(err error) string {
+	if asModelError(err).Class == ClassRateLimited {
+		return "the model provider kept rate-limiting requests through a minute of waiting (give it a minute or two)"
+	}
+	return "the model provider failed"
+}
 
 // backoffFor computes the delay before the given retry attempt (1-based:
 // attempt 1 is the wait after the first failure).
@@ -126,7 +189,9 @@ func streamWithRetry(
 	// real model -- so this is one retry and no more.
 	stallRetried := false
 
-	for attempt := 1; attempt <= maxStreamAttempts; attempt++ {
+	// The loop runs to the larger limit; each failure says which limit is its
+	// own below (a rate limit gets more tries than a dropped connection).
+	for attempt := 1; attempt <= maxRateLimitAttempts; attempt++ {
 		streamed := false
 		// Reference marks no client can open are taken out here, the one place
 		// every model call passes (citemarks.go). A filter per attempt: what one
@@ -157,7 +222,7 @@ func streamWithRetry(
 					"removed, keeping any address written inside", marks.marks)
 			}
 			if attempt > 1 && logger != nil {
-				logger.Printf("model API: succeeded on attempt %d/%d", attempt, maxStreamAttempts)
+				logger.Printf("model API: succeeded on attempt %d", attempt)
 			}
 			return calls, nil
 		}
@@ -187,16 +252,19 @@ func streamWithRetry(
 		if !modelErr.Retryable() {
 			return nil, err
 		}
-		if attempt == maxStreamAttempts {
+		limit, budget, delay := maxStreamAttempts, totalRetryBudget, backoffFor(attempt, modelErr.RetryAfter)
+		if modelErr.Class == ClassRateLimited {
+			limit, budget, delay = maxRateLimitAttempts, rateLimitBudget, rateLimitBackoffFor(attempt, modelErr.RetryAfter)
+		}
+		if attempt >= limit {
 			break
 		}
 
-		delay := backoffFor(attempt, modelErr.RetryAfter)
 		retryStall := (modelErr.stalled || modelErr.ranOut) && !stallRetried
 		if retryStall {
 			stallRetried = true
 		}
-		if time.Since(start)+delay > totalRetryBudget && !retryStall {
+		if time.Since(start)+delay > budget && !retryStall {
 			if logger != nil {
 				logger.Printf("model API: giving up after %s (retry budget); last error: %s", time.Since(start).Round(time.Millisecond), modelErr.Detail())
 			}
@@ -204,7 +272,10 @@ func streamWithRetry(
 		}
 		if logger != nil {
 			logger.Printf("model API: attempt %d/%d failed (%s), retrying in %s: %s",
-				attempt, maxStreamAttempts, modelErr.Class, delay.Round(time.Millisecond), modelErr.Detail())
+				attempt, limit, modelErr.Class, delay.Round(time.Millisecond), modelErr.Detail())
+		}
+		if notice, ok := ctx.Value(retryNoticeKey{}).(func(time.Duration)); ok && modelErr.Class == ClassRateLimited {
+			notice(delay)
 		}
 
 		select {

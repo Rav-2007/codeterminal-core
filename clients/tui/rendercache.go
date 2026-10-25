@@ -170,7 +170,7 @@ type transcriptCache struct {
 }
 
 // cachedBlock is one turn's rendered output beside the inputs it came from.
-// The three key fields are compared, never dereferenced for content.
+// The key fields are compared, never dereferenced for content.
 type cachedBlock struct {
 	role      turnRole
 	text      string
@@ -178,12 +178,15 @@ type cachedBlock struct {
 	// plain is turn.plainAnswer(): the same text is drawn differently as a
 	// command's output and as a model's markdown, so it is part of the key.
 	plain bool
-	out   string
+	// act is a tool call's parts (turn.act), which its line is drawn from in
+	// colour: the plain text alone cannot say where the target begins.
+	act activityView
+	out string
 }
 
 // matches reports whether this block was rendered from exactly this turn.
 func (b *cachedBlock) matches(t turn) bool {
-	return b.role == t.role && b.text == t.text && b.reasoning == t.reasoning && b.plain == t.plainAnswer()
+	return b.role == t.role && b.text == t.text && b.reasoning == t.reasoning && b.plain == t.plainAnswer() && b.act == t.activity()
 }
 
 // render returns the same bytes renderTranscript would, reusing the blocks of
@@ -209,14 +212,14 @@ func (c *transcriptCache) render(turns []turn, width int) string {
 	b.Grow(c.size() + 2*len(turns))
 	for i := range turns {
 		if i > 0 {
-			b.WriteString("\n\n")
+			b.WriteString(separatorBefore(turns, i))
 		}
 		if i < len(c.blocks) && c.blocks[i].matches(turns[i]) {
 			b.WriteString(c.blocks[i].out)
 			continue
 		}
-		out := renderTurnBlock(turns[i], width)
-		blk := cachedBlock{role: turns[i].role, text: turns[i].text, reasoning: turns[i].reasoning, plain: turns[i].plainAnswer(), out: out}
+		out := renderShownBlock(turns[i], width)
+		blk := cachedBlock{role: turns[i].role, text: turns[i].text, reasoning: turns[i].reasoning, plain: turns[i].plainAnswer(), act: turns[i].activity(), out: out}
 		if i < len(c.blocks) {
 			c.blocks[i] = blk
 		} else {

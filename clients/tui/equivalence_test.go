@@ -82,8 +82,15 @@ func randomTurn(rng *rand.Rand) turn {
 		return b.String()
 	}
 	t := turn{
-		role: []turnRole{roleUser, roleAssistant, roleSystem, roleSevered}[rng.Intn(4)],
+		role: []turnRole{roleUser, roleAssistant, roleSystem, roleSevered, roleActivity}[rng.Intn(5)],
 		text: build(),
+	}
+	// A tool call is drawn from its parts, and a run of them is stacked with no
+	// blank line (activityline.go): both the parts and the run are the cache's
+	// to get right.
+	if t.role == roleActivity {
+		v := activityView{state: activityState(rng.Intn(4)), verb: build(), target: build(), meta: build(), why: build()}
+		t.act, t.text = &v, v.plain()
 	}
 	if t.role == roleAssistant && rng.Intn(3) == 0 {
 		t.reasoning = build()

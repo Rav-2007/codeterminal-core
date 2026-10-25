@@ -678,7 +678,7 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /pr 31 log             # (TUI) why a pull request's CI failed, attached to your next question
 
 /help /mcp-server /explain /test /doc /security
-/review /plan /run /clear /compact /context /git /init /search /exit
+/review /plan /run /clear /compact /context /git /init /search /mouse /exit
 ```
 
 **Usage.** `/usage` answers from the provider's own bill, not an estimate. It shows
@@ -782,6 +782,23 @@ client is waiting for you — a prompt to type, a tool approval to answer — an
 grey while a turn is running. A terminal under 12 rows keeps the bare prompt
 and gives the rows to the answer.
 
+**Selecting and copying (TUI).** The terminal keeps the mouse, so text in the
+chat is selected and copied the way it is anywhere else in the terminal: drag
+across it, then press the terminal's copy key, `ctrl+shift+c` (`cmd+c` on a
+Mac). Nothing has to be installed for it. The other keys:
+
+- **↑ / ↓ and the mouse wheel** scroll the chat.
+- **`ctrl+↑` / `ctrl+↓`** (or `alt+↑` / `alt+↓`) go back through the prompts you
+  sent, as in a shell.
+- **`ctrl+shift+v`** (`cmd+v` on a Mac) pastes. `ctrl+v` pastes only where a
+  clipboard program is installed.
+- **`/mouse`** gives the mouse to the app instead: the wheel then scrolls the
+  chat in terminals that do not send it as ↑/↓, and selecting needs shift+drag.
+  `/mouse` again gives the mouse back to the terminal.
+
+`/help` lists the keys, and [ADR-001](ADR-001-mouse-capture.md) records why
+they are what they are.
+
 **The line under the prompt (TUI)** names the model and the provider all the
 time, and adds the session's tokens and cost once there are any:
 `z-ai/glm-5.3 · NVIDIA · 3.8K tokens · $0.0027`. It reads the daemon's own
@@ -807,7 +824,10 @@ terminal the name is cut, or left out, before the line is shortened.
   still the model after a restart, and `/model <name>` is remembered the same
   way. `/model clear` goes back to the model the daemon found. With a key from
   the environment there is no stored key to keep it beside, so the choice
-  lasts until the daemon stops — and the client says which you got.
+  lasts until the daemon stops — and the client says which you got. A new
+  key does not change it either: after `/connect`, the report says your
+  prompts still go to the model you picked, and names the model the key was
+  tested on.
 - **Nothing pasted into the provider list is shown.** A paste there is as
   likely as not the key, so it is not taken.
 
@@ -838,6 +858,44 @@ with a purpose -- it is sent to the model **once**, with your next question,
 marked as command output rather than as your words or its own, so "write a
 commit message for this" works without the file names in a repository being
 replayed as the model's voice on every turn after.
+
+**A tool call is one line (TUI).** In agent mode, each call the model makes is
+drawn as one line: what was done, to what, and how much went back to the model.
+
+```text
+● Read   clients/tui/chat.go · 17 KB
+● List   clients/tui · 2 KB
+○ Run    go test ./... …
+● Read   missing.txt · failed: no such file
+```
+
+- **The target is in blue:** the file, folder, command, search or address the call
+  acted on.
+- **The size is what went back to the model** after secrets were scrubbed and long
+  output was cut. In agent mode, that is what leaves the machine. A call that
+  took a second or more shows its time too.
+- **A hollow dot** means the call is still running.
+- **Red means it did not happen:** a call that failed is red, and so is one that
+  was not run because you declined it or it was not allowed (marked `✗`). Its
+  glyph, target and reason are red, so blue only ever means the call was done.
+- **Calls one after another are stacked** with no blank lines between them, and
+  the answer comes below the calls it reports on.
+- **An edit reads `Edit`, or `Write`** when it makes a new file. A tool from an
+  MCP server keeps its own name (`notes__search`).
+- **Each call stays on one row:** the reason is shortened first, then the target.
+
+**When the provider rate-limits.** A provider that answers "too many requests"
+(HTTP 429) is waited out rather than given up on.
+- **The waits:** up to five tries, waiting 5 seconds and doubling up to 30, with
+  the provider's `Retry-After` followed up to that, and about 75 seconds in all.
+  Other failures worth retrying get three quick tries, as before.
+- **What the TUI shows:** in an agent turn, the wait where "thinking" is,
+  counting down: `⏳ rate-limited — trying again in 5s`. Nothing of it stays in
+  the chat.
+- **What VS Code shows:** each wait as a step of the turn's work.
+- **If the provider still refuses:** the turn ends and says the rate limit is
+  why. A task stopped part-way keeps everything it did. `/model` can switch to
+  a model with more room.
 
 ---
 

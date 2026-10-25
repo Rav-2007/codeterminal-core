@@ -163,12 +163,14 @@ func runChat(workspace string, launch launchOptions) {
 		}
 	}
 
-	// Mouse capture ON: the wheel scrolls the transcript as mouse events, which
-	// leaves up/down free for prompt history. Selection is shift+drag, and the
-	// idle hint says so. See chatModel.mouseCaptured and docs/ADR-001.
+	// NO MOUSE CAPTURE (2026-10-25, the owner's choice; docs/ADR-001): the
+	// terminal keeps the mouse, so a plain drag selects and the terminal's copy
+	// key (ctrl+shift+c) copies, with nothing installed. The wheel arrives as
+	// up/down keys, which scroll the chat; prompt history is ctrl+up/down.
+	// /mouse turns capture on. chatModel.mouseCaptured starts false to match.
 	// Focus reports: coming back to this terminal from the editor is when the
 	// shared chat may have moved on (chatsync.go).
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus())
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithReportFocus())
 	// SIGHUP and SIGQUIT reach Bubble Tea's own shutdown through here; without
 	// it SIGHUP killed the process with the alternate screen still up. finish
 	// also re-raises a caught SIGQUIT, which is why it runs before the error

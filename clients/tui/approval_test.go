@@ -386,12 +386,12 @@ func TestTokensAfterAToolNoticeStayInTheAssistantTurn(t *testing.T) {
 	step(tokenMsg("It says HELLO."))
 
 	var assistant []string
-	var system []string
+	var system []string // the tool calls' lines: roleActivity since 2026-10-25
 	for _, tr := range m.turns {
 		switch tr.role {
 		case roleAssistant:
 			assistant = append(assistant, tr.text)
-		case roleSystem:
+		case roleActivity:
 			system = append(system, tr.text)
 		}
 	}

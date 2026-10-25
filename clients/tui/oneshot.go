@@ -216,29 +216,19 @@ func askOneShotApproval(req protocol.ToolApprovalRequest, reader *bufio.Reader, 
 
 // oneShotActivityLine narrates a tool step on stderr. Only phases a human
 // benefits from seeing: the approval prompt already told them the call was
-// requested and that they approved it.
+// requested and that they approved it. A call is said in the chat's words,
+// without the chat's colour -- "● Read clients/tui/chat.go · 17 KB"
+// (activityline.go) -- since the old "17747 bytes to the model in 0ms" was as
+// stale here as it was there.
 func oneShotActivityLine(a protocol.ToolActivity) string {
-	name := qualifiedActivityName(a)
-	switch a.Phase {
-	case protocol.ToolPhaseStep:
+	if a.Phase == protocol.ToolPhaseStep {
 		return a.Detail + " — " + a.Tool
-	case protocol.ToolPhaseRunning:
-		return "running " + name + "…"
-	case protocol.ToolPhaseSucceeded:
-		return fmt.Sprintf("%s — %d bytes to the model in %dms", name, a.ResultBytes, a.DurationMS)
-	case protocol.ToolPhaseFailed:
-		return name + " failed" + oneShotDetail(a.Detail)
-	case protocol.ToolPhaseDenied:
-		return name + " not run" + oneShotDetail(a.Detail)
 	}
-	return ""
-}
-
-func oneShotDetail(detail string) string {
-	if detail == "" {
+	v, ok := activityFor(a)
+	if !ok {
 		return ""
 	}
-	return ": " + detail
+	return v.plain()
 }
 
 // say writes one line of chrome to w, dropping the write error.

@@ -47,7 +47,7 @@ func TestLocalCommandOutputIsShownAndNeverSentToTheModel(t *testing.T) {
 	m.appendTurn(turn{role: roleAssistant, local: true, text: formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
 		Ok: true, Outcome: protocol.ConnectAccepted, MaskedKey: "...hBdC (70 characters)", InUse: true,
 		APIBase: "https://integrate.api.nvidia.com/v1", Model: "nvidia/some-model", ModelTested: true,
-	}})})
+	}}, "")})
 
 	history := buildHistory(m.turns)
 	if len(history) != 2 || history[0].Content != "a real question" || history[1].Content != "a real answer" {

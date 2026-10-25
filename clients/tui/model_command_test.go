@@ -235,21 +235,26 @@ func TestHandleModelCommand_UnreachableDaemonReportsAnError(t *testing.T) {
 
 // toolActivityLine is what the user watches while the agent works. Every phase
 // must render, and the succeeded case must state the byte count — a
-// privacy-positioned product showing what left the machine.
+// privacy-positioned product showing what left the machine. Since 2026-10-25 it
+// says what was done to what ("Read notes/todo.txt"), and the time only from a
+// second up: "in 0ms" told nobody anything.
 func TestToolActivityLine_RendersEveryPhase(t *testing.T) {
-	base := protocol.ToolActivity{Server: "builtin", Tool: "read_file"}
+	base := protocol.ToolActivity{Server: "builtin", Tool: "read_file", Target: "notes/todo.txt"}
 
 	running := base
 	running.Phase = protocol.ToolPhaseRunning
-	if got := toolActivityLine(running); !strings.Contains(got, "running") || !strings.Contains(got, "builtin__read_file") {
+	if got := toolActivityLine(running); got != "○ Read   notes/todo.txt …" {
 		t.Errorf("running = %q", got)
 	}
 
 	ok := base
 	ok.Phase, ok.ResultBytes, ok.DurationMS = protocol.ToolPhaseSucceeded, 1234, 56
-	got := toolActivityLine(ok)
-	if !strings.Contains(got, "1234 bytes") || !strings.Contains(got, "56ms") {
-		t.Errorf("succeeded = %q, want the bytes-to-the-model and duration", got)
+	if got := toolActivityLine(ok); got != "● Read   notes/todo.txt · 1 KB" {
+		t.Errorf("succeeded = %q, want the verb, the target and the bytes to the model", got)
+	}
+	ok.DurationMS = 2500
+	if got := toolActivityLine(ok); !strings.HasSuffix(got, "· 1 KB · 2.5s") {
+		t.Errorf("a call that took 2.5s = %q, want its time shown", got)
 	}
 
 	failed := base

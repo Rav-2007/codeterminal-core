@@ -64,6 +64,9 @@ type chatExtras struct {
 	// githubTokenEntry says the masked box is taking a GitHub token, not a
 	// provider key (github.go). Cleared by endConnect, with the box.
 	githubTokenEntry bool
+	// rateWait is a rate-limit wait in progress: drawn while it lasts, never
+	// left in the chat (ratewait.go, 2026-10-25).
+	rateWait rateWaitState
 }
 
 // connInfo is what the daemon last said it is sending to.
@@ -205,6 +208,8 @@ func (m chatModel) handleSideAnswer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRulesResult(msg)
 	case githubResultMsg:
 		return m.handleGitHubResult(msg)
+	case rateWaitTickMsg: // the countdown of a rate-limit wait (ratewait.go)
+		return m.handleRateWaitTick(msg)
 	}
 	return m, nil
 }
@@ -237,13 +242,22 @@ func (m chatModel) statusRows() int {
 // statusModel is the model prompts go to, by the id a user recognises: this
 // client's own choice when it made one, else the daemon's.
 func (m chatModel) statusModel() string {
-	if m.preferredTier != "" {
-		return firstNonEmptyText(m.preferredSlug, m.preferredTier)
+	if chosen := m.chosenModel(); chosen != "" {
+		return chosen
 	}
 	if !m.conn.inForceKnown() {
 		return ""
 	}
 	return firstNonEmptyText(m.conn.resp.ModelSlug, m.conn.resp.Model)
+}
+
+// chosenModel is the model picked with /model, by the id the user knows; ""
+// when none was, and the daemon's default applies.
+func (m chatModel) chosenModel() string {
+	if m.preferredTier == "" {
+		return ""
+	}
+	return firstNonEmptyText(m.preferredSlug, m.preferredTier)
 }
 
 func firstNonEmptyText(values ...string) string {

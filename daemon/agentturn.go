@@ -178,6 +178,9 @@ func (s *Server) runAgentTurn(
 		onReasoning func(string),
 		onDegraded func(protocol.Degradation),
 	) (agentResult, error) {
+		// A rate limit is waited out, up to a minute or so (retry.go): the user
+		// is told each time, or a waiting task would look like a hung one.
+		ctx := withRetryNotice(ctx, func(wait time.Duration) { onActivity(rateLimitWait(wait)) })
 		if task != nil {
 			// A long task runs its own segments; a pipeline does not apply.
 			if len(phases) > 0 {

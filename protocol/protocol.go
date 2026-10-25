@@ -968,12 +968,10 @@ const (
 
 // ToolActivity narrates one step of an agent turn so a user watching a loop
 // can see what it is doing rather than a spinner. Observational only: it
-// reports a decision already made, in the same spirit as GroundingInfo, and
-// never asks for anything.
-//
-// Detail follows the same disclosure discipline as Degradation.Detail -- it
-// names what happened and what it means, never a path, host, or raw error
-// string. Those stay in the daemon log.
+// reports a decision already made, as GroundingInfo does, and never asks for
+// anything. Detail follows Degradation.Detail's disclosure discipline: what
+// happened and what it means, never a path, host, or raw error string -- those
+// stay in the daemon log.
 type ToolActivity struct {
 	CallID     string `json:"call_id"`
 	Server     string `json:"server"`
@@ -981,11 +979,13 @@ type ToolActivity struct {
 	Phase      string `json:"phase"`
 	Detail     string `json:"detail,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
-	// ResultBytes is the size of the tool's output AFTER scrubbing and
-	// truncation -- i.e. the number of bytes that actually go back to the
-	// model. Reported because in agent mode this is the quantity that leaves
-	// the machine, and a user who cares about that deserves to watch it.
+	// ResultBytes is what went back to the model: the bytes that leave the machine.
 	ResultBytes int `json:"result_bytes,omitempty"`
+	// Target is what a built-in tool acted on (path, command, query or URL), from
+	// the model's arguments: the user's work told to the user, unlike Detail.
+	Target string `json:"target,omitempty"`
+	// Creates says the call makes a new file at Target (an edit with no search).
+	Creates bool `json:"creates,omitempty"`
 }
 
 // ToolApprovalResponse is the client's answer to a ToolApprovalRequest, sent

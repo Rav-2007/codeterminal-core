@@ -167,7 +167,10 @@ MOCHIII_API_KEY=mochi_fake \
 daemon_pid=$!
 sleep 2
 
-if [ ! -f "$XDG_RUNTIME_DIR/mochiii/daemon.lock" ]; then
+# The workspace's own lockfile, daemon-<tag>.lock (protocol.LockPathFor). This
+# tested daemon.lock, the per-user name nothing has written since the lockfile
+# became per workspace, so the bench stopped here on a daemon that was up.
+if ! ls "$XDG_RUNTIME_DIR"/mochiii/daemon-*.lock >/dev/null 2>&1; then
   echo "daemon did not come up; see $work/daemon.log" >&2
   tail -20 "$work/daemon.log" >&2
   exit 1
@@ -255,11 +258,13 @@ python3 - "$work/turns.json" "$TURNS" "$TOOL_CALLS" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 turns, expected_calls = int(sys.argv[2]), int(sys.argv[3])
-print(f"{'turn':>4} {'ttft_ms':>8} {'wall_ms':>8} {'machine':>8} {'iters':>6} {'tools':>6} {'appr':>5} {'bytes':>7}  note")
+# Model calls as the daemon counted them; "unknown" when it sent no usage.
+calls = lambda r: "unknown" if r.get("model_calls") is None else r["model_calls"]
+print(f"{'turn':>4} {'ttft_ms':>8} {'wall_ms':>8} {'machine':>8} {'calls':>7} {'tools':>6} {'appr':>5} {'bytes':>7}  note")
 for r in d["turns"]:
     note = r.get("error") or r.get("incomplete") or ""
     print(f"{r['turn']:>4} {r['ttft_ms']:>8} {r['wall_ms']:>8} {r['wall_ms']-r['waited_ms']:>8} "
-          f"{r['iterations']:>6} {r['tool_calls']:>6} {r['approvals']:>5} {r['result_bytes']:>7}  {note}")
+          f"{calls(r):>7} {r['tool_calls']:>6} {r['approvals']:>5} {r['result_bytes']:>7}  {note}")
 s = d["summary"]
 print()
 print(f"p50 wall {s['p50_wall_ms']}ms   p95 wall {s['p95_wall_ms']}ms   "

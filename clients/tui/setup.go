@@ -574,7 +574,7 @@ func fetchTiersCmd(clientName string) tea.Cmd {
 // the record the user finds when the setup closes -- and then decides which
 // screen comes next.
 func (m chatModel) handleSetupConnectResult(msg connectResultMsg) (tea.Model, tea.Cmd) {
-	m.appendTurn(turn{role: roleAssistant, local: true, text: formatConnectResult(msg)})
+	m.appendTurn(turn{role: roleAssistant, local: true, text: formatConnectResult(msg, "")})
 	r := msg.resp
 
 	switch {
