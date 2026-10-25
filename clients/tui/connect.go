@@ -284,7 +284,7 @@ func (m chatModel) handleConnectResult(msg connectResultMsg) (tea.Model, tea.Cmd
 	if m.setup.step == setupChecking {
 		return m.handleSetupConnectResult(msg)
 	}
-	m.appendTurn(turn{role: roleAssistant, local: true, text: formatConnectResult(msg)})
+	m.appendTurn(turn{role: roleAssistant, local: true, text: formatConnectResult(msg, m.chosenModel())})
 	m.resizeViewport()
 	m.refreshViewport()
 
@@ -317,7 +317,7 @@ func (m chatModel) handleConnectResult(msg connectResultMsg) (tea.Model, tea.Cmd
 // The four outcomes are worded so that no two can be mistaken for each other --
 // in particular "stored and proven" and "stored but unproven" never share a
 // phrase, because the whole value of verifying is lost if the report blurs them.
-func formatConnectResult(msg connectResultMsg) string {
+func formatConnectResult(msg connectResultMsg, chosen string) string {
 	if msg.err != nil {
 		return "connect failed: " + msg.err.Error()
 	}
@@ -343,7 +343,7 @@ func formatConnectResult(msg connectResultMsg) string {
 		} else {
 			fmt.Fprintf(&b, "Key %s is stored, but it is NOT what this daemon is sending.", r.MaskedKey)
 		}
-		b.WriteString(connectModelLine(r))
+		b.WriteString(modelLineFor(r, chosen)) // connectchosen.go
 	case protocol.ConnectUnverified:
 		fmt.Fprintf(&b, "Saved %s for %s, but NOT verified: %s\n", r.MaskedKey, providerLabel(r.APIBase), sanitizeText(r.Detail))
 		if r.InUse {
@@ -351,7 +351,7 @@ func formatConnectResult(msg connectResultMsg) string {
 		} else {
 			b.WriteString("It is stored, but it is NOT what this daemon is sending.")
 		}
-		b.WriteString(connectModelLine(r))
+		b.WriteString(modelLineFor(r, chosen)) // connectchosen.go
 	case protocol.ConnectNeedsProvider:
 		// NOTHING WAS SENT, AND THAT IS THE FIRST THING SAID. The daemon will not
 		// find out whose key this is by handing it to each provider in turn, so

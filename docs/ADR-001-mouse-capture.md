@@ -1,6 +1,6 @@
 # ADR-001 — Mouse capture in the terminal client
 
-**Status:** accepted (toggle shipped); **default decided 2026-09-27: capture ON, with up/down as prompt history** (see "Default decided" and "Revised the same day" below).
+**Status:** accepted (toggle shipped); default decided 2026-09-27 (capture ON, up/down as prompt history), **revised 2026-10-25: capture OFF from the start, up/down scroll, prompt history on ctrl+up/down** (see "Revised 2026-10-25").
 **Date:** 2026-09-04.
 **Scope:** `clients/tui` only. The VS Code client is a webview and has no such trade.
 
@@ -89,6 +89,60 @@ wheel with shift+drag select / history + plain select with no wheel / history on
 ctrl+up/down), the user chose the first. Capture is ON again; up/down walk the
 prompt history; the idle hint now names "shift+drag to select", which is the
 discoverability gap this ADR was about in the first place.
+
+## Revised 2026-10-25: the terminal keeps the mouse
+
+The owner, from GNOME Terminal: "i can't do anything copy in the agent
+workspace. only i can paste something in the prompt bar." The hint said
+"shift+drag to select", and it was not enough.
+
+**Tried first, and withdrawn the same day:** the chat selected text itself. A
+plain drag highlighted text and copied it on release. It needed a clipboard
+program to reach the system clipboard (`wl-copy`, `xclip` or `xsel`), and on
+the owner's machine there was none. VTE, GNOME Terminal's engine, also ignores
+OSC 52, the escape sequence that lets a program set the clipboard through the
+terminal. So the app told the user to install `wl-clipboard`. The owner's
+answer: "It should copy when the user presses ctrl+shift+c, no new
+clipboards."
+
+That rules out any copy the program makes itself. ctrl+shift+c copies only what
+the terminal has selected, and a plain drag is a terminal selection only while
+the program has not asked for mouse reports. With capture off, VTE sends each
+wheel notch as up/down keys, which collides with up/down as prompt history.
+These were the options offered:
+
+1. **Chosen:** the wheel scrolls; up/down scroll too; prompt history moves to
+   ctrl+up/down.
+2. Keep capture on and copy with shift+drag, then ctrl+shift+c (today's keys).
+3. Up/down stay as history, and the wheel stops scrolling (pgup/pgdn instead).
+4. Rebuild the chat into the terminal's own scrollback, as Claude Code does.
+   Drag, copy, wheel and up/down history would then all be native, and a long
+   answer could be selected in one go. That is a rebuild of several days and
+   was not chosen now.
+
+**What changed:**
+- `main.go` starts without `tea.WithMouseCellMotion`, and
+  `chatModel.mouseCaptured` starts false to match.
+  `TestTheProgramStartsWithoutMouseCapture` reads `main.go` and fails if the
+  two disagree.
+- up/down scroll the chat in every state, mid-turn included. The slash popup is
+  the exception: there they still walk the highlighted command.
+- ctrl+up/down, and alt+up/down, walk prompt history. alt is there because
+  macOS gives ctrl+up/down to Mission Control. The alt keys have not been tried
+  on a Mac.
+- The idle hint reads `enter send · ctrl+↑↓ history · ctrl+shift+c copy ·
+  ctrl+n new · ctrl+c quit`, with `cmd+c` on a Mac (`keyhints.go`).
+- `/mouse` turns capture on, for a terminal whose wheel does nothing in the
+  alternate screen.
+- ctrl+v with no clipboard program now does nothing and adds no note. The note
+  added on 2026-09-27 named clipboard programs to install. The owner's answer,
+  the same day as the rest: "the mark should not be visible anywhere". `/help`
+  lists the terminal's own paste key (ctrl+shift+v; cmd+v on a Mac), which
+  always works because it arrives as typed text.
+
+**What this does not do:** the alternate screen has no scrollback, so a
+selection covers only what is on screen. A long answer is copied a screen at a
+time. Option 4 is the fix for that.
 
 ## What would change this decision
 

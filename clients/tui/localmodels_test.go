@@ -442,7 +442,7 @@ func TestACloudProviderStillConnectsOnce(t *testing.T) {
 
 func TestTheLocalConnectMessageNamesNoKeyAndNoTest(t *testing.T) {
 	got := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{Ok: true, Outcome: protocol.ConnectAccepted,
-		InUse: true, APIBase: "http://127.0.0.1:11434/v1", Model: "qwen2.5-coder:3b", ModelCount: 1}})
+		InUse: true, APIBase: "http://127.0.0.1:11434/v1", Model: "qwen2.5-coder:3b", ModelCount: 1}}, "")
 	for _, want := range []string{"needs no key", "in use now", "Prompts go to qwen2.5-coder:3b", "1 model on this server"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the message does not say %q: %q", want, got)

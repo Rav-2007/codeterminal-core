@@ -710,7 +710,7 @@ func (s *Server) runAgentLoop(
 			}
 			s.logger.Printf("agent: stopping at iteration %d after a provider failure, keeping %d byte(s) of answer: %v",
 				turn.iteration, full.Len(), asModelError(err).Detail())
-			detail := "this task stopped part-way because the model provider failed — what you " +
+			detail := "this task stopped part-way because " + stoppedBecause(err) + " — what you " +
 				"see above is everything that was done, and it is yours to keep. Ask again to continue."
 			// Refused as too large, the provider did not fail: it said no, and
 			// how far over. "Ask again" would meet the same no.
@@ -1166,7 +1166,7 @@ func (s *Server) dispatchToolCall(
 	audit.Source, audit.DenyCause = decision.source, decision.cause
 	audit.WaitedMS = decision.waited.Milliseconds()
 	if decision.tool.Server != "" {
-		activity.Server, activity.Tool = decision.tool.Server, decision.tool.Name
+		activity = withCallTarget(activity, decision.tool.Server, decision.tool.Name, arguments) // activitytarget.go
 	}
 
 	if !decision.run {

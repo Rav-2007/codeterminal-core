@@ -5,6 +5,56 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## Unreleased
+
+### Copy from the terminal app with your terminal's own keys
+
+**What changed.** The terminal app no longer takes over the mouse. Drag across
+the chat to select text, then press your terminal's copy key: ctrl+shift+c, or
+cmd+c on a Mac. Nothing extra has to be installed. ↑/↓ and the mouse wheel
+scroll the chat, and the prompts you sent before moved to ctrl+↑/↓ (alt+↑/↓
+too). `/mouse` hands the mouse to the app, and `/mouse` again takes it back.
+
+**How to tell.** The line under the prompt says `ctrl+shift+c copy`, and
+`/help` lists the keys.
+
+### A tool call is one short line, red when it did not happen
+
+**What changed.** A call the agent makes used to be drawn as
+`⚙ builtin__read_file — 17747 bytes to the model in 0ms`, with a blank line
+under each. Now it reads `● Read   clients/tui/chat.go · 17 KB`: what was
+done, to what (in blue), and how much went back to the model.
+- **A call that failed or was not run is red**, with its reason cut to fit one
+  line: `● Read   missing.txt · failed: no such file`.
+- **A turn's calls are stacked** without blank lines, and an edit that makes a
+  new file reads `Write`.
+- **The answer comes below** the calls it reports on.
+
+### A rate limit is waited out
+
+**What changed.** A provider that answered "too many requests" (HTTP 429)
+stopped a task within about two seconds, with "the model provider failed". It
+is now waited out: up to five tries over about 75 seconds, following the
+provider's `Retry-After`. A task the provider still refuses says the rate limit
+is why.
+
+**How to tell.** While Mochiii waits, the terminal app shows
+`⏳ rate-limited — trying again in 5s` where "thinking" is, counting down, and
+leaves nothing in the chat.
+
+### `/connect` names the model your prompts go to
+
+**What changed.** After you connected a new key, the report said prompts would
+go to that key's default model, while they still went to the model you had
+picked with `/model`. It now names your pick, and the model the key was tested
+on.
+
+### A request too large to send says so correctly
+
+**What changed.** A request over your plan's token limit, with nothing in it
+that could be left out, could be reported as "6,344 of them could not be left
+out" instead of "none of it could be left out".
+
 ## v1.4.0 — 2026-10-24
 
 1.3.0 and 1.3.1 were not published on their own, so 1.4.0 brings their changes

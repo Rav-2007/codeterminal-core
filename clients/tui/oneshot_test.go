@@ -179,7 +179,7 @@ func TestOneShotActivityLine(t *testing.T) {
 	act := protocol.ToolActivity{
 		Server: "srv", Tool: "tool", Phase: protocol.ToolPhaseRunning,
 	}
-	if line := oneShotActivityLine(act); !strings.Contains(line, "running srv__tool") {
+	if line := oneShotActivityLine(act); line != "○ srv__tool …" {
 		t.Errorf("unexpected running line: %s", line)
 	}
 

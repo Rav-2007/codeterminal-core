@@ -173,7 +173,7 @@ func TestConnectResultWordsEachOutcomeDistinctly(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatConnectResult(connectResultMsg{resp: tc.resp})
+			got := formatConnectResult(connectResultMsg{resp: tc.resp}, "")
 			for _, w := range tc.want {
 				if !strings.Contains(got, w) {
 					t.Errorf("result does not say %q:\n%s", w, got)
@@ -194,7 +194,7 @@ func TestConnectResultSaysWhenTheEnvironmentOverrides(t *testing.T) {
 	got := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
 		Ok: true, Outcome: protocol.ConnectAccepted, Detail: "accepted",
 		MaskedKey: "...CRET", EnvOverride: true,
-	}})
+	}}, "")
 	for _, want := range []string{"MOCHIII_API_KEY", "precedence", "NOT what it is sending"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the override note does not mention %q:\n%s", want, got)
@@ -204,7 +204,7 @@ func TestConnectResultSaysWhenTheEnvironmentOverrides(t *testing.T) {
 
 // A transport failure is reported as one, not swallowed into a cheerful result.
 func TestConnectResultReportsATransportFailure(t *testing.T) {
-	got := formatConnectResult(connectResultMsg{err: errors.New("daemon not found")})
+	got := formatConnectResult(connectResultMsg{err: errors.New("daemon not found")}, "")
 	if !strings.Contains(got, "connect failed") || !strings.Contains(got, "daemon not found") {
 		t.Errorf("a transport failure was not reported plainly: %s", got)
 	}
@@ -415,7 +415,7 @@ func TestTheRenderNeverClaimsAKeyIsInUseWhenTheDaemonSaysItIsNot(t *testing.T) {
 		}
 	}
 
-	overridden := formatConnectResult(connectResultMsg{resp: accepted(false, true)})
+	overridden := formatConnectResult(connectResultMsg{resp: accepted(false, true)}, "")
 	if strings.Contains(overridden, "is in use now") {
 		t.Errorf("claimed the key is in use while the daemon reported in_use=false:\n%s", overridden)
 	}
@@ -424,7 +424,7 @@ func TestTheRenderNeverClaimsAKeyIsInUseWhenTheDaemonSaysItIsNot(t *testing.T) {
 	}
 
 	// The ordinary case must still read as plainly as it did before.
-	inUse := formatConnectResult(connectResultMsg{resp: accepted(true, false)})
+	inUse := formatConnectResult(connectResultMsg{resp: accepted(true, false)}, "")
 	if !strings.Contains(inUse, "is in use now — no restart needed") {
 		t.Errorf("the normal success message lost its point:\n%s", inUse)
 	}
@@ -434,7 +434,7 @@ func TestTheRenderNeverClaimsAKeyIsInUseWhenTheDaemonSaysItIsNot(t *testing.T) {
 		Ok: true, Outcome: protocol.ConnectUnverified,
 		Detail: "the provider did not answer", MaskedKey: "...ijkl (24 characters)",
 		InUse: false, EnvOverride: true,
-	}})
+	}}, "")
 	if strings.Contains(unverified, "It is in use now") {
 		t.Errorf("unverified claimed in-use against in_use=false:\n%s", unverified)
 	}
@@ -605,7 +605,7 @@ func TestConnectSaysWhichProvider(t *testing.T) {
 	got := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
 		Ok: true, Outcome: protocol.ConnectAccepted, APIBase: "https://openrouter.ai/api/v1",
 		Detail: "the provider accepted it: credit limit 1.00", MaskedKey: "...901c (73 characters)", InUse: true,
-	}})
+	}}, "")
 	if !strings.Contains(got, "Connected to OpenRouter (https://openrouter.ai/api/v1).") {
 		t.Errorf("connect result does not name the provider:\n%s", got)
 	}
@@ -630,7 +630,7 @@ func TestConnectShowNamesTheProvider(t *testing.T) {
 	got := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
 		Ok: true, Outcome: protocol.ConnectShown, APIBase: "https://openrouter.ai/api/v1",
 		MaskedKey: "...901c (73 characters)", Detail: "stored, and the provider accepted it when it was saved",
-	}})
+	}}, "")
 	if !strings.Contains(got, "Connected to OpenRouter (https://openrouter.ai/api/v1) with key ...901c") {
 		t.Errorf("/connect show does not name the provider:\n%s", got)
 	}
@@ -651,9 +651,9 @@ func TestAKeyTypedAfterConnectIsNotRecalled(t *testing.T) {
 			t.Fatal("the refused key was written into the transcript")
 		}
 	}
-	m = press(m, tea.KeyUp)
+	m = press(m, tea.KeyCtrlUp) // recall: ctrl+up since 2026-10-25
 	if strings.Contains(m.input.Value(), tuiTestKey) {
-		t.Errorf("up recalled the refused key in clear: %q", m.input.Value())
+		t.Errorf("ctrl+up recalled the refused key in clear: %q", m.input.Value())
 	}
 
 	for raw, want := range map[string]bool{
@@ -677,7 +677,7 @@ func TestARefusedKeySaysWhoRefusedItAndHowToUseAnotherProvider(t *testing.T) {
 	got := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
 		Ok: false, Outcome: protocol.ConnectRejected, APIBase: "https://openrouter.ai/api/v1",
 		Detail: "the provider refused it (HTTP 401)",
-	}})
+	}}, "")
 	for _, want := range []string{
 		"refused by OpenRouter (https://openrouter.ai/api/v1)",
 		"HTTP 401",
@@ -814,7 +814,7 @@ func TestConnectResultShowsTheDaemonsNotes(t *testing.T) {
 		Ok: true, Outcome: protocol.ConnectUnverified, Detail: "nothing proves it", MaskedKey: "...CRET",
 		APIBase: "https://integrate.api.nvidia.com/v1", InUse: true,
 		Notes: []string{"model names differ", "the environment wins at the next start"},
-	}})
+	}}, "")
 	for _, want := range []string{"NOTE: model names differ", "NOTE: the environment wins at the next start"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the result does not show %q:\n%s", want, got)
@@ -901,7 +901,7 @@ func TestAKeyThatCouldBeSeveralProvidersIsAskedAbout(t *testing.T) {
 		Ok: false, Outcome: protocol.ConnectNeedsProvider, Candidates: []string{"openai", "deepseek"},
 		Detail: `keys that start with "sk-" are issued by OpenAI, DeepSeek, and nothing in this one says which`,
 	}
-	got := formatConnectResult(connectResultMsg{resp: resp})
+	got := formatConnectResult(connectResultMsg{resp: resp}, "")
 	for _, want := range []string{"sent nowhere", "nothing was stored", "/connect openai", "/connect deepseek", "paste it again"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the answer does not say %q:\n%s", want, got)
@@ -935,7 +935,7 @@ func TestConnectSaysReadyOnlyForAModelThatAnswered(t *testing.T) {
 
 	tested := base
 	tested.ModelTested = true
-	got := formatConnectResult(connectResultMsg{resp: tested})
+	got := formatConnectResult(connectResultMsg{resp: tested}, "")
 	for _, want := range []string{"Connected to NVIDIA (https://integrate.api.nvidia.com/v1).", "in use now",
 		"Ready — prompts go to deepseek-ai/deepseek-v4.1-flash", "53 models", "/model"} {
 		if !strings.Contains(got, want) {
@@ -945,7 +945,7 @@ func TestConnectSaysReadyOnlyForAModelThatAnswered(t *testing.T) {
 
 	untested := base
 	untested.Outcome, untested.Detail = protocol.ConnectUnverified, "NVIDIA recognised the key but would not run a test request"
-	got = formatConnectResult(connectResultMsg{resp: untested})
+	got = formatConnectResult(connectResultMsg{resp: untested}, "")
 	if strings.Contains(got, "Ready") {
 		t.Errorf("an untested model is called ready:\n%s", got)
 	}
@@ -959,7 +959,57 @@ func TestConnectSaysReadyOnlyForAModelThatAnswered(t *testing.T) {
 	// line is simply absent rather than naming nothing.
 	plain := base
 	plain.Model, plain.ModelCount = "", 0
-	if got := formatConnectResult(connectResultMsg{resp: plain}); strings.Contains(got, "prompts go to") {
+	if got := formatConnectResult(connectResultMsg{resp: plain}, ""); strings.Contains(got, "prompts go to") {
 		t.Errorf("a connect that chose no model talks about one:\n%s", got)
+	}
+}
+
+// THE MODEL YOU CHOSE OUTRANKS THE KEY'S DEFAULT (2026-10-25). After a new key
+// the daemon goes on routing to the /model pick, so the report must say that and
+// not "prompts go to <the key's default>" -- which the owner read while every
+// prompt went to the model under the prompt line.
+func TestTheConnectReportNamesTheModelYouChose(t *testing.T) {
+	resp := protocol.ConnectResponse{
+		Outcome: protocol.ConnectAccepted, InUse: true, APIBase: "https://integrate.api.nvidia.com/v1",
+		MaskedKey: "...phNc", Model: "minimaxai/minimax-m3.1-flash", ModelTested: true, ModelCount: 42,
+	}
+	got := formatConnectResult(connectResultMsg{resp: resp}, "nvidia/nemotron-3-ultra-550b-a55b")
+	if strings.Contains(got, "prompts go to minimaxai") {
+		t.Errorf("the report says prompts go to the key's default though a model was chosen:\n%s", got)
+	}
+	for _, want := range []string{
+		"Prompts still go to nvidia/nemotron-3-ultra-550b-a55b, the model you chose",
+		"answered a test request on minimaxai/minimax-m3.1-flash", "42 models",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the report lacks %q:\n%s", want, got)
+		}
+	}
+	if plain := formatConnectResult(connectResultMsg{resp: resp}, ""); !strings.Contains(plain, "Ready — prompts go to minimaxai/minimax-m3.1-flash") {
+		t.Errorf("with no model chosen the report changed:\n%s", plain)
+	}
+
+	// And through the handler, which is where the choice is read from.
+	m := newTestModel()
+	m.preferredTier, m.preferredSlug = "nemotron", "nvidia/nemotron-3-ultra-550b-a55b"
+	updated, _ := m.Update(connectResultMsg{resp: resp})
+	m = updated.(chatModel)
+	if last := m.turns[len(m.turns)-1].text; !strings.Contains(last, "Prompts still go to nvidia/nemotron-3-ultra-550b-a55b") {
+		t.Errorf("the shown report ignores the /model choice:\n%s", last)
+	}
+}
+
+// The report is given the model in force, not only formatted with one: a
+// /model pick made before /connect reaches the line the user reads.
+func TestAConnectAfterAModelPickNamesThePick(t *testing.T) {
+	m := newTestChatModel(t)
+	m.preferredTier, m.preferredSlug = "nemotron_ultra", "nvidia/nemotron-3-ultra-550b-a55b"
+	out, _ := m.handleConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
+		Ok: true, Outcome: protocol.ConnectAccepted, InUse: true, MaskedKey: "...phNc",
+		Model: "minimaxai/minimax-m3.1-flash", ModelTested: true, ModelCount: 42,
+	}})
+	got := out.(chatModel)
+	if last := got.turns[len(got.turns)-1].text; !strings.Contains(last, "Prompts still go to nvidia/nemotron-3-ultra-550b-a55b") {
+		t.Errorf("the report does not name the model picked with /model:\n%s", last)
 	}
 }

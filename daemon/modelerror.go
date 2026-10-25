@@ -61,7 +61,7 @@ const (
 // deployment — the classification is derived from upstream detail, it does not
 // carry it.
 var clientMessages = map[ModelErrorClass]string{
-	ClassRateLimited:         "the model provider is rate-limiting requests right now — wait a few seconds and try again",
+	ClassRateLimited:         "the model provider is still rate-limiting requests after about a minute of retrying — wait a minute or two and try again",
 	ClassQuotaExceeded:       "your credit or spending limit is used up — top it up or raise the limit with your provider, or connect another key with /connect; every request will fail until then",
 	ClassContextTooLarge:     "this conversation is too large for the model, or for your plan's per-request limit — /compact it, start a new chat, or shorten the request",
 	ClassAuth:                "the provider rejected the API key — connect a working one with /connect, or check the key this daemon was started with",

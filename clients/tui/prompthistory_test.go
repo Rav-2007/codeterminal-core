@@ -13,43 +13,45 @@ func press(m chatModel, k tea.KeyType) chatModel {
 	return updated.(chatModel)
 }
 
-// The reported request: up shows the last prompt, and down moves forward.
-func TestUpAndDownWalkPreviousPrompts(t *testing.T) {
+// The reported request: a key shows the last prompt, and its pair moves
+// forward -- ctrl+up and ctrl+down since 2026-10-25, when up and down became the
+// wheel's (handleKey).
+func TestCtrlUpAndDownWalkPreviousPrompts(t *testing.T) {
 	m := newTestModel()
 	m.rememberPrompt("first question")
 	m.rememberPrompt("second question")
 	m = typeText(m, "half-typ")
 
-	m = press(m, tea.KeyUp)
+	m = press(m, tea.KeyCtrlUp)
 	if got := m.input.Value(); got != "second question" {
-		t.Fatalf("up: input = %q, want the last prompt", got)
+		t.Fatalf("ctrl+up: input = %q, want the last prompt", got)
 	}
-	m = press(m, tea.KeyUp)
+	m = press(m, tea.KeyCtrlUp)
 	if got := m.input.Value(); got != "first question" {
-		t.Fatalf("up again: input = %q, want the one before", got)
+		t.Fatalf("ctrl+up again: input = %q, want the one before", got)
 	}
-	m = press(m, tea.KeyUp) // already the oldest: stays
+	m = press(m, tea.KeyCtrlUp) // already the oldest: stays
 	if got := m.input.Value(); got != "first question" {
-		t.Errorf("up at the oldest: input = %q, want it to stay", got)
+		t.Errorf("ctrl+up at the oldest: input = %q, want it to stay", got)
 	}
-	m = press(m, tea.KeyDown)
+	m = press(m, tea.KeyCtrlDown)
 	if got := m.input.Value(); got != "second question" {
-		t.Errorf("down: input = %q, want the next prompt", got)
+		t.Errorf("ctrl+down: input = %q, want the next prompt", got)
 	}
-	m = press(m, tea.KeyDown)
+	m = press(m, tea.KeyCtrlDown)
 	if got := m.input.Value(); got != "half-typ" {
-		t.Errorf("down past the newest: input = %q, want the draft back", got)
+		t.Errorf("ctrl+down past the newest: input = %q, want the draft back", got)
 	}
 }
 
-// A recalled slash command opens the popup; up must keep going back through
-// history rather than start walking the popup.
+// A recalled slash command opens the popup; ctrl+up must keep going back
+// through history rather than start walking the popup.
 func TestHistoryIsNotHijackedByARecalledSlashCommand(t *testing.T) {
 	m := newTestModel()
 	m.rememberPrompt("explain retry.go")
 	m.rememberPrompt("/clear")
-	m = press(m, tea.KeyUp)
-	m = press(m, tea.KeyUp)
+	m = press(m, tea.KeyCtrlUp)
+	m = press(m, tea.KeyCtrlUp)
 	if got := m.input.Value(); got != "explain retry.go" {
 		t.Errorf("input = %q, want the prompt before /clear", got)
 	}
@@ -62,9 +64,9 @@ func TestHistoryIsSeededFromTheSavedConversation(t *testing.T) {
 		{Role: "user", Content: "create a folder named tester"}, {Role: "assistant", Content: "done"},
 	})
 	m.state = stateIdle
-	m = press(m, tea.KeyUp)
+	m = press(m, tea.KeyCtrlUp)
 	if got := m.input.Value(); got != "create a folder named tester" {
-		t.Errorf("up after restart: input = %q, want the last saved prompt", got)
+		t.Errorf("ctrl+up after restart: input = %q, want the last saved prompt", got)
 	}
 }
 
@@ -77,5 +79,23 @@ func TestSubmittedPromptsAreRemembered(t *testing.T) {
 	}
 	if len(m.promptHistory) != 1 || m.promptHistory[0] != "/help" {
 		t.Errorf("history = %q, want one /help", m.promptHistory)
+	}
+}
+
+// alt+up and alt+down recall too: a Mac gives ctrl+up and ctrl+down to Mission
+// Control, so there those never arrive.
+func TestAltUpAndDownWalkPreviousPromptsToo(t *testing.T) {
+	m := newTestModel()
+	m.rememberPrompt("first question")
+	m.rememberPrompt("second question")
+	u, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+	m = u.(chatModel)
+	if got := m.input.Value(); got != "second question" {
+		t.Fatalf("alt+up: input = %q, want the last prompt", got)
+	}
+	u, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+	m = u.(chatModel)
+	if got := m.input.Value(); got != "" {
+		t.Errorf("alt+down past the newest: input = %q, want the empty draft back", got)
 	}
 }

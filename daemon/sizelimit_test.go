@@ -296,3 +296,20 @@ func TestAnInvestigationDoesNotShrinkUnseen(t *testing.T) {
 
 // shrinkNoticeLead begins every shrink notice (shrink.notice).
 const shrinkNoticeLead = "\n\n[the request was"
+
+// Nothing removable is all of it, at every request size: the float form gave
+// one token short for about one size in seven, among them the 26,162 bytes CI
+// sent in TestE2ESizeRefusalWithNothingToRemoveSaysWhatCannotBeLeftOut.
+func TestNothingRemovableCarriesEveryToken(t *testing.T) {
+	for total := 25000; total < 27500; total++ {
+		if got := carriedTokens(6345, total, 0); got != 6345 {
+			t.Fatalf("carriedTokens(6345, %d, 0) = %d, want all 6345", total, got)
+		}
+	}
+	if got := carriedTokens(6345, 26162, 13081); got != 3172 {
+		t.Errorf("half the bytes removable carries %d tokens, want 3172", got)
+	}
+	if got := carriedTokens(6345, 0, 0); got != 0 {
+		t.Errorf("no bytes at all carries %d tokens, want 0", got)
+	}
+}

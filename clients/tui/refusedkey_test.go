@@ -65,10 +65,10 @@ func TestTabAndHistoryStillWorkAfterAFailedTurn(t *testing.T) {
 	}
 
 	m.input.SetValue("")
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
 	m = updated.(chatModel)
 	if got := m.input.Value(); got != "first question" {
-		t.Errorf("up after a failed turn recalled %q, want the question that failed", got)
+		t.Errorf("ctrl+up after a failed turn recalled %q, want the question that failed", got)
 	}
 }
 

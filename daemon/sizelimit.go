@@ -276,7 +276,7 @@ func (s *Server) fitToLimit(ctx context.Context, turn *agentTurn, ledger *turnLe
 		if minuteHeld > 0 {
 			e.size.used = minuteHeld
 		} else {
-			e.size.carried = int(float64(total-sh.saved) / perToken)
+			e.size.carried = carriedTokens(size.requested, total, sh.saved)
 		}
 		return "", &e
 	}
@@ -286,4 +286,17 @@ func (s *Server) fitToLimit(ctx context.Context, turn *agentTurn, ledger *turnLe
 	turn.messages = sh.messages
 	turn.prompt -= sh.dropped
 	return sh.notice(size), nil
+}
+
+// carriedTokens is how many of the requested tokens are text that cannot be
+// left out: the provider's count, scaled by the share of the bytes that stay.
+// In whole numbers, so that nothing removable is exactly all of them. The float
+// form, (total-saved) / (total/requested), came out a hair under for about one
+// request size in seven, and int() turned 6,345 tokens into "6,344 of them
+// could not be left out" where nothing could be (CI, 2026-10-25: 26,162 bytes).
+func carriedTokens(requested, total, saved int) int {
+	if total <= 0 {
+		return 0
+	}
+	return int(int64(requested) * int64(total-saved) / int64(total))
 }
