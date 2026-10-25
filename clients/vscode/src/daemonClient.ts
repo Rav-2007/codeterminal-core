@@ -523,9 +523,7 @@ export interface ToolApprovalResponse {
   decision: string;
 }
 
-// ToolActivity mirrors protocol.ToolActivity. result_bytes is the size of the
-// tool's output AFTER scrubbing and truncation -- i.e. what actually goes back
-// to the model, which in agent mode is the quantity that leaves the machine.
+// ToolActivity mirrors protocol.ToolActivity: result_bytes is what went back to the model, after scrubbing.
 export interface ToolActivity {
   call_id: string;
   server: string;
@@ -534,12 +532,8 @@ export interface ToolActivity {
   detail?: string;
   duration_ms?: number;
   result_bytes?: number;
-  // What a built-in tool acted on -- a path, command, query or URL -- from the
-  // model's arguments (daemon/activitytarget.go). Not shown here yet; the
-  // terminal client draws it as the highlighted part of the call's line.
-  target?: string;
-  // The call makes a new file at target: an edit with no search text.
-  creates?: boolean;
+  target?: string; // what a built-in tool acted on (daemon/activitytarget.go); not drawn here yet
+  creates?: boolean; // the call makes a new file at target: an edit with no search text
 }
 
 // IncompleteInfo mirrors protocol.IncompleteInfo: reason is a stable slug
