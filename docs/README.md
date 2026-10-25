@@ -1,6 +1,6 @@
 # Documentation index
 
-**85 documents: 76 in `docs/`, 1 in `docs/ARCHIVE/`, and 8 at the repository root.**
+**86 documents: 77 in `docs/`, 1 in `docs/ARCHIVE/`, and 8 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -197,6 +197,7 @@ date attached.
 | [`CHUNK_SCRUB_FIRE_RATE.md`](CHUNK_SCRUB_FIRE_RATE.md) | The 33%-of-chunks / zero-precision data that killed warn-mode Design B |
 | [`AGENT_MODE_COST_2026-08-01.md`](AGENT_MODE_COST_2026-08-01.md) | What an agent turn costs |
 | [`TOOL_MENU_SIZE_2026-08-01.md`](TOOL_MENU_SIZE_2026-08-01.md) | Selection accuracy vs menu width: flat between 5 and 12; measured to 32 on 2026-10-12 |
+| [`TOOL_SELECTION_SENSITIVITY_2026-10-25.md`](TOOL_SELECTION_SENSITIVITY_2026-10-25.md) | Which tool-description changes move tool selection on the production menu: the name decides; only a description stating a capability the name hides (run_command's install line) moved a score. The matrix behind the production-menu eval |
 | [`TOOLCALL_RELIABILITY_2026-07-31.md`](TOOLCALL_RELIABILITY_2026-07-31.md) | Tool-selection degradation as the menu widens |
 | [`AGENT_LOOP_RELIABILITY_2026-07-31.md`](AGENT_LOOP_RELIABILITY_2026-07-31.md) | Agent-loop failure modes that did **not** occur |
 | [`RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md`](RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md) | The gated eval suite run by hand at `23550e4`: 15/15, 8/9, 90.1% — and what the excluded fourth test actually measures |
