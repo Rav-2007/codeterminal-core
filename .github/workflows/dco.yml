@@ -1,0 +1,55 @@
+name: dco
+
+# THE DCO SIGN-OFF CHECK, ADVISORY UNTIL AN OWNER SAYS OTHERWISE (2026-10-25).
+#
+# CONTRIBUTING.md asks every commit in a pull request to carry its author's
+# Signed-off-by line (Developer Certificate of Origin 1.1). scripts/dco.sh
+# checks the commits the pull request adds, and nothing that is already on main.
+#
+# NOT REQUIRED YET, and continue-on-error is how. Pull requests opened before
+# CONTRIBUTING.md existed have no sign-offs: feat/production-menu-eval's three
+# commits have none. A failing required check would block them for a rule that
+# did not exist when they were written. So an unsigned commit shows as a failed
+# step in a passing job, which is visible but does not block.
+#
+# TO ENFORCE IT, two owner actions, in this order:
+#   1. set the repository variable DCO_ENFORCE to "true", so the step fails the job;
+#   2. make "DCO sign-off" a required status check on main.
+# Before step 2, every open pull request must be signed off or merged. Otherwise
+# step 2 blocks it.
+#
+# A SEPARATE WORKFLOW, NOT A JOB IN gates.yml, because the two run on different
+# events. gates.yml runs on every push, and a push has no "commits this pull
+# request adds". This workflow needs the pull request's base and head.
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: DCO sign-off
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    steps:
+      # fetch-depth 0: base..head needs both commits and the history between them.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Self-test (the checker must still be able to fail)
+        run: ./scripts/dco.sh --self-test
+
+      # The SHAs pass through env rather than being pasted into the script, so
+      # nothing from the event payload is parsed as shell.
+      - name: Every commit in the pull request is signed off
+        continue-on-error: ${{ vars.DCO_ENFORCE != 'true' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/dco.sh "$BASE_SHA" "$HEAD_SHA"

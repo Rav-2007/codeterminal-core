@@ -1,6 +1,6 @@
 # Documentation index
 
-**85 documents: 76 in `docs/`, 1 in `docs/ARCHIVE/`, and 8 at the repository root.**
+**86 documents: 76 in `docs/`, 1 in `docs/ARCHIVE/`, and 9 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -119,6 +119,7 @@ a refactor or fails loudly; a line number silently points at something else.
 | [`../BACKLOG.md`](../BACKLOG.md) | Forward-looking capability work only. |
 | [`../SECURITY_MODEL.md`](../SECURITY_MODEL.md) | The threat model and what each gate actually promises. |
 | [`../PRODUCT_OVERVIEW.md`](../PRODUCT_OVERVIEW.md) | What the product is, for a reader who has never seen it. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Contributions are made under Apache-2.0, and each commit carries a DCO 1.1 sign-off (text included). The check is advisory until an owner makes it required. |
 | [`PROJECT_INTELLIGENCE_BLUEPRINT.md`](PROJECT_INTELLIGENCE_BLUEPRINT.md) | A capability map and a landing-page spec, written for positioning rather than for engineering. **It overlaps `../PRODUCT_OVERVIEW.md` and is the weaker of the two** — when they disagree, the overview owns the answer. |
 | [`MCP_MASTER.md`](MCP_MASTER.md) | Front door for agent mode / MCP; links to its own evidence. |
 | [`MCP_DEBUG_PLAYBOOK.md`](MCP_DEBUG_PLAYBOOK.md) | Operational: diagnosing a misbehaving MCP server. |
