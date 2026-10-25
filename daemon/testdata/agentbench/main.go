@@ -19,7 +19,12 @@
 //	waited_ms     time this client spent "deciding", so wall_ms can be corrected
 //	              to machine time. A benchmark that charged its own think time to
 //	              the daemon would report a latency nobody experiences.
-//	iterations    inferred from tool activity, since the wire carries no step count
+//	model_calls   the daemon's own count of model calls this turn (the Done
+//	              message's Usage.Calls), or null when the daemon sent no usage.
+//	              It was "iterations", inferred as tool_calls+1, which a step
+//	              asking for several tools at once breaks: a turn of 2 model
+//	              calls that read four files at once was reported as 5
+//	              (MEASURED 2026-10-24). An unknown is reported as unknown.
 //	tool_calls    every ToolActivity in a terminal phase
 //	result_bytes  sum of post-scrub bytes fed back to the model -- in agent mode
 //	              this is the quantity that leaves the machine, which is the
@@ -37,6 +42,7 @@ import (
 	"sort"
 	"time"
 
+	"mochiii/editapply"
 	"mochiii/protocol"
 )
 
@@ -45,7 +51,7 @@ type turnRecord struct {
 	TTFTMS      int64  `json:"ttft_ms"`
 	WallMS      int64  `json:"wall_ms"`
 	WaitedMS    int64  `json:"waited_ms"`
-	Iterations  int    `json:"iterations"`
+	ModelCalls  *int   `json:"model_calls"`
 	ToolCalls   int    `json:"tool_calls"`
 	Approvals   int    `json:"approvals"`
 	ResultBytes int    `json:"result_bytes"`
@@ -90,7 +96,17 @@ func main() {
 func runTurn(n int, prompt, workspace, decision string, think time.Duration) turnRecord {
 	rec := turnRecord{Turn: n}
 
-	lockData, err := os.ReadFile(protocol.LockPath())
+	// THE WORKSPACE'S OWN LOCKFILE, derived the way the daemon derives it. This
+	// read protocol.LockPath(), the per-user name the daemon stopped writing
+	// when two projects became able to run side by side, so every run failed
+	// with "no daemon lockfile" (FOUND 2026-10-24). The TUI had the same bug
+	// and the same fix (clients/tui/daemonconn.go).
+	root, err := editapply.ResolveRealWorkspaceRoot(workspace)
+	if err != nil {
+		rec.Error = "workspace: " + err.Error()
+		return rec
+	}
+	lockData, err := os.ReadFile(protocol.LockPathFor(root))
 	if err != nil {
 		rec.Error = "no daemon lockfile: " + err.Error()
 		return rec
@@ -194,6 +210,12 @@ func runTurn(n int, prompt, workspace, decision string, think time.Duration) tur
 			if tok.Incomplete != nil {
 				rec.Incomplete = tok.Incomplete.Reason
 			}
+			// The daemon's own count, from the provider's usage chunks
+			// (daemon/usage.go). Absent, it stays nil: unknown, not guessed.
+			if tok.Usage != nil {
+				calls := tok.Usage.Calls
+				rec.ModelCalls = &calls
+			}
 			break
 		}
 	}
@@ -202,11 +224,6 @@ func runTurn(n int, prompt, workspace, decision string, think time.Duration) tur
 	if !firstToken.IsZero() {
 		rec.TTFTMS = firstToken.Sub(started).Milliseconds()
 	}
-	// One model call per tool call, plus the final one that answered. Inferred
-	// rather than reported: the wire deliberately carries no step counter, and
-	// inventing a protocol field for a benchmark would be the tail wagging the
-	// dog.
-	rec.Iterations = rec.ToolCalls + 1
 	return rec
 }
 

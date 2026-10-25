@@ -600,7 +600,7 @@ func (s *Server) runAgentLoop(
 	// The date always; the lookup directive only when the question calls for
 	// one. turnStart rather than time.Now() so a turn that waited on an MCP
 	// connect is still dated by when the user asked.
-	augmented, steered := applyTurnContext(turn.messages, webAvailable, turnStart)
+	augmented, steered := s.turnContext(turn.messages, webAvailable, turnStart)
 	turn.messages = augmented
 	turn.prompt = len(turn.messages) - 1
 	if steered {
