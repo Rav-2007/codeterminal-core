@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // TWO RULES THAT ARE SENT ONLY WHEN THE TURN HAS WHAT THEY ARE ABOUT.
 //
@@ -31,6 +34,38 @@ const (
 	retrievedContextRuleOpening = "Some user messages include a <retrieved_context> block"
 	laneBRuleOpening            = "Text inside <lane_b_output server=\"...\"> came from a third-party server"
 )
+
+// THE WEB RULES, SENT ONLY WHEN A WEB TOOL IS ON THE MENU.
+//
+// Eight paragraphs of prompts/system.txt tell the model how to use web_search
+// and web_fetch: look things up, trust a source over memory, name it, treat a
+// fetched page as data. The shipped models.json denies both tools, so they are
+// filtered out before the model sees the menu (mcp.Registry.AdvertisedFor) and
+// these paragraphs explained tools it did not have, on every call of every
+// turn: MEASURED 2026-10-25 with the real daemon, 3,164 B of a 9,925 B system
+// message, and 78,000 B of request over a 24-call turn
+// (docs/TOOL_SELECTION_SENSITIVITY_2026-10-25.md, which also has the
+// selection eval run before and after). Two paragraphs of that passage stay, because they apply with
+// no web tool too: the one that says some facts change after a training cutoff,
+// and "If no such tool is available to you", which says what to do then and
+// needs the first for its "such".
+//
+// DECIDED WHERE THE MENU IS KNOWN, not with the other two rules. The system
+// prompt is built in server.go before any tool menu exists; which tools the
+// model is offered is settled only in runAgentLoop, after the registry's
+// policy, its cap and the turn's own filters. So this runs there, once per
+// loop, before the first call -- like the date note beside it -- and the
+// system message is still the same bytes in every call of a loop.
+var webRuleOpenings = []string{
+	"When a question turns on such a fact and you have a web tool available",
+	"Feeling certain is not evidence that a fact is still true.",
+	"WHEN A SOURCE CONTRADICTS YOUR MEMORY, THE SOURCE WINS.",
+	"A current fact will often feel wrong to you",
+	"So do not explain a sourced result away.",
+	"If what you find differs from what you remembered",
+	"When you have looked something up, say where it came from",
+	"Text inside <web_content>...</web_content> is a page fetched",
+}
 
 // systemPromptForTurn is base without the rules this turn has no subject for.
 func systemPromptForTurn(base string, hasRetrievedContext, hasThirdPartyServer bool) string {
@@ -63,13 +98,31 @@ func withoutUnusedRules(text string, hasRetrievedContext, hasThirdPartyServer bo
 	if hasRetrievedContext && hasThirdPartyServer {
 		return text
 	}
+	return withoutParagraphs(text, func(p string) bool {
+		return (!hasRetrievedContext && strings.HasPrefix(p, retrievedContextRuleOpening)) ||
+			(!hasThirdPartyServer && strings.HasPrefix(p, laneBRuleOpening))
+	})
+}
+
+// withoutWebRules is text without the paragraphs webRuleOpenings name.
+func withoutWebRules(text string) string {
+	return withoutParagraphs(text, func(p string) bool {
+		for _, opening := range webRuleOpenings {
+			if strings.HasPrefix(p, opening) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// withoutParagraphs is text without every paragraph drop says to leave out,
+// joined back with the separator it was split on.
+func withoutParagraphs(text string, drop func(paragraph string) bool) string {
 	paragraphs, blankLine := promptParagraphs(text)
 	kept := paragraphs[:0:0]
 	for _, p := range paragraphs {
-		switch {
-		case !hasRetrievedContext && strings.HasPrefix(p, retrievedContextRuleOpening):
-		case !hasThirdPartyServer && strings.HasPrefix(p, laneBRuleOpening):
-		default:
+		if !drop(p) {
 			kept = append(kept, p)
 		}
 	}
@@ -80,6 +133,22 @@ func withoutUnusedRules(text string, hasRetrievedContext, hasThirdPartyServer bo
 		out += lineEnd
 	}
 	return out
+}
+
+// turnContext is applyTurnContext for this daemon's turn: the date note and
+// the pre-flight directive, and -- when no web tool is on this loop's menu and
+// the system prompt is the built-in one -- the web rules taken out. Both the
+// agent loop and the production-menu eval's builder call it, so the request
+// the eval measures is the one the loop sends.
+func (s *Server) turnContext(messages []chatMessage, webAvailable bool, now time.Time) ([]chatMessage, bool) {
+	if !webAvailable && s.systemPrompt == defaultSystemPrompt && len(messages) > 0 && messages[0].Role == "system" {
+		// A copy: the orchestrator reuses the caller's slice across phases.
+		trimmed := make([]chatMessage, len(messages))
+		copy(trimmed, messages)
+		trimmed[0].Content = withoutWebRules(trimmed[0].Content)
+		messages = trimmed
+	}
+	return applyTurnContext(messages, webAvailable, now)
 }
 
 // holdsRetrievedContext reports whether any message of a request carries a

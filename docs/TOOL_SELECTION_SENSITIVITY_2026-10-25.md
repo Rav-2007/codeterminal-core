@@ -166,6 +166,50 @@ time, and a run with run_command's install line removed (true rate near 3/20)
 passes under 0.01% of the time. Both pip cases now run at least 20 trials an
 arm (`prodMenuSensitiveTrials`).
 
+## First use: leaving out the web rules when no web tool is offered
+
+The shipped models.json denies `web_search` and `web_fetch`, so they never
+reach the menu, while eight paragraphs of `prompts/system.txt` went on
+explaining them on every call. `promptrules.go` (`webRuleOpenings`,
+`turnContext`) now leaves those eight out when the loop's menu holds no web
+tool, and keeps the two paragraphs that apply without one ("Some questions
+depend on facts that change" and "If no such tool is available to you").
+
+**Bytes**, from the real daemon — the binary built at HEAD and with the change,
+the shipped models.json, one 24-call turn (a scripted loopback model asking for
+23 file reads, then answering):
+
+| | Before | After | Saved |
+|---|---|---|---|
+| First request: system message | 9,925 B | 6,761 B | 3,164 B |
+| First request: whole body | 21,229 B | 17,979 B | 3,250 B |
+| 24-call turn: every request body | 583,079 B | 505,079 B | **78,000 B** |
+
+The system message is the same bytes in all 24 calls of either build, so a
+provider's cache of it is unaffected.
+
+**Selection**, the eval before and after on the same day and key. Only the pip
+prompt is proven sensitive, so it is the only evidence there is:
+
+| Case | Before: intact / degraded | After: intact / degraded | Did intact drop? |
+|---|---|---|---|
+| unindexed/pip | 15/20 / 3/20 | 18/20 / 8/20 | no (one-sided p=0.95) |
+| indexed/pip | 15/20 / 3/20 | 13/20 / 1/20 | no (one-sided p=0.37) |
+| both, pooled | 30/40 | 31/40 | no (p=0.70) |
+
+Baselines after: unindexed 98/100, indexed 99/108 (indexed/pip now runs 20
+trials). Every case at or above its floor; both pip cases proven sensitive.
+
+**What that does and does not show.** The one prompt able to detect a change
+held its score on both menus, so by the only evidence available the change did
+not make tool selection worse. It shows nothing about the other 22 cases, which
+score the same intact and degraded and so would score the same whatever this
+change did — that is a measured property of this model, not of the eval. And it
+shows nothing about what the eight paragraphs were for: how the model answers a
+question about a fact that changes, whether it adds the "could not check"
+caveat, how it treats a source. No case here measures an answer; they measure
+the first tool chosen.
+
 ## Not measured
 
 - Any model but nemotron-3-ultra-550b-a55b. On a model that reads

@@ -117,7 +117,8 @@ func (s *Server) prodMenuFirstRequest(ctx context.Context, prompt string, now ti
 	messages = compactTurnMessages(ctx, messages)
 
 	// agentloop.go, runAgentLoop before its first call: the menu, find_tools
-	// when the cap left anything out, and the date note.
+	// when the cap left anything out, then the web rules (when no web tool is
+	// offered) and the date note (turnContext).
 	tools, _, listErrs := s.advertisedToolSpecsFor(ctx, registry, nil, menuQuery(messages))
 	if len(listErrs) > 0 {
 		return req, fmt.Errorf("listing tools: %v", listErrs)
@@ -132,7 +133,7 @@ func (s *Server) prodMenuFirstRequest(ctx context.Context, prompt string, now ti
 			tools = append(tools, search.spec())
 		}
 	}
-	req.messages, _ = applyTurnContext(messages, webToolOffered(tools), now)
+	req.messages, _ = s.turnContext(messages, webToolOffered(tools), now)
 	req.tools = tools
 	return req, nil
 }
