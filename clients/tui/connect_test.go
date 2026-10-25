@@ -963,3 +963,38 @@ func TestConnectSaysReadyOnlyForAModelThatAnswered(t *testing.T) {
 		t.Errorf("a connect that chose no model talks about one:\n%s", got)
 	}
 }
+
+// THE MODEL YOU CHOSE OUTRANKS THE KEY'S DEFAULT (2026-10-25). After a new key
+// the daemon goes on routing to the /model pick, so the report must say that and
+// not "prompts go to <the key's default>" -- which the owner read while every
+// prompt went to the model under the prompt line.
+func TestTheConnectReportNamesTheModelYouChose(t *testing.T) {
+	resp := protocol.ConnectResponse{
+		Outcome: protocol.ConnectAccepted, InUse: true, APIBase: "https://integrate.api.nvidia.com/v1",
+		MaskedKey: "...phNc", Model: "minimaxai/minimax-m3.1-flash", ModelTested: true, ModelCount: 42,
+	}
+	got := formatConnectResult(connectResultMsg{resp: resp, chosen: "nvidia/nemotron-3-ultra-550b-a55b"})
+	if strings.Contains(got, "prompts go to minimaxai") {
+		t.Errorf("the report says prompts go to the key's default though a model was chosen:\n%s", got)
+	}
+	for _, want := range []string{
+		"Prompts still go to nvidia/nemotron-3-ultra-550b-a55b, the model you chose",
+		"answered a test request on minimaxai/minimax-m3.1-flash", "42 models",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the report lacks %q:\n%s", want, got)
+		}
+	}
+	if plain := formatConnectResult(connectResultMsg{resp: resp}); !strings.Contains(plain, "Ready — prompts go to minimaxai/minimax-m3.1-flash") {
+		t.Errorf("with no model chosen the report changed:\n%s", plain)
+	}
+
+	// And through the handler, which is where the choice is read from.
+	m := newTestModel()
+	m.preferredTier, m.preferredSlug = "nemotron", "nvidia/nemotron-3-ultra-550b-a55b"
+	updated, _ := m.Update(connectResultMsg{resp: resp})
+	m = updated.(chatModel)
+	if last := m.turns[len(m.turns)-1].text; !strings.Contains(last, "Prompts still go to nvidia/nemotron-3-ultra-550b-a55b") {
+		t.Errorf("the shown report ignores the /model choice:\n%s", last)
+	}
+}

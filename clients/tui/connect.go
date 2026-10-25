@@ -35,6 +35,9 @@ import (
 type connectResultMsg struct {
 	resp protocol.ConnectResponse
 	err  error
+	// chosen is the model picked with /model, set as the result is shown: it
+	// outranks the key's default, so the report must say so (connectModelLine).
+	chosen string
 }
 
 // connectPrompt is what the input line asks while a key is being typed, and
@@ -284,6 +287,7 @@ func (m chatModel) handleConnectResult(msg connectResultMsg) (tea.Model, tea.Cmd
 	if m.setup.step == setupChecking {
 		return m.handleSetupConnectResult(msg)
 	}
+	msg.chosen = m.chosenModel()
 	m.appendTurn(turn{role: roleAssistant, local: true, text: formatConnectResult(msg)})
 	m.resizeViewport()
 	m.refreshViewport()
@@ -343,7 +347,7 @@ func formatConnectResult(msg connectResultMsg) string {
 		} else {
 			fmt.Fprintf(&b, "Key %s is stored, but it is NOT what this daemon is sending.", r.MaskedKey)
 		}
-		b.WriteString(connectModelLine(r))
+		b.WriteString(connectModelLine(r, msg.chosen))
 	case protocol.ConnectUnverified:
 		fmt.Fprintf(&b, "Saved %s for %s, but NOT verified: %s\n", r.MaskedKey, providerLabel(r.APIBase), sanitizeText(r.Detail))
 		if r.InUse {
@@ -351,7 +355,7 @@ func formatConnectResult(msg connectResultMsg) string {
 		} else {
 			b.WriteString("It is stored, but it is NOT what this daemon is sending.")
 		}
-		b.WriteString(connectModelLine(r))
+		b.WriteString(connectModelLine(r, msg.chosen))
 	case protocol.ConnectNeedsProvider:
 		// NOTHING WAS SENT, AND THAT IS THE FIRST THING SAID. The daemon will not
 		// find out whose key this is by handing it to each provider in turn, so
@@ -403,11 +407,26 @@ func formatConnectResult(msg connectResultMsg) string {
 // "Ready" IS SAID ONLY FOR A MODEL THAT ANSWERED. ModelTested is the daemon's
 // report that a real request to it succeeded with this key; without it the
 // model is named as what will be tried, not as something that works.
-func connectModelLine(r protocol.ConnectResponse) string {
+//
+// THE USER'S OWN CHOICE OUTRANKS THE KEY'S DEFAULT (2026-10-25). After a new key
+// the daemon goes on routing to the model picked with /model -- its log says
+// "reason=user-selected tier" -- so "Ready — prompts go to <the key's default>"
+// was false: the owner read "prompts go to minimaxai/minimax-m3.1-flash" while
+// every prompt went to nvidia/nemotron-3-ultra-550b-a55b, as the line under the
+// prompt said. chosen is that pick, or "".
+func connectModelLine(r protocol.ConnectResponse, chosen string) string {
 	if r.Model == "" {
 		return ""
 	}
 	model := sanitizeText(r.Model)
+	if chosen = sanitizeText(chosen); chosen != "" && chosen != model {
+		answered := "answered a test request on"
+		if !r.ModelTested {
+			answered = "got NO answer to a test request to"
+		}
+		return fmt.Sprintf("\n\nPrompts still go to %s, the model you chose: /model switches. "+
+			"This key %s %s; %d models are available: /model lists them.", chosen, answered, model, r.ModelCount)
+	}
 	if r.ModelTested {
 		return fmt.Sprintf("\n\nReady — prompts go to %s. %d models are available: /model lists them, /model <name> switches.",
 			model, r.ModelCount)

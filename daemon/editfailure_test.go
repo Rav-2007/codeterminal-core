@@ -170,6 +170,7 @@ func TestANullErrorFieldIsIgnored(t *testing.T) {
 // In the loop, an error-only stream is retried as a provider failure -- not
 // answered with the note telling the model it was silent.
 func TestAnErrorOnlyStreamIsRetriedNotTreatedAsEmpty(t *testing.T) {
+	withFastRateLimits(t) // a 429 is waited out for seconds since 2026-10-25
 	base, requests, bodies := agentUpstream(t, errorOnlySSE(429, "slow down"), textSSE("the answer"))
 	s := loopServer(t, base, MCPConfig{Enabled: true})
 	res, _, err := runLoop(t, s)

@@ -571,7 +571,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setupTiersMsg:
 		return m.handleSetupTiers(msg)
 
-	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg, localCheckMsg:
+	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg, localCheckMsg, rateWaitTickMsg:
 		return m.handleSideAnswer(msg)
 
 	case mcpResultMsg:
@@ -941,9 +941,9 @@ func (m chatModel) handleToolActivity(msg toolActivityMsg) (tea.Model, tea.Cmd) 
 	if m.streamCh == nil {
 		return m, nil // a stray message from an already-abandoned stream
 	}
-	m.noteToolActivity(msg.activity)
+	tick := m.noteActivity(msg.activity) // a rate-limit wait is not a chat line (ratewait.go)
 	m.refreshViewport()
-	return m, waitForNext(m.streamCh)
+	return m, tea.Batch(tick, waitForNext(m.streamCh))
 }
 
 func (m chatModel) handleToolApproval(msg toolApprovalMsg) (tea.Model, tea.Cmd) {
@@ -2498,11 +2498,11 @@ func (m *chatModel) refreshViewport() {
 		turns = append(append([]turn(nil), turns[:m.streamAssistant]...), turns[m.streamAssistant+1:]...)
 	}
 	content := m.transcript.render(turns, m.viewport.Width)
-	if waiting {
+	if waiting || m.rateWaitShown() {
 		if content != "" {
 			content += turnSeparator
 		}
-		content += m.thinkingLine()
+		content += m.indicatorLine()
 	}
 	if m.turnInFlight() && len(m.tasks) > 0 {
 		content += "\n\n" + renderTaskList(m.tasks)
