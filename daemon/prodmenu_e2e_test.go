@@ -23,8 +23,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
+
+	"mochiii/daemon/mcp"
 )
 
 var todaySentence = regexp.MustCompile(`Today's date is [^.]+\.`)
@@ -154,6 +157,20 @@ func TestTheProdMenuBuilderMatchesTheRealDaemonsFirstRequest(t *testing.T) {
 	if len(reqs) == 0 {
 		t.Fatal("the daemon never called the model")
 	}
+
+	// The one host probe the two sides cannot share. sandbox_exec's description
+	// says whether a memory and process cap applies, from mcp.LimiterUsable,
+	// which reaches the user's systemd through XDG_RUNTIME_DIR. startE2E gives
+	// the daemon a temporary XDG_RUNTIME_DIR, so on a host that exports no
+	// DBUS_SESSION_BUS_ADDRESS (a CI runner) the daemon finds no limiter, while
+	// this process probed once under the real one. The builder takes the
+	// daemon's answer, so every other byte is still compared.
+	// TestTheDescriptionDoesNotPromiseLimitsTheHostCannotApply covers the
+	// sentence following the probe, both ways.
+	daemonLimited := !strings.Contains(reqs[0].raw, "NO memory or process limit on this host")
+	restoreLimiter := mcp.LimiterUsable
+	t.Cleanup(func() { mcp.LimiterUsable = restoreLimiter })
+	mcp.LimiterUsable = func() bool { return daemonLimited }
 
 	setup := prodMenuTestSetup(t, e2eConfigWithShippedMCP(t, section), model.srv.URL+"/api/v1")
 	setup.workspace = d.workspace

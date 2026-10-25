@@ -79,8 +79,11 @@ func TestTheWebRulesAndOnlyThemAreLeftOut(t *testing.T) {
 		t.Fatal("nothing was left out")
 	}
 	// A Windows checkout of system.txt has CRLF line endings, where a blank
-	// line is "\r\n\r\n"; the rules still go.
-	crlf := withoutWebRules(strings.ReplaceAll(defaultSystemPrompt, "\n", "\r\n"))
+	// line is "\r\n\r\n"; the rules still go. Built from the LF text: on a
+	// Windows runner the embedded prompt is already CRLF (core.autocrlf), and
+	// converting it again would make every line end "\r\r\n".
+	lf := strings.ReplaceAll(defaultSystemPrompt, "\r\n", "\n")
+	crlf := withoutWebRules(strings.ReplaceAll(lf, "\n", "\r\n"))
 	if strings.Contains(crlf, webRuleOpenings[0]) || !strings.Contains(crlf, "If no such tool is available to you") {
 		t.Error("with CRLF line endings the web rules were not left out, or the no-tool paragraph went with them")
 	}
