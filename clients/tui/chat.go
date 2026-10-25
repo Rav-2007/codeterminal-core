@@ -103,9 +103,9 @@ type turn struct {
 	// a model's markdown, so it is drawn as written (see plainAnswer). /git and
 	// /search need it and nothing else does: they are the two local commands
 	// whose output stays in the conversation, so `local` does not cover them,
-	// and `git status -sb` opens with "## branch" -- a heading, to a markdown
-	// renderer.
+	// and `git status -sb` opens with "## branch" -- a heading, to markdown.
 	verbatim bool
+	act      *activityView // a tool call's line, for roleActivity (activityline.go)
 }
 
 // plainAnswer reports whether an assistant turn is drawn as written instead of
@@ -1178,7 +1178,7 @@ func (m chatModel) awaitingAnswer() bool {
 		return false
 	}
 	i := m.streamAssistant
-	return i < 0 || i >= len(m.turns) || m.turns[i].text == ""
+	return i < 0 || i >= len(m.turns) || strings.TrimSpace(m.turns[i].text) == ""
 }
 
 // thinkingLine is the indicator as drawn for the current frame.
@@ -2055,7 +2055,7 @@ func (m chatModel) handleToken(msg tokenMsg) (tea.Model, tea.Cmd) {
 	if m.state == stateSending {
 		m.state = stateStreaming
 	}
-	m.turns[m.ensureAssistantTurn()].text += m.sanAnswer.Write(string(msg))
+	m.appendAnswer(m.sanAnswer.Write(string(msg))) // below the calls, if all so far was whitespace
 	return m, tea.Batch(m.refreshSoon(), waitForNext(m.streamCh))
 }
 
@@ -2349,8 +2349,7 @@ func approvalOutcomeLine(req protocol.ToolApprovalRequest, decision string) stri
 // them is noise. What earns a line is the call actually running, and how it
 // ended.
 func (m *chatModel) noteToolActivity(a protocol.ToolActivity) {
-	// Tool names and results are chosen by the server on the other end of an
-	// MCP connection, not by us.
+	// Tool names are chosen by an MCP server and targets by the model, not us.
 	line := sanitizeText(toolActivityLine(a))
 	if line == "" {
 		return
@@ -2367,37 +2366,38 @@ func (m *chatModel) noteToolActivity(a protocol.ToolActivity) {
 	// model emitted with no id at all. Keying on "" collapsed all of them onto
 	// a single line, so four phase markers showed as one and the second of two
 	// refusals silently overwrote the first.
+	t := activityTurn(a, line) // a call's line in parts, or a step's (activityline.go)
 	if a.CallID != "" {
 		if idx, ok := m.activityTurns[a.CallID]; ok && idx < len(m.turns) {
-			m.turns[idx].text = line
+			m.turns[idx] = t
 			return
 		}
 		m.activityTurns[a.CallID] = len(m.turns)
 	}
-	m.appendTurn(turn{role: roleSystem, text: line})
+	m.appendTurn(t)
 }
 
 func toolActivityLine(a protocol.ToolActivity) string {
-	name := qualifiedActivityName(a)
-	switch a.Phase {
-	case protocol.ToolPhaseStep:
+	if a.Phase == protocol.ToolPhaseStep {
 		// A pipeline phase, not a tool call -- rendered differently on purpose,
 		// so a user can see the specialists change hands rather than reading it
 		// as one more tool the agent ran.
 		return "▸ " + a.Detail + " — " + a.Tool
-	case protocol.ToolPhaseRunning:
-		return "⚙ running " + name + "…"
-	case protocol.ToolPhaseSucceeded:
-		// ResultBytes is what actually went back to the model after scrubbing
-		// and truncation -- in agent mode that is the quantity leaving the
-		// machine, and a privacy-positioned product should let a user watch it.
-		return fmt.Sprintf("⚙ %s — %d bytes to the model in %dms", name, a.ResultBytes, a.DurationMS)
-	case protocol.ToolPhaseFailed:
-		return "⚠ " + name + " failed" + detailSuffix(a.Detail)
-	case protocol.ToolPhaseDenied:
-		return "✗ " + name + " not run" + detailSuffix(a.Detail)
 	}
-	return ""
+	// A TOOL CALL IS SAID AS WHAT IT DID, TO WHAT (2026-10-25): "● Read
+	// clients/tui/chat.go · 17 KB", not "⚙ builtin__read_file — 17747 bytes
+	// to the model in 0ms", which the owner called lame and stale. The verb is
+	// the tool's, the target the daemon's (an activity has no arguments), and
+	// the size is still what went back to the model after scrubbing and
+	// truncation -- in agent mode the quantity leaving the machine, which a
+	// privacy-positioned product lets the user watch. This is the plain form,
+	// the turn's text; renderActivity draws the same parts in colour, with the
+	// target picked out (activityline.go).
+	v, ok := activityFor(a)
+	if !ok {
+		return ""
+	}
+	return v.plain()
 }
 
 // qualifiedActivityName renders the tool's name for a human.
@@ -2562,9 +2562,9 @@ func renderTranscript(turns []turn, width int) string {
 	var b strings.Builder
 	for i, t := range turns {
 		if i > 0 {
-			b.WriteString(turnSeparator)
+			b.WriteString(separatorBefore(turns, i))
 		}
-		b.WriteString(renderTurnBlock(t, width))
+		b.WriteString(renderShownBlock(t, width))
 	}
 	return b.String()
 }
@@ -2593,8 +2593,8 @@ func renderTurnBlock(t turn, width int) string {
 		// A model's answer is markdown and is drawn as markdown (markdown.go).
 		// It needs the width: a table is laid out to fit it.
 		return renderAnswer(t.text, width)
-	case roleSystem:
-		return helpStyle.Render(t.text)
+	case roleSystem, roleActivity:
+		return renderSystemTurn(t, width) // a tool call's line is drawn from its parts
 	case roleSevered:
 		return renderSevered(t.text, width, severedNotSent)
 	case roleUnanswered:

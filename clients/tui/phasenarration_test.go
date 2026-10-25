@@ -105,9 +105,11 @@ func TestUnqualifiedToolNameRendersWithoutAStrayPrefix(t *testing.T) {
 	if !strings.Contains(got, "search_code") {
 		t.Errorf("line = %q, want the tool the model actually named", got)
 	}
-	// A REAL qualified name must be unchanged.
-	b := protocol.ToolActivity{CallID: "c2", Server: "builtin", Tool: "read_file", Phase: protocol.ToolPhaseDenied}
-	if got := toolActivityLine(b); !strings.Contains(got, "builtin__read_file") {
+	// A REAL qualified name -- an MCP server's tool -- must be unchanged. (A
+	// built-in reads as its verb since 2026-10-25: "Read", not
+	// "builtin__read_file".)
+	b := protocol.ToolActivity{CallID: "c2", Server: "notes", Tool: "search", Phase: protocol.ToolPhaseDenied}
+	if got := toolActivityLine(b); !strings.Contains(got, "notes__search") {
 		t.Errorf("a qualified name rendered as %q, want it unchanged", got)
 	}
 }

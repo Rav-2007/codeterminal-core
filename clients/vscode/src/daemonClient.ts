@@ -534,6 +534,12 @@ export interface ToolActivity {
   detail?: string;
   duration_ms?: number;
   result_bytes?: number;
+  // What a built-in tool acted on -- a path, command, query or URL -- from the
+  // model's arguments (daemon/activitytarget.go). Not shown here yet; the
+  // terminal client draws it as the highlighted part of the call's line.
+  target?: string;
+  // The call makes a new file at target: an edit with no search text.
+  creates?: boolean;
 }
 
 // IncompleteInfo mirrors protocol.IncompleteInfo: reason is a stable slug

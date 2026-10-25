@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"mochiii/protocol"
 )
 
 // A TURN RENDERS THE SAME ALONE AS IT DOES IN COMPANY.
@@ -16,7 +18,16 @@ import (
 //
 // This is the property the render cache rests on, asserted directly rather than
 // left to the equivalence gate to discover through randomised inputs.
+//
+// THE SEPARATOR MAY VARY; A BLOCK MAY NOT (2026-10-25). Since a run of tool calls
+// is stacked and an answer of only whitespace draws nothing, what goes BETWEEN
+// two blocks depends on the turns around it -- but only through separatorBefore,
+// a function of the turn list that renderTranscript and the cache both call, and
+// only ever as layout: nothing, a newline, or a blank line. Each block is still
+// drawn from its own turn alone, which is what this asserts.
 func TestATranscriptIsExactlyTheConcatenationOfItsTurns(t *testing.T) {
+	read, _ := activityFor(call("c1", "read_file", "a.go", protocol.ToolPhaseSucceeded, 10))
+	list, _ := activityFor(call("c2", "list_directory", "src", protocol.ToolPhaseSucceeded, 20))
 	turns := []turn{
 		{role: roleUser, text: "first question"},
 		{role: roleAssistant, text: "an answer", reasoning: "some thinking"},
@@ -25,16 +36,27 @@ func TestATranscriptIsExactlyTheConcatenationOfItsTurns(t *testing.T) {
 		{role: roleSevered, text: "never sent"},
 		{role: roleUser, text: ""},
 		{role: roleAssistant, text: "", reasoning: ""},
+		{role: roleActivity, text: read.plain(), act: &read},
+		{role: roleAssistant, text: "\n"},
+		{role: roleActivity, text: list.plain(), act: &list},
 	}
 
+	for i := 1; i < len(turns); i++ {
+		if sep := separatorBefore(turns, i); sep != "" && sep != "\n" && sep != turnSeparator {
+			t.Fatalf("the separator before turn %d is %q: a separator is layout, never content", i, sep)
+		}
+	}
 	for _, width := range []int{1, 2, 20, 40, 80, 200} {
 		whole := renderTranscript(turns, width)
 
-		parts := make([]string, 0, len(turns))
-		for _, one := range turns {
-			parts = append(parts, renderTurnBlock(one, width))
+		var b strings.Builder
+		for i, one := range turns {
+			if i > 0 {
+				b.WriteString(separatorBefore(turns, i))
+			}
+			b.WriteString(renderShownBlock(one, width)) // the turn alone, nothing around it
 		}
-		joined := strings.Join(parts, turnSeparator)
+		joined := b.String()
 
 		if whole != joined {
 			t.Errorf("width %d: the transcript is not the concatenation of its turns.\n"+

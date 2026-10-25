@@ -1166,7 +1166,7 @@ func (s *Server) dispatchToolCall(
 	audit.Source, audit.DenyCause = decision.source, decision.cause
 	audit.WaitedMS = decision.waited.Milliseconds()
 	if decision.tool.Server != "" {
-		activity.Server, activity.Tool = decision.tool.Server, decision.tool.Name
+		activity = withCallTarget(activity, decision.tool.Server, decision.tool.Name, arguments) // activitytarget.go
 	}
 
 	if !decision.run {
