@@ -25,6 +25,7 @@ func TestEveryBuiltinCallNamesItsTarget(t *testing.T) {
 		{"grep", `{"pattern":"TODO","path":"."}`, `"TODO"`},
 		{"find_files", `{"pattern":"*_test.go"}`, "*_test.go"},
 		{"sandbox_exec", `{"command":"go test ./...","timeout_seconds":60}`, "go test ./..."},
+		{"run_command", `{"command":"cd build && ctest","cwd":"."}`, "cd build && ctest"},
 		{"web_search", `{"query":"bubbletea mouse"}`, `"bubbletea mouse"`},
 		{"web_fetch", `{"url":"https://go.dev/doc"}`, "https://go.dev/doc"},
 		{"propose_edit", `{"path":"main.go","search":"a","replace":"b"}`, "main.go"},

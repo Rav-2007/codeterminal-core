@@ -49,6 +49,45 @@ go to that key's default model, while they still went to the model you had
 picked with `/model`. It now names your pick, and the model the key was tested
 on.
 
+### The agent works on one copy of your project
+
+**What changed.** `run_command` used to run on your real files, which do not have
+the agent's edits until you accept them, while its edits, reads and `sandbox_exec`
+used the turn's private copy. Tested on real bugs in real GitHub projects, the
+agent tested code without its own fix and said "all 18 tests pass", rewrote a file
+through the shell with no diff, and left scratch files in the project. Now a
+`run_command` inside the project runs in the same copy: its tests see the edits,
+what it changes there is reviewed with them (named as the command's), and a file
+it creates is not offered. `git` and package installers still run in your real
+project — the prompt says "Run in your terminal" — and a `git` command that writes
+waits until you have reviewed the changes. Anything changed in your real project
+outside review is named above the review.
+
+### A changed test is shown, and the agent says only what its record supports
+
+**What changed.** When the agent changes the existing lines of a test, it is told
+to fix its code instead unless the test is wrong, and you see "! the agent changed
+existing tests" above the review — a pass after that is no longer a "✓". When a
+turn stops part-way, or its answer says the tests pass and Mochiii's record says
+otherwise, a short "Where this stands" record is added under the answer; it stays
+in the chat, so "continue" carries on from it. A turn the provider stopped after
+doing work keeps its edits instead of losing them.
+
+### `sandbox_exec` understands quotes and says why a shell line is refused
+
+**What changed.** `mvn test -Dtest="A,B"` now reaches Maven as `-Dtest=A,B`; the
+quotes used to stay in the pattern. `dir` runs a command from a subfolder (and now
+really does, in the sandbox), and `cd`, `&&`, pipes, redirections, here-documents
+and `$(…)` are refused by name with the way to do it instead.
+
+### A busy provider is waited out, and loose tool arguments are read right
+
+**What changed.** After a turn has done work, a rate limit or a provider that has
+gone silent is waited out inside the turn, with the countdown, for up to five
+minutes in all (`mcp.budget.provider_patience_seconds`). A tool argument sent as
+`"true"` or `"5"` where the tool expects a boolean or a number is read as one,
+instead of the whole call being refused.
+
 ### A request too large to send says so correctly
 
 **What changed.** A request over your plan's token limit, with nothing in it
