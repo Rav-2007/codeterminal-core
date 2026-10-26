@@ -140,10 +140,10 @@ func ownerOnlySDDL() (string, error) {
 // SQUATTING, AND WHY THIS IS ALREADY SAFE. The \\.\pipe\ namespace is
 // unprivileged and machine-global: any user can create a pipe by any name. If
 // creation merely ADDED an instance to somebody else's existing pipe, this
-// daemon's own clients would connect to that attacker. Verified in go-winio
-// v0.6.2's source rather than assumed: makeServerPipeHandle calls
-// NtCreateNamedPipeFile with disposition FILE_CREATE for the first instance
-// (pipe.go:378-381), which is the NT-level "create new, fail if it exists" —
+// daemon's own clients would connect to that attacker. Verified in go-winio's
+// source rather than assumed (v0.6.2, and again for v0.6.4): makeServerPipeHandle
+// calls NtCreateNamedPipeFile with disposition FILE_CREATE for the first
+// instance (v0.6.4 pipe.go:379-382), which is the NT-level "create new, fail if it exists" —
 // the same guarantee Win32's FILE_FLAG_FIRST_PIPE_INSTANCE provides. A squatted
 // name therefore fails loudly here instead of being silently joined.
 //

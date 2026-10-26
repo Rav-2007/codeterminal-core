@@ -52,7 +52,7 @@ func TestApplySandboxRefusesWithoutLandlock(t *testing.T) {
 // file (the kernel rejects directory rights on a non-directory).
 func TestAddLandlockRuleSkipsMissingAndMasksFiles(t *testing.T) {
 	abi := requireLandlock(t)
-	attr := unix.LandlockRulesetAttr{Access_fs: handledFSRights(abi)}
+	attr := unix.LandlockRulesetAttr{Handled_access_fs: handledFSRights(abi)}
 	fd, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET,
 		uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0)
 	if errno != 0 {

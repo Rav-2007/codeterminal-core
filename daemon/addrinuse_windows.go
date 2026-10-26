@@ -23,7 +23,7 @@ import (
 // shared line.
 //
 // WHAT A PIPE COLLISION ACTUALLY RETURNS. go-winio creates the first instance
-// with NtCreateNamedPipeFile disposition FILE_CREATE (pipe.go:378-381), the
+// with NtCreateNamedPipeFile disposition FILE_CREATE (v0.6.4 pipe.go:379-382), the
 // NT-level "create new, fail if it exists". A name already taken fails the
 // STATUS, which RtlNtStatusToDosError maps into the DOS space:
 //
