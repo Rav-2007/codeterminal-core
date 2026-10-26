@@ -53,14 +53,12 @@ type turnFacts struct {
 
 // turnReport is the record, or "" when there is nothing to add.
 func turnReport(f turnFacts) string {
-	finalChecked, last := false, (*ranCheck)(nil)
-	for i := range f.checks {
-		c := &f.checks[i]
-		last = c
-		if c.passed && c.edits == f.editsNow && isVerifyingLine(c.command) {
-			finalChecked = true
-		}
+	var last *ranCheck
+	if len(f.checks) > 0 {
+		last = &f.checks[len(f.checks)-1]
 	}
+	lastFinal := lastCheckOfFinal(f.checks, f.editsNow)
+	finalChecked := lastFinal != nil && lastFinal.passed
 	testsChanged := testsChangedIn(f.offered)
 	if f.info != nil && len(f.info.TestsChanged) > 0 {
 		testsChanged = f.info.TestsChanged
@@ -101,14 +99,21 @@ func turnReport(f turnFacts) string {
 			when = "before the last change, so the final version was not run"
 		}
 		lines = append(lines, "Last check: `"+truncateRunes(last.command, 120)+"` "+state+", "+when+".")
-		if !finalChecked && len(f.offered) > 0 && (last.passed && last.edits == f.editsNow) {
+		switch {
+		case lastFinal != nil && lastFinal != last && !lastFinal.passed:
+			lines = append(lines, "The last build or test run on the final version, `"+
+				truncateRunes(lastFinal.command, 120)+"`, FAILED.")
+		case !finalChecked && len(f.offered) > 0 && last.passed && last.edits == f.editsNow:
 			lines = append(lines, "Not verified: that command does not build or test the project.")
 		}
 	}
 	switch {
-	case contradicted && !finalChecked:
+	case contradicted && lastFinal == nil:
 		lines = append(lines, "The answer says the tests pass; this record shows no passing run of the project's "+
 			"tests on the final version.")
+	case contradicted && !finalChecked:
+		lines = append(lines, "The answer says the tests pass; the last build or test run on the final version "+
+			"failed.")
 	case contradicted:
 		lines = append(lines, "The answer says the tests pass; they passed on the final version only after "+
 			"existing tests were changed.")

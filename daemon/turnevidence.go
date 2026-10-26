@@ -152,3 +152,18 @@ func testsChangedIn(blocks []editapply.EditBlock) []string {
 	}
 	return sortedSet(seen)
 }
+
+// lastCheckOfFinal is the last build or test run on the final version of the
+// changes -- the one made with editsNow edits in place -- or nil. It is what
+// speaks for that version: in a real-model run (2026-10-27) a build passed and
+// then the test run after it failed, and "tested on the final version" was
+// said of it because one run had passed.
+func lastCheckOfFinal(checks []ranCheck, editsNow int) *ranCheck {
+	var last *ranCheck
+	for i := range checks {
+		if c := &checks[i]; c.edits == editsNow && isVerifyingLine(c.command) {
+			last = c
+		}
+	}
+	return last
+}

@@ -347,9 +347,13 @@ func (s *Server) runInCopy(ctx context.Context, raw json.RawMessage, st *stagedW
 	label := truncateForClient(strings.Join(strings.Fields(args.Command), " "), 80)
 	st.noteCommandChanges(before, label)
 	res.Content = st.toReal(res.Content)
-	// A run in the working copy is a check of it, as a sandbox_exec run is: it
-	// is what the check line above the review and Mochiii's record report.
-	proposals.recordCheck(args.Command, raw, res, outcome)
+	// A build or a test run in the working copy is a check of it, as a
+	// sandbox_exec run is: what the check line above the review and Mochiii's
+	// record report. Reading a file or listing a folder checks nothing, and is
+	// not let stand as "checked: cat a.c passed".
+	if isVerifyingLine(args.Command) {
+		proposals.recordCheck(args.Command, raw, res, outcome)
+	}
 	res.Content += "\n[Mochiii: this ran in this turn's working copy of the project, which has your edits.]"
 	if tests := st.testsChangedByCommand(changed); len(tests) > 0 {
 		res.Content += testChangeWarning(tests...)

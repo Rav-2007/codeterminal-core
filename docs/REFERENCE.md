@@ -1181,8 +1181,9 @@ review". The copy leaves out `.gitignored` files, such as `.env`.
 **How the agent tests a change.** It is told to run the project's own tests for
 the code it changed after its last edit — `sandbox_exec` preferred, since it is
 confined — and to say exactly which commands it ran and what they reported, or
-that it could not run them. Either tool's run counts as the check shown above the
-review. `sandbox_exec` runs one program per call: quotes keep an argument whole
+that it could not run them. A build or test run counts as the check shown above
+the review, whichever tool ran it; a `run_command` that only reads a file or lists
+a folder does not. `sandbox_exec` runs one program per call: quotes keep an argument whole
 (`mvn test -Dtest="A,B"`), `dir` runs it from a subfolder, and shell syntax — `cd`,
 `&&`, pipes, redirections, here-documents, `$(…)`, `NAME=value` in front — is
 refused by name with the way to do it instead.
@@ -1199,7 +1200,9 @@ tests were changed, when something changed outside review, or when the answer
 says the tests pass and the record says otherwise, Mochiii adds a short "Where
 this stands" block under the answer, written from its own record and not the
 model's words: why it stopped, what changed, the last check and whether it ran on
-the final version, and what was read. It stays in the chat, so "continue" carries
+the final version, and what was read. The last build or test run on the final
+version is the one that counts: a build that passed does not stand for a test run
+after it that failed. It stays in the chat, so "continue" carries
 on from it. A turn the provider stops part-way keeps its edits and offers them.
 
 **A busy provider is waited out.** After a turn has done work, a rate limit or a
