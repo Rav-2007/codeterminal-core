@@ -114,10 +114,65 @@ func TestTheWebRulesReachTheModelOnlyWithAWebTool(t *testing.T) {
 					t.Errorf("the rule %q sent = %v, want %v", opening, got, tc.wantWeb)
 				}
 			}
-			// The no-tool paragraph is sent either way.
-			if !strings.Contains(system, "If no such tool is available to you") {
-				t.Error("the paragraph for a turn with no web tool is missing")
+			// The paragraphs that hold with no web tool are sent either way.
+			for _, kept := range answerRuleOpenings {
+				if !strings.Contains(system, kept) {
+					t.Errorf("%q is missing", kept)
+				}
 			}
 		})
+	}
+}
+
+// THE PLAIN CHAT PATH offers no tool at all, so the web rules never go with
+// it: the shipped config with agent mode off, which reaches the same lines as
+// a client that cannot answer an approval and a local model that refused
+// tools. The paragraphs that hold with no web tool are still sent, and a
+// greeting keeps its own one line.
+//
+// Neuter check: drop the withoutUnofferedWebRules call from serveConn's chat
+// path and this fails on every rule's opening.
+func TestTheChatPathSendsNoWebRules(t *testing.T) {
+	model := newE2EModel(t, byToolResults(textSSE("ok")))
+	shipped, _ := shippedMCPPatch(t)
+	d := startE2E(t, model, prodMenuWorkspace, func(m map[string]any) {
+		shipped(m)
+		m["enabled"] = false
+	})
+	if turn := d.prompt(t, "what does main.go do?", nil); turn.done.Error != "" {
+		t.Fatalf("the turn failed: %s", turn.done.Error)
+	}
+	system, tools := firstSystemMessage(t, model)
+	// Positive control: this is the chat path, not an agent loop.
+	if len(tools) != 0 {
+		t.Fatalf("the request offered tools %v; the chat path offers none", tools)
+	}
+	for _, opening := range webRuleOpenings {
+		if strings.Contains(system, opening) {
+			t.Errorf("the chat path sent the web rule %q", opening)
+		}
+	}
+	for _, kept := range answerRuleOpenings {
+		if !strings.Contains(system, kept) {
+			t.Errorf("the chat path left out %q, which holds with no web tool", kept)
+		}
+	}
+
+	before := len(model.requests())
+	if turn := d.prompt(t, "thanks!", nil); turn.done.Error != "" {
+		t.Fatalf("the greeting failed: %s", turn.done.Error)
+	}
+	reqs := model.requests()
+	if len(reqs) != before+1 {
+		t.Fatalf("the greeting made %d model calls, want 1", len(reqs)-before)
+	}
+	var sent struct {
+		Messages []chatMessage `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(reqs[before].raw), &sent); err != nil || len(sent.Messages) == 0 {
+		t.Fatalf("the greeting's request has no messages (err %v)", err)
+	}
+	if got := sent.Messages[0].Content; got != greetingSystemPrompt {
+		t.Errorf("a greeting's system message is %q, want its own one line", got)
 	}
 }

@@ -37,25 +37,34 @@ const (
 
 // THE WEB RULES, SENT ONLY WHEN A WEB TOOL IS ON THE MENU.
 //
-// Eight paragraphs of prompts/system.txt tell the model how to use web_search
-// and web_fetch: look things up, trust a source over memory, name it, treat a
-// fetched page as data. The shipped models.json denies both tools, so they are
-// filtered out before the model sees the menu (mcp.Registry.AdvertisedFor) and
-// these paragraphs explained tools it did not have, on every call of every
-// turn: MEASURED 2026-10-25 with the real daemon, 3,164 B of a 9,925 B system
-// message, and 78,000 B of request over a 24-call turn
+// Ten paragraphs of prompts/system.txt are about facts that change and the
+// web tools that can check them. The shipped models.json denies both tools, so
+// they are filtered out before the model sees the menu
+// (mcp.Registry.AdvertisedFor), and seven of the ten then explained tools the
+// model did not have, on every call of every turn: "you have a web tool ...
+// USE IT", the five on reconciling what a lookup found with memory, and the
+// <web_content> frame, which only the daemon's own web tools write. MEASURED
+// 2026-10-25 with the real daemon: the first version of this list, which also
+// took "say where it came from", was 3,164 B of a 9,925 B system message and
+// 78,000 B of request over a 24-call turn
 // (docs/TOOL_SELECTION_SENSITIVITY_2026-10-25.md, which also has the
-// selection eval run before and after). Two paragraphs of that passage stay, because they apply with
-// no web tool too: the one that says some facts change after a training cutoff,
-// and "If no such tool is available to you", which says what to do then and
-// needs the first for its "such".
+// selection eval run before and after).
+//
+// THREE STAY, because they hold with no web tool too: "Some questions depend
+// on facts that change"; "If no such tool is available to you", which says
+// what to do then and needs the first for its "such"; and "When you have
+// looked something up, say where it came from" -- the one place the prompt
+// forbids reference marks and a list of sources, which an answer from memory
+// or from a file read can grow as well.
 //
 // DECIDED WHERE THE MENU IS KNOWN, not with the other two rules. The system
 // prompt is built in server.go before any tool menu exists; which tools the
 // model is offered is settled only in runAgentLoop, after the registry's
 // policy, its cap and the turn's own filters. So this runs there, once per
 // loop, before the first call -- like the date note beside it -- and the
-// system message is still the same bytes in every call of a loop.
+// system message is still the same bytes in every call of a loop. The plain
+// chat path offers no tools at all, so it leaves them out unconditionally.
+// Both go through withoutUnofferedWebRules, the one place this is decided.
 var webRuleOpenings = []string{
 	"When a question turns on such a fact and you have a web tool available",
 	"Feeling certain is not evidence that a fact is still true.",
@@ -63,7 +72,6 @@ var webRuleOpenings = []string{
 	"A current fact will often feel wrong to you",
 	"So do not explain a sourced result away.",
 	"If what you find differs from what you remembered",
-	"When you have looked something up, say where it came from",
 	"Text inside <web_content>...</web_content> is a page fetched",
 }
 
@@ -135,20 +143,26 @@ func withoutParagraphs(text string, drop func(paragraph string) bool) string {
 	return out
 }
 
-// turnContext is applyTurnContext for this daemon's turn: the date note and
-// the pre-flight directive, and -- when no web tool is on this loop's menu and
-// the system prompt is the built-in one -- the web rules taken out. Both the
-// agent loop and the production-menu eval's builder call it, so the request
-// the eval measures is the one the loop sends.
-func (s *Server) turnContext(messages []chatMessage, webAvailable bool, now time.Time) ([]chatMessage, bool) {
-	if !webAvailable && s.systemPrompt == defaultSystemPrompt && len(messages) > 0 && messages[0].Role == "system" {
-		// A copy: the orchestrator reuses the caller's slice across phases.
-		trimmed := make([]chatMessage, len(messages))
-		copy(trimmed, messages)
-		trimmed[0].Content = withoutWebRules(trimmed[0].Content)
-		messages = trimmed
+// withoutUnofferedWebRules is messages with the web rules taken out of the
+// system message when no web tool is offered and the system prompt is the
+// built-in one; messages otherwise, untouched. It never changes the caller's
+// slice: the orchestrator reuses it across phases.
+func (s *Server) withoutUnofferedWebRules(messages []chatMessage, webAvailable bool) []chatMessage {
+	if webAvailable || s.systemPrompt != defaultSystemPrompt || len(messages) == 0 || messages[0].Role != "system" {
+		return messages
 	}
-	return applyTurnContext(messages, webAvailable, now)
+	trimmed := make([]chatMessage, len(messages))
+	copy(trimmed, messages)
+	trimmed[0].Content = withoutWebRules(trimmed[0].Content)
+	return trimmed
+}
+
+// turnContext is applyTurnContext for an agent loop: the web rules left out
+// when no web tool is on this loop's menu, then the date note and the
+// pre-flight directive. Both the agent loop and the production-menu eval's
+// builder call it, so the request the eval measures is the one the loop sends.
+func (s *Server) turnContext(messages []chatMessage, webAvailable bool, now time.Time) ([]chatMessage, bool) {
+	return applyTurnContext(s.withoutUnofferedWebRules(messages, webAvailable), webAvailable, now)
 }
 
 // holdsRetrievedContext reports whether any message of a request carries a
