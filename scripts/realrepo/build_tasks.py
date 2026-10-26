@@ -267,7 +267,8 @@ The minus sign should appear once, at the start, as it does for integer duration
 The tests are in `test/` (Google Test, bundled). With cmake and ctest installed: `cmake -S . -B build -DFMT_TEST=ON`, `cmake --build build --target chrono-test`, then `ctest --test-dir build -R chrono`."""),
     dict(name="cpp-cli11-complex-exponent", repo="CLI11", sha="aadf041625", lang="C++",
          tests=["tests/NewParseTest.cpp"],
-         check="cmake -S . -B .grade -DCLI11_BUILD_TESTS=ON >/dev/null && cmake --build .grade -j4 --target NewParseTest >/dev/null && cd .grade && timeout 300 ctest -R '^NewParseTest$' --output-on-failure",
+         # The test binary itself: CLI11's ctest run first starts helper programs only a full build makes.
+         check="cmake -S . -B .grade -DCLI11_BUILD_TESTS=ON >/dev/null && cmake --build .grade -j4 --target NewParseTest >/dev/null && timeout 300 ./.grade/tests/NewParseTest",
          text="""A `std::complex` option in CLI11 cannot be given a value whose imaginary part has an exponent:
 
 ```cpp

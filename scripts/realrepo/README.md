@@ -14,7 +14,7 @@ The agent's commands run in a sandbox that mounts each program's own toolchain f
 found on the daemon's `PATH`. So put the toolchains in `$REALREPO_HOME/tools` and let `run_eval.py`
 put them first on `PATH`:
 
-- **Python**: a venv at `tools/py` with `pytest<9` and `cmake<4`.
+- **Python**: a venv at `tools/py` with `pytest<9`, `cmake<4` and `simplejson` (marshmallow's tests import it).
   - pytest 9 fails collecting click's tests (`PytestRemovedIn10Warning` under `filterwarnings=error`).
   - CMake 4 refuses the `cmake_minimum_required` of 2018-era projects such as cJSON.
   - A `.pth` file in the venv that adds the current folder and `./src` makes each project importable
