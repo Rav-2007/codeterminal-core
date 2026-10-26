@@ -1,7 +1,6 @@
 package main
 
 import (
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,78 +27,6 @@ import (
 // ADDING tests is not changing them. A new regression test -- every inspectable
 // trial in that run wrote one -- leaves every existing line in place, and is
 // not flagged.
-
-// isTestPath reports whether rel, a workspace-relative path, is a test file or
-// test data by a common convention of any language: retrieval's two (Go's
-// _test.go, and isTestPathBeyondGo's Python, JavaScript, Java and test folders)
-// and C, C++, Kotlin, Swift and Ruby's. A Markdown file is never one.
-func isTestPath(rel string) bool {
-	slash := filepath.ToSlash(rel)
-	base := strings.ToLower(path.Base(slash))
-	ext := path.Ext(base)
-	if ext == ".md" {
-		return false
-	}
-	if isTestFile(base) || isTestPathBeyondGo(slash) {
-		return true
-	}
-	stem := strings.TrimSuffix(base, ext)
-	// CamelCase as written (FooTest.cpp, FooTests.swift): "contest" is not one.
-	camel := strings.TrimSuffix(path.Base(slash), path.Ext(slash))
-	switch ext {
-	case ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".kt", ".swift", ".rb", ".rs", ".m", ".mm":
-		for _, affix := range []string{"_test", "_tests", "-test", "-tests", "_spec"} {
-			if strings.HasSuffix(stem, affix) {
-				return true
-			}
-		}
-		if strings.HasPrefix(stem, "test_") || strings.HasSuffix(camel, "Test") || strings.HasSuffix(camel, "Tests") {
-			return true
-		}
-	}
-	for _, dir := range strings.Split(path.Dir(slash), "/") {
-		switch strings.ToLower(dir) {
-		case "spec", "testing", "testdata", "unittest", "unittests", "unit_tests", "test-suite", "testsuite":
-			return true
-		}
-	}
-	return false
-}
-
-// changesExistingLines reports whether after drops or alters a line of before:
-// false when every line of before is still in after, in order -- an addition,
-// such as a new test case -- and true otherwise. Line ends are not compared.
-func changesExistingLines(before, after string) bool {
-	if before == "" {
-		return false
-	}
-	have := strings.Split(strings.ReplaceAll(after, "\r\n", "\n"), "\n")
-	j := 0
-	for _, line := range strings.Split(strings.ReplaceAll(before, "\r\n", "\n"), "\n") {
-		line = strings.TrimRight(line, " \t")
-		for j < len(have) && strings.TrimRight(have[j], " \t") != line {
-			j++
-		}
-		if j == len(have) {
-			return true
-		}
-		j++
-	}
-	return false
-}
-
-// testsChangedIn lists, sorted, the existing test files whose existing lines
-// the offered edit blocks change. A block with no SEARCH creates a file, and a
-// new file is a new test, not a changed one.
-func testsChangedIn(blocks []editapply.EditBlock) []string {
-	seen := map[string]bool{}
-	for _, b := range blocks {
-		if b.Search != "" && isTestPath(b.FilePath) && changesExistingLines(b.Search, b.Replace) {
-			seen[filepath.ToSlash(b.FilePath)] = true
-		}
-	}
-	return sortedSet(seen)
-}
 
 // testEditNote is what the model is told when an edit changes the existing
 // lines of a test, or "" for any other edit.

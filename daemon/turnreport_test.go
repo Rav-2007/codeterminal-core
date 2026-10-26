@@ -82,6 +82,33 @@ func TestTheRecordSaysWhereATurnStands(t *testing.T) {
 	}); !strings.Contains(report, "The answer says the tests pass") {
 		t.Errorf("a claim backed by a command that tests nothing was not contradicted:\n%s", report)
 	}
+	// A build that passed, and then a test run that failed, on the final version:
+	// the claim is contradicted -- the last run speaks for the version, not the
+	// best one (the cJSON trial of a real-model run, 2026-10-27).
+	if report := turnReport(turnFacts{
+		result:  agentResult{FinalText: "All 19 tests pass."},
+		offered: edit, checks: []ranCheck{{command: "cmake --build build", passed: true, edits: 1},
+			{command: "ctest --test-dir build", passed: false, edits: 1}}, editsNow: 1,
+	}); !strings.Contains(report, "The answer says the tests pass; the last build or test run on the final version failed.") {
+		t.Errorf("a claim after a passing build and a failing test run was not contradicted:\n%s", report)
+	}
+	// And when something that tests nothing ran after the failing run, the
+	// record still names the failing run.
+	report = turnReport(turnFacts{
+		result:  agentResult{FinalText: "All 19 tests pass."},
+		offered: edit, checks: []ranCheck{{command: "ctest --test-dir build", passed: false, edits: 1},
+			{command: "cat build/Testing/Temporary/LastTest.log", passed: true, edits: 1}}, editsNow: 1,
+	})
+	for _, want := range []string{"Last check: `cat build/Testing/Temporary/LastTest.log` passed, on the final version.",
+		"The last build or test run on the final version, `ctest --test-dir build`, FAILED.",
+		"The answer says the tests pass; the last build or test run on the final version failed."} {
+		if !strings.Contains(report, want) {
+			t.Errorf("the record does not say %q:\n%s", want, report)
+		}
+	}
+	if strings.Contains(report, "does not build or test the project") {
+		t.Errorf("the record calls the turn untested when its test run failed:\n%s", report)
+	}
 	// A pass before the last edit does not back a claim about the final version.
 	if report := turnReport(turnFacts{
 		result:  agentResult{FinalText: "All 19 tests pass."},

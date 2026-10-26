@@ -113,7 +113,7 @@ var fileKindSites = map[string]struct {
 	// conventions fileclass.go does not cover (C, C++, Kotlin, Swift, Ruby), so
 	// that changing an existing test is told and shown. A test-or-not axis, like
 	// fileclass.go's, deliberately not a language: it routes nothing.
-	"daemon/testedits.go": {separateAxis, 2},
+	"daemon/turnevidence.go": {separateAxis, 2},
 }
 
 // scanRoots are the module directories whose production code could route on a

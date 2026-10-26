@@ -87,6 +87,7 @@ func TestProjectPathsInACommandArePointedAtTheCopy(t *testing.T) {
 		{"cat '" + real + "/src/a.c'", "cat '/cache/st-1/src/a.c'"},
 		{"cmake --install-prefix=" + real + "/out", "cmake --install-prefix=/cache/st-1/out"},
 		{"ls " + real, "ls /cache/st-1"},
+		{"cd " + filepath.ToSlash(real) + "/src && make", "cd /cache/st-1/src && make"},
 		{"ls " + real + "2/x", "ls " + real + "2/x"},
 		{"ls " + real + ".bak", "ls " + real + ".bak"},
 		{"ls /x" + real, "ls /x" + real},
@@ -104,8 +105,31 @@ func TestProjectPathsInACommandArePointedAtTheCopy(t *testing.T) {
 	}
 	// A second spelling of the project the daemon knows (s.workspace before
 	// symlinks are resolved) is pointed at the copy as well.
-	if got := st.toCopy("cd /link/proj && make", "/link/proj"); got != "cd /cache/st-1 && make" {
+	alias := filepath.Join(home, "link", "proj")
+	if got := st.toCopy("cd "+alias+" && make", alias); got != "cd /cache/st-1 && make" {
 		t.Errorf("an alias of the project was not pointed at the copy: %q", got)
+	}
+}
+
+// A command starts in a folder of the project, named relative to it or by its
+// real path. "/etc" is refused on every platform -- Windows reads it as the
+// root of the drive, not as absolute -- never run in a folder of the copy that
+// happens to share its name.
+func TestACommandStartsOnlyInAFolderOfTheProject(t *testing.T) {
+	s, real := stageProject(t, map[string]string{"etc/x": "", "src/a.c": ""})
+	st, err := stagedSink(t, s).workingCopy()
+	if err != nil || st == nil {
+		t.Fatalf("no working copy: %v", err)
+	}
+	for _, cwd := range []string{"src", filepath.Join(real, "src")} {
+		if dir, err := st.commandDir(cwd); err != nil || dir != filepath.Join(st.root, "src") {
+			t.Errorf("commandDir(%q) = %q, %v; want the copy's src", cwd, dir, err)
+		}
+	}
+	for _, cwd := range []string{"/etc", "..", "../x"} {
+		if dir, err := st.commandDir(cwd); err == nil {
+			t.Errorf("commandDir(%q) = %q, not refused", cwd, dir)
+		}
 	}
 }
 
@@ -347,20 +371,26 @@ func TestSandboxExecInTheCopyImportsTheCopysCode(t *testing.T) {
 	}
 }
 
-// A run in the working copy checks the working copy, whichever tool ran it: it
-// is the check line above the review, as a sandbox_exec run is.
+// A build or a test run in the working copy checks the working copy, whichever
+// tool ran it: it is the check line above the review, as a sandbox_exec run is.
+// Reading a file is not a check.
 func TestARunInTheCopyIsACheckOfIt(t *testing.T) {
-	s, _, sink := posixRunPlace(t, map[string]string{"a.txt": "old\n"})
+	makefile := "check:\n\tgrep -q new a.txt\nstale:\n\tgrep -q old a.txt\n"
+	s, _, sink := posixRunPlace(t, map[string]string{"a.txt": "old\n", "Makefile": makefile})
 	if out, failed := propose(t, s, sink, "a.txt", "old", "new"); failed {
 		t.Fatalf("the edit did not land in the working copy: %s", out)
 	}
-	runIn(t, s, sink, map[string]any{"command": "grep -q new a.txt"})
-	if c := sink.lastCheck(); c == nil || c.command != "grep -q new a.txt" || !c.passed || c.edits != 1 {
-		t.Fatalf("a passing run in the copy was not recorded as a check of the final version: %+v", c)
+	runIn(t, s, sink, map[string]any{"command": "make check"})
+	if c := sink.lastCheck(); c == nil || c.command != "make check" || !c.passed || c.edits != 1 {
+		t.Fatalf("a passing test run in the copy was not recorded as a check of the final version: %+v", c)
 	}
-	runIn(t, s, sink, map[string]any{"command": "grep -q old a.txt"})
+	runIn(t, s, sink, map[string]any{"command": "cat a.txt"})
+	if c := sink.lastCheck(); c == nil || c.command != "make check" {
+		t.Errorf("reading a file was recorded as a check: %+v", c)
+	}
+	runIn(t, s, sink, map[string]any{"command": "make stale"})
 	_, info, _ := sink.finish()
-	if info == nil || info.Checked != "grep -q old a.txt" || info.Passed {
+	if info == nil || info.Checked != "make stale" || info.Passed {
 		t.Errorf("the failing run is not the last check reported: %+v", info)
 	}
 }

@@ -30,7 +30,7 @@ func execDirIn(root, dir string) (path, why string) {
 		return root, ""
 	}
 	clean := filepath.Clean(filepath.FromSlash(dir))
-	if filepath.IsAbs(clean) || leavesRoot(clean) {
+	if rootedPath(clean) || leavesRoot(clean) {
 		return "", fmt.Sprintf("dir %q must be a folder inside the project, given relative to its root", dir)
 	}
 	path = filepath.Join(root, clean)
@@ -51,6 +51,14 @@ func execDirIn(root, dir string) (path, why string) {
 // leavesRoot reports whether a cleaned relative path climbs out of its root.
 func leavesRoot(rel string) bool {
 	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// rootedPath reports a path that does not start in the folder it would be
+// joined to: an absolute one, or on Windows one that starts at a drive's root
+// (\etc, which filepath.IsAbs does not count) or names a drive (C:x). The
+// Windows CI found "/etc" run as the project's own etc folder.
+func rootedPath(p string) bool {
+	return filepath.IsAbs(p) || filepath.VolumeName(p) != "" || strings.HasPrefix(p, string(filepath.Separator))
 }
 
 // execWord is one word of a sandbox_exec command, and whether any of it was
@@ -164,22 +172,6 @@ func (s *Server) execCommandRefusal(words []execWord) string {
 		}
 	}
 	return s.execRefusal(first.text)
-}
-
-// looksLikeEnvAssignment reports a word in the NAME=VALUE shape a shell puts in
-// front of a command.
-func looksLikeEnvAssignment(word string) bool {
-	name, _, found := strings.Cut(word, "=")
-	if !found || name == "" {
-		return false
-	}
-	for i, r := range name {
-		letter := r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
-		if !letter && (i == 0 || r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
 }
 
 // hasAnyPrefix reports whether s begins with one of prefixes.
