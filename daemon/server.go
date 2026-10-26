@@ -949,6 +949,9 @@ func (s *Server) serveConn(conn net.Conn) {
 
 	// No tools on this path. Agent mode has its own entry point; passing nil
 	// here is what keeps the request body byte-identical to the pre-tools one.
+	// And with no tools there is no web tool, so the rules about using one go
+	// (promptrules.go) -- the same step the agent loop takes for its menu.
+	messages = s.withoutUnofferedWebRules(messages, false)
 	apiKey, apiBase := s.credentials()
 	ask := func() error {
 		_, err := streamWithRetry(ctx, apiBase, apiKey, decision.Slug, messages, nil, routing,
