@@ -87,6 +87,7 @@ func TestProjectPathsInACommandArePointedAtTheCopy(t *testing.T) {
 		{"cat '" + real + "/src/a.c'", "cat '/cache/st-1/src/a.c'"},
 		{"cmake --install-prefix=" + real + "/out", "cmake --install-prefix=/cache/st-1/out"},
 		{"ls " + real, "ls /cache/st-1"},
+		{"cd " + filepath.ToSlash(real) + "/src && make", "cd /cache/st-1/src && make"},
 		{"ls " + real + "2/x", "ls " + real + "2/x"},
 		{"ls " + real + ".bak", "ls " + real + ".bak"},
 		{"ls /x" + real, "ls /x" + real},
@@ -104,8 +105,31 @@ func TestProjectPathsInACommandArePointedAtTheCopy(t *testing.T) {
 	}
 	// A second spelling of the project the daemon knows (s.workspace before
 	// symlinks are resolved) is pointed at the copy as well.
-	if got := st.toCopy("cd /link/proj && make", "/link/proj"); got != "cd /cache/st-1 && make" {
+	alias := filepath.Join(home, "link", "proj")
+	if got := st.toCopy("cd "+alias+" && make", alias); got != "cd /cache/st-1 && make" {
 		t.Errorf("an alias of the project was not pointed at the copy: %q", got)
+	}
+}
+
+// A command starts in a folder of the project, named relative to it or by its
+// real path. "/etc" is refused on every platform -- Windows reads it as the
+// root of the drive, not as absolute -- never run in a folder of the copy that
+// happens to share its name.
+func TestACommandStartsOnlyInAFolderOfTheProject(t *testing.T) {
+	s, real := stageProject(t, map[string]string{"etc/x": "", "src/a.c": ""})
+	st, err := stagedSink(t, s).workingCopy()
+	if err != nil || st == nil {
+		t.Fatalf("no working copy: %v", err)
+	}
+	for _, cwd := range []string{"src", filepath.Join(real, "src")} {
+		if dir, err := st.commandDir(cwd); err != nil || dir != filepath.Join(st.root, "src") {
+			t.Errorf("commandDir(%q) = %q, %v; want the copy's src", cwd, dir, err)
+		}
+	}
+	for _, cwd := range []string{"/etc", "..", "../x"} {
+		if dir, err := st.commandDir(cwd); err == nil {
+			t.Errorf("commandDir(%q) = %q, not refused", cwd, dir)
+		}
 	}
 }
 

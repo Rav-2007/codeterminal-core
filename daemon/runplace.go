@@ -427,7 +427,7 @@ func (st *stagedWorkspace) commandDir(cwd string) (string, error) {
 	}
 	rel, ok := st.relFor(cwd)
 	rel = filepath.Clean(rel)
-	if !ok || filepath.IsAbs(rel) || leavesRoot(rel) {
+	if !ok || rootedPath(rel) || leavesRoot(rel) {
 		return "", fmt.Errorf("%s is not a folder in the project", cwd)
 	}
 	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
@@ -459,6 +459,12 @@ func (st *stagedWorkspace) toCopy(line string, aliases ...string) string {
 	if home, err := os.UserHomeDir(); err == nil {
 		if rel, ok := strings.CutPrefix(st.real, home+string(filepath.Separator)); ok {
 			roots = append(roots, "~"+string(filepath.Separator)+rel)
+		}
+	}
+	// On Windows a path is written with forward slashes as often as not.
+	for _, root := range roots {
+		if slash := filepath.ToSlash(root); slash != root {
+			roots = append(roots, slash)
 		}
 	}
 	sort.Slice(roots, func(i, j int) bool { return len(roots[i]) > len(roots[j]) })
