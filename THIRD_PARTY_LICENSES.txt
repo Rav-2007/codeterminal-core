@@ -1374,7 +1374,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --------------------------------------------------------------------------
 
 Name:    golang.org/x/sys (daemon copy)
-Version: v0.34.0 (as pinned in daemon/go.mod and daemon/go.sum)
+Version: v0.49.0 (as pinned in daemon/go.mod and daemon/go.sum)
 License: BSD-3-Clause
 Source:  https://cs.opensource.google/go/x/sys
 
@@ -2025,7 +2025,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --------------------------------------------------------------------------
 
 Name:    x-sys (golang.org/x/sys)
-Version: v0.34.0 (as pinned in clients/tui/go.mod and clients/tui/go.sum)
+Version: v0.49.0 (as pinned in clients/tui/go.mod and clients/tui/go.sum)
 License: BSD-3-Clause
 Source:  https://pkg.go.dev/golang.org/x/sys
 
@@ -2602,7 +2602,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --------------------------------------------------------------------------
 
 Name:    go-winio (github.com/Microsoft/go-winio)
-Version: v0.6.2 (as pinned in protocol/go.mod, and transitively in daemon/go.mod
+Version: v0.6.4 (as pinned in protocol/go.mod, and transitively in daemon/go.mod
          and helper/go.mod with their go.sum entries)
 License: MIT
 Source:  https://pkg.go.dev/github.com/Microsoft/go-winio

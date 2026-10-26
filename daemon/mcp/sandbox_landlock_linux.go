@@ -263,7 +263,7 @@ func rightsFor(access string) uint64 {
 // thread.
 func restrictLandlock(policy landlockPolicy, abi int) error {
 	handled := handledFSRights(abi)
-	attr := unix.LandlockRulesetAttr{Access_fs: handled}
+	attr := unix.LandlockRulesetAttr{Handled_access_fs: handled}
 	if abi >= 6 {
 		// Abstract Unix sockets and signals, scoped to the domain: nothing
 		// inside can reach a process outside by either. The seccomp filter
@@ -273,6 +273,9 @@ func restrictLandlock(policy landlockPolicy, abi int) error {
 	}
 	// The full struct on every ABI: an older kernel accepts a larger struct
 	// whose unknown trailing fields are zero, and they are zero below ABI 6.
+	// Since x/sys v0.49 the struct also carries the Quiet_* fields (48 bytes,
+	// up from 24); they are never set here, so they are zero on every kernel
+	// too, and one that predates them accepts the struct as before.
 	fd, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET,
 		uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0)
 	if errno != 0 {
