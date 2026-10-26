@@ -144,7 +144,7 @@ func execRefusalWith(bin string, extras []string, confined bool) string {
 		if !confined {
 			return fmt.Sprintf("%q may run only where commands run in a sandbox (it is in "+
 				"mcp.builtin.extra_programs, or this project's own toolchain), and this host has none "+
-				"(install bubblewrap); run_command can run it in the real project, with the user's approval", bin)
+				"(install bubblewrap); run_command can run it in this turn's working copy, with the user's approval", bin)
 		}
 		return ""
 	}
@@ -706,7 +706,7 @@ func (s *Server) runSandboxExec(ctx context.Context, raw json.RawMessage, root s
 	// and failed the fixed test. Found by TestAPythonProjectTestsItsEditsInThe
 	// WorkingCopy. A working copy is short-lived, so the cache saved nothing, and
 	// its __pycache__ folders were noise in the turn's "created by a command".
-	cmd.Env = append(cmd.Env, "PYTHONDONTWRITEBYTECODE=1")
+	cmd.Env = append(append(cmd.Env, "PYTHONDONTWRITEBYTECODE=1"), stagedPythonPath(root)...) // runplace.go: the copy's code
 	// LANDLOCK HAS NO PRIVATE /tmp. bwrap mounts a fresh tmpfs there; landlock
 	// cannot, and the shared /tmp holds other programs' files and sockets, so
 	// the policy does not grant it. The command gets a directory of its own

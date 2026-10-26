@@ -1619,14 +1619,14 @@ func (s *Server) resolveExecutable(
 	// that host". A grant for these exact arguments, checked below, still is.
 	egress := webEgressReview(turn, bud, spec, arguments)
 
-	// A COMMAND THAT WOULD RUN IN THE REAL PROJECT IS ALWAYS ASKED ABOUT, for
-	// the same reason. "allow" on sandbox_exec was written about a command
-	// that runs in a private copy and cannot touch the user's files; when this
-	// turn has no copy (the project is too large, or copies are switched off)
-	// the same command writes straight into the project, .git/hooks included,
-	// and nothing reviews what it wrote. Asked here, the copy is made if it
-	// can be -- see mcp.Builtin.InPlace.
-	inPlace := spec.ExecutesCode && registry.RunsInPlace(qualified)
+	// A COMMAND THAT WOULD RUN IN THE REAL PROJECT IS ALWAYS ASKED ABOUT: "allow"
+	// was written about a private copy, and in the project what a command writes
+	// (.git/hooks included) is not reviewed. The copy is made here if it can be,
+	// and a call its tool refuses is refused before anyone is asked (mcp.Builtin.Place).
+	inPlace, refused := registry.Placement(qualified, json.RawMessage(arguments))
+	if inPlace = inPlace && spec.ExecutesCode; refused != "" {
+		return toolDecision{tool: spec, policy: policy, source: auditRefusedByTool, cause: denyByTool, reason: refused}
+	}
 
 	// Config "allow" skips the per-call prompt. It never skips a launch: a
 	// user who allowed a lookup did not thereby agree to start a third-party

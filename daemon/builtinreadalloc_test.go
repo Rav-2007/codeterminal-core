@@ -191,8 +191,11 @@ var builtinToolSurface = []string{
 	// only reads are the trash's entry.json, through readBoundedFile, and a
 	// restored file copied into the working copy by io.Copy, never resident.
 	"fileops.go",
-	// run_command bounds its output at source with tailBuffer, as sandbox_exec does.
-	"runcommand.go",
+	// run_command (2026-10-26: its handler decides where it runs, here). Its
+	// output is bounded at source with tailBuffer, as sandbox_exec's is
+	// (runcommand.go, which reads no file); its walks read names and states, and
+	// its one read of a file's contents is readCopyFile, bounded by maxFileSize.
+	"runplace.go",
 	// Added 2026-10-15 with find_files. It reads no file's contents: it walks
 	// names, as grep's walk does, bounded by findFilesMaxWalked.
 	"findfiles.go",

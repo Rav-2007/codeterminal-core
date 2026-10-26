@@ -723,10 +723,10 @@ func (s *Server) newTurnSink(mode string, spec *activeSpec, messages []chatMessa
 const workingCopyDirective = "YOUR EDITS TAKE EFFECT IN A WORKING COPY. propose_edit applies each edit " +
 	"at once to a private copy of the project for this turn: read_file shows your changes and " +
 	"sandbox_exec builds and tests them, while the user's real files stay untouched until they review " +
-	"all of your changes when you finish. So work the way an engineer does: after changing code, " +
-	"build it or run the relevant tests with sandbox_exec, read what they say, and fix what fails " +
-	"before you finish. When you finish, say what you ran and how it went -- and if you could not " +
-	"run anything, say that instead of implying the change was tested."
+	"all of your changes when you finish. " +
+	// How to test them, and what may be said about it afterwards, is
+	// verifyrule.go's: the sentence here did not stop a claim of tests never run.
+	testYourChanges
 
 // withSystemNote returns messages with note appended to the system message.
 // A copy: the caller's slice is reused across phases, and text added to it in
