@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -346,6 +347,13 @@ type MCPServerConfig struct {
 	// mcp.ServerEnv). The model-API keys are never inheritable, whatever this
 	// list says -- see mcp.ForbiddenEnvNames.
 	Env []string `json:"env,omitempty"`
+
+	// EnvOptional names the variables in Env the server runs without (a
+	// catalog's required: false). Each must be in Env. Without a value one is
+	// still not passed, but nor is it reported as a missing key: a third of
+	// the marketplace's verified servers read an optional variable, and each
+	// showed "Needs a key" on a server that was running (2026-10-26).
+	EnvOptional []string `json:"env_optional,omitempty"`
 
 	// EnvMap gives the server variables whose values are TEMPLATES --
 	// {"API_KEY": "${MY_KEY}"} -- so a block can say where a value comes from
@@ -860,6 +868,12 @@ func validateServerBlock(s MCPServerConfig) error {
 		if strings.Contains(env, "=") {
 			return fmt.Errorf("env entry %q looks like a NAME=VALUE pair; this list takes variable NAMES to "+
 				"pass through from the daemon's environment, so that secrets stay out of your config file", env)
+		}
+	}
+	for _, opt := range s.EnvOptional {
+		if !slices.Contains(s.Env, opt) {
+			return fmt.Errorf("env_optional names %q, which env does not list; an optional variable is one of "+
+				"the server's own", truncateForClient(opt, 40))
 		}
 	}
 	if s.Cwd != "" && s.Cwd != ServerCwdWorkspace {

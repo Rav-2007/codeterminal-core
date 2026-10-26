@@ -35,7 +35,7 @@ import {
   parseCatalog,
   validServerName,
 } from './mcpCatalog';
-import { storeServer } from './mcpInstall';
+import { ServerSpec, storeServer } from './mcpInstall';
 import { MCP_SERVERS_VIEW_ID, McpServersProvider, McpServersState } from './mcpServersView';
 
 export const MARKETPLACE_VIEW_TYPE = 'mochiiiMcpMarketplace';
@@ -103,6 +103,23 @@ export function matches(s: CatalogServer, query: string, category: string): bool
     .split(/\s+/)
     .filter(Boolean)
     .every((w) => hay.includes(w));
+}
+
+/**
+ * specFor is what Add sends the daemon for a catalog entry. The variables the
+ * catalog marks required: false go as optional, so the daemon does not report
+ * a server that runs without them as needing a key (2026-10-26: five of the
+ * seventeen verified servers did).
+ */
+export function specFor(s: CatalogServer): ServerSpec {
+  return {
+    name: s.id,
+    command: s.launch.command,
+    args: s.launch.args,
+    env: s.env.map((e) => e.name),
+    envOptional: s.env.filter((e) => !e.required).map((e) => e.name),
+    cwd: s.cwd ?? '',
+  };
 }
 
 /** The provenance line said before the daemon's own warning. */
@@ -451,17 +468,11 @@ export class MarketplaceCore implements vscode.Disposable {
     this.post({ type: 'busy', id, busy: true });
     let added = false;
     try {
-      added = !!(await storeServer(
-        this.clientName,
-        {
-          name: server.id,
-          command: server.launch.command,
-          args: server.launch.args,
-          env: server.env.map((e) => e.name),
-          cwd: server.cwd ?? '',
-        },
-        { action: 'add', provenance: provenanceOf(server), envHelp: server.env },
-      ));
+      added = !!(await storeServer(this.clientName, specFor(server), {
+        action: 'add',
+        provenance: provenanceOf(server),
+        envHelp: server.env,
+      }));
     } finally {
       this.post({ type: 'busy', id, busy: false });
       await this.provider.refresh();
