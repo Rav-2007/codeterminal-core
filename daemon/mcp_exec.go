@@ -578,22 +578,22 @@ func notRun(res mcp.Result, err error) (mcp.Result, execOutcome, error) {
 
 // runSandboxExec is builtinSandboxExecIn with the command's outcome as well.
 func (s *Server) runSandboxExec(ctx context.Context, raw json.RawMessage, root string, timeout time.Duration) (mcp.Result, execOutcome, error) {
-	var args struct {
-		Command        string `json:"command"`
-		TimeoutSeconds int    `json:"timeout_seconds"`
-	}
+	var args sandboxExecArgs // execdir.go
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return notRun(toolError("arguments were not a valid JSON object: %v", err))
 	}
+	// dir: a subfolder to run from, kept inside the project; a dir that is not
+	// one is refused with the command's other refusals below (execdir.go).
+	runDir, dirWhy := execDirIn(root, args.Dir)
 	timeout = withinDeadline(ctx, execTimeoutArg(args.TimeoutSeconds, timeout))
 
-	parts := strings.Fields(strings.TrimSpace(args.Command))
-	if len(parts) == 0 {
-		return notRun(toolError("command cannot be empty"))
+	words, splitWhy := execWords(strings.TrimSpace(args.Command)) // execdir.go: quotes keep a word whole
+	if len(words) == 0 {
+		return notRun(toolError("%s", firstReason(splitWhy, "command cannot be empty")))
 	}
-
+	parts := wordTexts(words)
 	bin := parts[0]
-	if why := s.execRefusal(bin); why != "" {
+	if why := firstReason(dirWhy, s.execCommandRefusal(words)); why != "" { // execdir.go
 		return notRun(toolError("%s", why))
 	}
 
@@ -608,7 +608,7 @@ func (s *Server) runSandboxExec(ctx context.Context, raw json.RawMessage, root s
 	// half-configured -- which is what produced `docker run ... make` asking
 	// Docker for an image named "make".
 	cfg := s.sandboxExecConfig()
-	cfg.WorkspaceRoot = root
+	cfg.WorkspaceRoot, cfg.StartDir = root, runDir
 
 	// LEFTOVER PROCESSES, REAPED. bwrap runs the command as pid 1 of a PID
 	// namespace, so anything it backgrounds is killed by the kernel when it
@@ -648,7 +648,7 @@ func (s *Server) runSandboxExec(ctx context.Context, raw json.RawMessage, root s
 	defer cancel()
 
 	cmd := exec.CommandContext(execCtx, execBin, execArgs...)
-	cmd.Dir = root
+	cmd.Dir = runDir
 
 	// Created here rather than in sandboxExecConfig, because that function is
 	// also what the APPROVAL PROMPT is built from and asking "will this be
@@ -665,7 +665,7 @@ func (s *Server) runSandboxExec(ctx context.Context, raw json.RawMessage, root s
 				return notRun(toolError("preparing a sandbox for %q: %v", bin, err))
 			}
 			cmd = exec.CommandContext(execCtx, execBin, execArgs...)
-			cmd.Dir = root
+			cmd.Dir = runDir
 		} else if err := recordSandboxHomeUse(cfg.HomeDir, s.workspace); err != nil {
 			// Whose folder this is, and that it was just used (register item
 			// 37), so the reclaim pass can tell a live project's cache from an

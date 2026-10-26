@@ -352,8 +352,8 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	execSchema := `{
 					"type":"object",
 					"properties":{
-						"command":{"type":"string","description":"One build or test command: go, npm, make or cargo and its arguments, e.g. go test ./... -- NOT a shell: no pipes, &&, cat or echo. To see a file, use read_file."},
-						"timeout_seconds":{"type":"integer","minimum":1,"description":"How long it may run. Leave out for the default; give more for a whole test suite or a build."}
+						"command":{"type":"string","description":"One build or test command: go, npm, make or cargo and its arguments, e.g. go test ./... -- NOT a shell: no cd (give dir), pipes, &&, cat or echo. To see a file, use read_file."},
+						"timeout_seconds":{"type":"integer","minimum":1,"description":"How long it may run. Leave out for the default; give more for a whole test suite or a build."},"dir":{"type":"string","description":"The folder to run it in, relative to the project root, e.g. gson for a module. Leave out for the root."}
 					},
 					"required":["command"],
 					"additionalProperties":false

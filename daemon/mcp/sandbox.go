@@ -46,14 +46,14 @@ const (
 type SandboxConfig struct {
 	Mode              SandboxMode
 	WorkspaceRoot     string
+	StartDir          string // where the command starts: a folder inside WorkspaceRoot, or empty for the root (startdir.go)
 	ReadOnlyWorkspace bool
 	AllowNetwork      bool
 	MemoryLimitMB     int
 	CPULimit          float64
 
-	// PidsLimit caps the number of tasks the command may create. Zero means no
-	// pids limit, which is the thing that makes a fork bomb possible: no memory
-	// cap stops `:(){ :|:& };:` either, because each shell is small.
+	// PidsLimit caps the number of tasks the command may create. Zero means none, which is what
+	// makes a fork bomb possible: no memory cap stops `:(){ :|:& };:`, as each shell is small.
 	PidsLimit int
 
 	// HomeDir is a host directory bound in as the command's HOME.
@@ -703,7 +703,7 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 		if filtered {
 			bwrapArgs = append(bwrapArgs, "--ro-bind", self, self)
 		}
-		bwrapArgs = append(bwrapArgs, "--chdir", cleanWs, "--")
+		bwrapArgs = append(bwrapArgs, "--chdir", startDirIn(cfg, cleanWs), "--")
 		if filtered {
 			bwrapArgs = append(bwrapArgs, self, SandboxHelperArg, egressOnlyFlag, egressFdFlag, "3", landlockArgsSeparator)
 		}
@@ -753,7 +753,7 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 			"--pids-limit=200",                      // Fork-bomb protection
 			"--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
 			"-v", fmt.Sprintf("%s:%s", cleanWs, cleanWs),
-			"-w", cleanWs,
+			"-w", startDirIn(cfg, cleanWs),
 		}
 
 		if uid >= 0 && gid >= 0 {
