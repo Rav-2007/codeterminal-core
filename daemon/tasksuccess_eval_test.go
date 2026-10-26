@@ -215,7 +215,14 @@ func copyTree(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o644)
+		// Whether a file may run is kept: a project's own scripts (gradlew,
+		// configure) are run by its build, and a copy that dropped the bit made
+		// every such file a mode-only change in the trial's diff.
+		mode := os.FileMode(0o644)
+		if info, err := d.Info(); err == nil && info.Mode()&0o111 != 0 {
+			mode = 0o755
+		}
+		return os.WriteFile(target, data, mode)
 	})
 }
 
@@ -824,8 +831,13 @@ func TestTaskSuccess(t *testing.T) {
 				sink, messages := srv.newTurnSink(trialMode, active, buildChatMessages(system, history, ask))
 				registry, _ := srv.buildRegistry(context.Background(), logger, sink, trialMode)
 				// A tally, as serveConn gives every turn: a long task's dollar
-				// budget reads it.
+				// budget reads it. And a clock of its own, as agentturn.go starts
+				// one per message (2026-10-26): timed from the trial's start, a
+				// "continue" lost what the turns before it had used of
+				// turn_timeout_seconds and was cut off part-way -- which every
+				// TASK_EVAL_CONTINUES run before this date carried.
 				ctx, _ := withUsageTally(context.Background())
+				turnStart := time.Now()
 				switch {
 				case run != nil:
 					run.ledger = newTaskLedger(dir, longMode, userPrompt, start)
@@ -834,11 +846,11 @@ func TestTaskSuccess(t *testing.T) {
 					res, err = srv.runLongTask(ctx, start, registry, model, messages, routing, appr, sink,
 						func(string) error { return nil }, nil, nil, nil, nil, func(protocol.TaskStatus) {})
 				case len(phases) == 0:
-					res, err = srv.runAgentLoop(ctx, start, registry, model, trialMode,
+					res, err = srv.runAgentLoop(ctx, turnStart, registry, model, trialMode,
 						messages, routing, appr,
 						func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
 				default:
-					res, err = srv.runOrchestrated(ctx, start, registry, model, trialMode,
+					res, err = srv.runOrchestrated(ctx, turnStart, registry, model, trialMode,
 						messages, routing, appr,
 						func(string) error { return nil }, nil, nil, nil, nil, phases)
 				}
