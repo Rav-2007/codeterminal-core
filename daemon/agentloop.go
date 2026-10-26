@@ -705,7 +705,7 @@ func (s *Server) runAgentLoop(
 			// so there is no work to preserve and the error is the whole story.
 			// Reporting a bare failure as an "incomplete answer" would be worse
 			// than reporting it as a failure.
-			if full.Len() == 0 {
+			if full.Len() == 0 && len(turn.toolNames) == 0 { // nothing said AND nothing done: no work to keep
 				return agentResult{}, err
 			}
 			s.logger.Printf("agent: stopping at iteration %d after a provider failure, keeping %d byte(s) of answer: %v",
@@ -1036,7 +1036,7 @@ func (s *Server) budgetStop(turn *agentTurn, bud budget) *protocol.IncompleteInf
 			return stop.incomplete()
 		}
 	}
-	if time.Now().After(bud.deadline) {
+	if time.Now().After(bud.deadline.Add(-s.wrapUpReserve(bud))) { // turnreport.go: time kept for the answer
 		// Which deadline bit changes what the user should be told. A phase that
 		// spent the slice reserved for it has not run the turn out of time --
 		// the orchestrator will carry on to the next phase and this Incomplete

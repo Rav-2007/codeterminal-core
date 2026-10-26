@@ -258,8 +258,9 @@ var gitListingOnly = map[string]map[string]bool{
 	"worktree": {"list": true},
 }
 
-// classifyCommand says what one command of a line does.
-func classifyCommand(words []string) lineKind {
+// commandCore is one command of a line as its program and arguments: no
+// redirections, no NAME=VALUE in front, no wrapper (`env`, `time`, `timeout 60`).
+func commandCore(words []string) []string {
 	words = withoutRedirections(words)
 	for len(words) > 0 && looksLikeEnvAssignment(words[0]) {
 		words = words[1:]
@@ -271,6 +272,12 @@ func classifyCommand(words []string) lineKind {
 			words = words[1:]
 		}
 	}
+	return words
+}
+
+// classifyCommand says what one command of a line does.
+func classifyCommand(words []string) lineKind {
+	words = commandCore(words)
 	if len(words) == 0 || words[0] == "cd" {
 		return lineAnywhere
 	}

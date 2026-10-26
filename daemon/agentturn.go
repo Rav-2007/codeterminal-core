@@ -305,8 +305,19 @@ func (s *Server) runAgentTurn(
 	textBlocks = proposals.absorbText(textBlocks)
 	// The working copy's net difference from the project (or, with no copy,
 	// the proposals as filed), then any edits written as text.
+	editsNow := proposals.editCount() // before finish, which closes the copy
 	filed, workingCopy, copyDegraded := proposals.finish()
 	blocks := append(filed, textBlocks...)
+	// MOCHIII'S RECORD UNDER THE ANSWER (turnreport.go): where the turn stands,
+	// from what it did and never from what it said. A long task has its own.
+	report := ""
+	if task == nil {
+		report = turnReport(turnFacts{result: result, offered: blocks, info: workingCopy,
+			checks: proposals.checks, editsNow: editsNow, outside: proposals.outsideReview})
+		if report != "" {
+			_ = sendToken(report)
+		}
+	}
 	// Plan mode withholds the TEXT write path too. The tool filter took away
 	// propose_edit; without this, a SEARCH/REPLACE block in the model's prose
 	// still reached the client as a proposal, and an auto-apply client still
@@ -333,7 +344,7 @@ func (s *Server) runAgentTurn(
 	//
 	// Saved BEFORE the Done, as the chat path is (server.go), so the Done can
 	// say where the shared chat now stands.
-	before, after := s.persistTurn(promptReq.Prompt, remembered+sources+summariseToolActivity(result.ToolNames), result.Incomplete)
+	before, after := s.persistTurn(promptReq.Prompt, remembered+sources+report+summariseToolActivity(result.ToolNames), result.Incomplete)
 
 	// A failed terminal write means the client has gone; the turn's real work
 	// (the edit proposals, the persisted history above) is unaffected.
