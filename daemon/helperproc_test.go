@@ -53,6 +53,13 @@ func TestMain(m *testing.M) {
 	// teardown path in this package instead of two that have to agree.
 	registerProcessCleanup(func() { _ = os.RemoveAll(tmpDir) })
 
+	// A BUSY PROVIDER'S WAIT IS A MILLISECOND HERE (patience.go). A test whose
+	// stand-in fails after the turn has done work would otherwise sit through a
+	// minute and then two -- one did, three minutes, and took the package past
+	// go test's ten. What patience decides is tested in patience_test.go; how
+	// long a real minute is, is not this package's question.
+	providerWaitBase = time.Millisecond
+
 	// THE SAME LEAK AS THE ONE DOCUMENTED BELOW, IN A SECOND DIRECTORY.
 	//
 	// sandboxExecHome (mcp_exec.go) derives the sandbox_exec HOME from

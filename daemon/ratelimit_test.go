@@ -117,8 +117,10 @@ func TestATaskStoppedByARateLimitSaysSo(t *testing.T) {
 		script = append(script, errorOnlySSE(429, "Too Many Requests"))
 	}
 	base, _, _ := agentUpstream(t, script...)
+	// Patience off: this is the stop that comes when it has run out (patience.go).
 	s := loopServer(t, base, MCPConfig{
 		Enabled: true,
+		Budget:  MCPBudgetConfig{ProviderPatienceSeconds: -1},
 		Builtin: MCPBuiltinConfig{Tools: map[string]string{"list_directory": PolicyAllow}},
 	})
 	res, _, err := runLoop(t, s)

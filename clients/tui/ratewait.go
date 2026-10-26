@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,6 +24,10 @@ import (
 type rateWaitState struct {
 	until time.Time
 	gen   int
+	// silent is a wait on a provider that is not answering at all, which the
+	// daemon also waits out within a turn (its patience.go): said as that, not
+	// as a rate limit.
+	silent bool
 }
 
 // rateWaitTickMsg redraws the countdown once a second while a wait lasts.
@@ -34,7 +39,8 @@ type rateWaitTickMsg struct{ gen int }
 func (m *chatModel) noteActivity(a protocol.ToolActivity) tea.Cmd {
 	if a.Phase == protocol.ToolPhaseStep && a.Tool == protocol.ToolWaiting {
 		wait := time.Duration(a.DurationMS) * time.Millisecond
-		m.rateWait = rateWaitState{until: time.Now().Add(wait), gen: m.rateWait.gen + 1}
+		m.rateWait = rateWaitState{until: time.Now().Add(wait), gen: m.rateWait.gen + 1,
+			silent: strings.HasPrefix(a.Detail, "the model provider is not answering")}
 		return rateWaitTick(m.rateWait.gen)
 	}
 	m.rateWait.until = time.Time{}
@@ -63,7 +69,11 @@ func (m chatModel) rateWaitShown() bool { return m.rateWaitLeft() > 0 }
 func (m chatModel) indicatorLine() string {
 	if left := m.rateWaitLeft(); left > 0 {
 		secs := int((left + time.Second - 1) / time.Second)
-		return helpStyle.Render(fmt.Sprintf("⏳ rate-limited — trying again in %ds", secs))
+		why := "rate-limited"
+		if m.rateWait.silent {
+			why = "the model provider is not answering"
+		}
+		return helpStyle.Render(fmt.Sprintf("⏳ %s — trying again in %ds", why, secs))
 	}
 	return m.thinkingLine()
 }

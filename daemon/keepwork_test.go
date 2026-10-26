@@ -32,7 +32,7 @@ func TestAProviderFailureAfterToolCallsKeepsTheEdits(t *testing.T) {
 		http.Error(w, "upstream down", http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(srv.Close)
-	s := loopServer(t, srv.URL, MCPConfig{Enabled: true,
+	s := loopServer(t, srv.URL, MCPConfig{Enabled: true, Budget: MCPBudgetConfig{ProviderPatienceSeconds: -1},
 		Builtin: MCPBuiltinConfig{Tools: map[string]string{"propose_edit": PolicyAllow}}})
 	if err := os.WriteFile(filepath.Join(s.workspace, "a.txt"), []byte("old\n"), 0o644); err != nil {
 		t.Fatal(err)
