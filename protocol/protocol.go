@@ -1804,6 +1804,11 @@ type MCPRequest struct {
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
 	Env     []string `json:"env,omitempty"`
+	// EnvOptional names the variables in Env the server runs without -- what
+	// the marketplace catalog marks required: false. A missing one is not
+	// reported as a missing key. Left out on an update, the stored server's
+	// own list is kept.
+	EnvOptional []string `json:"env_optional,omitempty"`
 
 	// AcknowledgedUnconfined is the user's typed agreement that this server
 	// runs with their full privileges. Without it add stores nothing and
@@ -1923,9 +1928,12 @@ type MCPServerInfo struct {
 	Env     []string `json:"env,omitempty"`
 	Cwd     string   `json:"cwd,omitempty"`
 
+	// EnvOptional names the variables in Env the server runs without.
+	EnvOptional []string `json:"env_optional,omitempty"`
 	// EnvMissing names the variables in Env that this daemon has no value for:
 	// neither given one (MCPActionSetEnv, or at launch) nor started with one.
-	// A server missing one usually exits at once (FeatureMCPEnv).
+	// A server missing one usually exits at once (FeatureMCPEnv). An optional
+	// variable (EnvOptional) is never listed.
 	EnvMissing []string `json:"env_missing,omitempty"`
 	// EnvStored names the variables in Env that have a value stored in the
 	// daemon's key file, for this server or for every server (FeatureMCPSecrets).

@@ -181,6 +181,19 @@ func (s *Server) refreshMCPSecrets() {
 	}
 }
 
+// keysMissing is the variables srv needs that it would be given no value
+// for: envMissing without the ones it runs without (EnvOptional). What a
+// server's status, its add note and the agent's setup section report.
+func (s *Server) keysMissing(server string, srv MCPServerConfig) []string {
+	var out []string
+	for _, name := range s.envMissing(server, srv.Env) {
+		if !slices.Contains(srv.EnvOptional, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // envMissing is the names in env that server would be given no value for.
 func (s *Server) envMissing(server string, env []string) []string {
 	lookup := s.mcpEnvValueFor(server)

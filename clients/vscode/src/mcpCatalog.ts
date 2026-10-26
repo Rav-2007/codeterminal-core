@@ -138,6 +138,18 @@ export function validEnvName(name: unknown): name is string {
   );
 }
 
+/**
+ * templateVars is daemon/mcpexpand.go templateVars: the ${VAR} and
+ * ${VAR:-default} references in an argument, which the daemon expands.
+ */
+export function templateVars(text: string): string[] {
+  return [...text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}/g)].map((m) => m[1]);
+}
+
+function namesForbiddenEnv(arg: string): boolean {
+  return templateVars(arg).some((v) => FORBIDDEN_ENV.some((f) => f.toLowerCase() === v.toLowerCase()));
+}
+
 function exactVersion(v: unknown): v is string {
   return typeof v === 'string' && v.length <= 64 && /^[0-9A-Za-z][0-9A-Za-z.+_-]*$/.test(v) && v.toLowerCase() !== 'latest';
 }
@@ -203,7 +215,9 @@ export function checkServer(raw: unknown): CatalogServer | undefined {
   }
   const env: CatalogEnv[] = [];
   for (const e of s.env) {
-    if (!e || typeof e !== 'object' || !validEnvName(e.name) || 'value' in e) {
+    // A name that is a pasted key the daemon refuses at add (envNameLooksLikeKey):
+    // offering it would be a card whose Add always fails.
+    if (!e || typeof e !== 'object' || !validEnvName(e.name) || looksLikeKey(e.name) || 'value' in e) {
       return undefined;
     }
     if (typeof e.required !== 'boolean' || typeof e.secret !== 'boolean' || env.some((x) => x.name === e.name)) {
@@ -220,6 +234,11 @@ export function checkServer(raw: unknown): CatalogServer | undefined {
     return undefined;
   }
   if (launch.args.some((a: unknown) => typeof a !== 'string' || a.length === 0 || a.length > 512 || /[\u0000\n\r]/.test(a))) {
+    return undefined;
+  }
+  // ${OPENROUTER_API_KEY} in an argument would hand the server this product's
+  // own credential; the daemon refuses it at add (validateTemplates).
+  if (launch.args.some(namesForbiddenEnv)) {
     return undefined;
   }
   const want = expectedArgs(pkg, env);
