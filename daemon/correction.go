@@ -522,7 +522,7 @@ func (j *correctionJudge) edited(path, search, replace string) {
 	if j == nil {
 		return
 	}
-	if w := testsWeakened(search, replace); w != "" {
+	if w := testsWeakenedIn(path, search, replace); w != "" { // testedits.go: every language
 		what := "an edit to " + path + " " + w
 		j.weakened = append(j.weakened, what)
 		j.tried = append(j.tried, truncateRunes(what, maxTriedRunes))

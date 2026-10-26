@@ -1033,7 +1033,7 @@ func workingCopyText(info *protocol.WorkingCopyInfo) string {
 	switch {
 	case info.Checked == "":
 		lines = append(lines, "not checked: the agent did not build or test these changes")
-	case info.Passed && info.Stale:
+	case info.Passed && (info.Stale || len(info.TestsChanged) > 0): // workingcopymore.go says why
 		lines = append(lines, "! checked: "+sanitizeText(info.Checked)+" passed"+stale)
 	case info.Passed:
 		lines = append(lines, "✓ checked: "+sanitizeText(info.Checked)+" passed")

@@ -1215,9 +1215,8 @@ const (
 // made with a tool, or written in the answer -- so its verdict is about an
 // earlier version of them, and what is offered was not run.
 //
-// NotOffered lists changes in the copy that are NOT among the proposals, each
-// with why (a command's build output, a file the user changed meanwhile). The
-// paths are workspace-relative: the user's own project, told to the user.
+// NotOffered lists changes in the copy that are NOT among the proposals, each with why (a
+// command's build output, a file the user changed meanwhile), workspace-relative.
 type WorkingCopyInfo struct {
 	Checked    string   `json:"checked,omitempty"`
 	Passed     bool     `json:"passed,omitempty"`
@@ -1233,6 +1232,7 @@ type WorkingCopyInfo struct {
 	// above the review; absent when no command changed an offered file.
 	ByCommand     []string `json:"by_command,omitempty"`
 	OutsideReview []string `json:"outside_review,omitempty"` // "path (the command)": changed in the REAL project, unreviewed
+	TestsChanged  []string `json:"tests_changed,omitempty"`  // existing test files whose existing lines the changes alter
 }
 
 // Degradation names one subsystem running in a reduced mode, in the same

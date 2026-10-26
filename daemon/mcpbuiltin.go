@@ -281,7 +281,7 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 	p.stage.close()
 	p.stage = nil
 	notOffered = append(notOffered, p.textNotes...)
-	info = &protocol.WorkingCopyInfo{Checked: p.checked, Passed: p.checkPassed, NotOffered: notOffered, ByCommand: byCommand, OutsideReview: p.outsideReview}
+	info = &protocol.WorkingCopyInfo{Checked: p.checked, Passed: p.checkPassed, NotOffered: notOffered, ByCommand: byCommand, OutsideReview: p.outsideReview, TestsChanged: testsChangedIn(net)}
 	// A CHECK VOUCHES ONLY FOR WHAT IT RAN AGAINST. An edit after it -- with a
 	// tool, a restore, or written in the answer and absorbed above -- changed
 	// what is offered, and "checked: passed" alone would describe code that
@@ -1042,7 +1042,7 @@ func applyInWorkingCopy(proposals *proposalSink, block editapply.EditBlock) (mcp
 	return mcp.Result{Content: "Done: " + what + " in this turn's working copy of the project. " +
 		"read_file now shows the file as it is, and sandbox_exec runs against it. Nothing reaches the " +
 		"user's real files until they review all of this turn's changes when you finish -- so do not " +
-		"repeat this edit; build on it."}, true
+		"repeat this edit; build on it." + testEditNote(rel, block, prepared.Creates)}, true // testedits.go
 }
 
 // realWorkspaceRoot resolves s.workspace to the symlink-free form the
@@ -1124,5 +1124,5 @@ func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, prop
 	return mcp.Result{Content: fmt.Sprintf(
 		"Proposed: %s %s lines %d-%d%s. NOT applied — the user will review this as a diff and "+
 			"decide. Do not propose it again, and do not assume it has taken effect.",
-		args.Path, verb, prepared.StartLine, prepared.EndLine, note)}, nil
+		args.Path, verb, prepared.StartLine, prepared.EndLine, note) + testEditNote(args.Path, block, prepared.Creates)}, nil
 }

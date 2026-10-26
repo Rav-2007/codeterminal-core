@@ -511,6 +511,9 @@ func (s *Server) runInCopy(ctx context.Context, raw json.RawMessage, st *stagedW
 	// is what the check line above the review and Mochiii's record report.
 	proposals.recordCheck(args.Command, raw, res, outcome)
 	res.Content += "\n[Mochiii: this ran in this turn's working copy of the project, which has your edits.]"
+	if tests := st.testsChangedByCommand(changed); len(tests) > 0 {
+		res.Content += testChangeWarning(tests...)
+	}
 	if created := st.createdByCommand(changed); len(created) > 0 {
 		res.Content += "\n[Mochiii: files a command creates in the working copy are not offered for review (" +
 			strings.Join(firstN(created, 5), ", ") + "). If your change needs a new file, create it with propose_edit.]"

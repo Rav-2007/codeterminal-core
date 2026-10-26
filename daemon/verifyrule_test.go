@@ -17,6 +17,8 @@ func TestTheWorkingCopySaysHowToTestAnEdit(t *testing.T) {
 		"a file a command creates is not offered for review",
 		"one call per step",
 		"say so plainly instead of saying they pass",
+		"change your code, not the test",
+		"run the whole suite, not only a new test",
 	} {
 		if !strings.Contains(workingCopyDirective, want) {
 			t.Errorf("the working copy's directive does not say %q", want)

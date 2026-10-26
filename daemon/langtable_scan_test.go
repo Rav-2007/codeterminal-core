@@ -109,6 +109,11 @@ var fileKindSites = map[string]struct {
 	"daemon/missingfile.go": {displayOnly, 2},
 	// ".json", the name of this daemon's own count of a day's spend.
 	"daemon/spend.go": {nonSourceFormat, 1},
+	// isTestPath (2026-10-26): whether an edited file is a TEST, by the naming
+	// conventions fileclass.go does not cover (C, C++, Kotlin, Swift, Ruby), so
+	// that changing an existing test is told and shown. A test-or-not axis, like
+	// fileclass.go's, deliberately not a language: it routes nothing.
+	"daemon/testedits.go": {separateAxis, 2},
 }
 
 // scanRoots are the module directories whose production code could route on a

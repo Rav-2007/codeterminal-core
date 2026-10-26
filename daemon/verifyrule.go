@@ -21,4 +21,7 @@ const testYourChanges = "So work the way an engineer does. After your last edit,
 	"in several steps is one call per step, and dir (cwd for run_command) runs a step from a subfolder. A program " +
 	"you write yourself is not the project's tests, and a file a command creates is not offered for review: create " +
 	"files with propose_edit. When you finish, say exactly which commands you ran and what they reported -- and if " +
-	"you could not run the project's tests, say so plainly instead of saying they pass."
+	"you could not run the project's tests, say so plainly instead of saying they pass. An existing test that " +
+	"starts failing after your change is evidence against the change: change your code, not the test -- unless the " +
+	"test itself is wrong, and then tell the user which test and why. Make the smallest change that fixes the " +
+	"reported problem and keeps what the existing tests check, and run the whole suite, not only a new test."
