@@ -152,6 +152,14 @@ func validateUserServer(name string, srv MCPServerConfig) error {
 		if envNameLooksLikeKey(env) {
 			return errKeyAsEnvName
 		}
+		// The rule set-key already applies to a name (validMCPEnvName), and the
+		// marketplace catalog's: a name a value could never be given for is
+		// not one to store. It used to be accepted here and only refused
+		// later, by the key it could not be given (2026-10-26).
+		if !mcpEnvNamePattern.MatchString(env) {
+			return fmt.Errorf("the env entry %q is not a variable name: letters, digits and _, not starting "+
+				"with a digit, at most 128 characters", truncateForClient(env, 40))
+		}
 	}
 	if err := validateServerBlock(srv); err != nil {
 		return err

@@ -20,7 +20,7 @@ import {
   validServerName,
 } from '../../mcpCatalog';
 import { StoreUi, resultMessage, splitArgs, storeServer } from '../../mcpInstall';
-import { cardFor, matches, provenanceOf } from '../../mcpMarketplace';
+import { cardFor, matches, provenanceOf, specFor } from '../../mcpMarketplace';
 import { McpServersState, nodesFor } from '../../mcpServersView';
 import { StubDaemon, writeLine } from '../stubDaemon';
 
@@ -73,6 +73,32 @@ suite('the MCP catalog is checked, not trusted', () => {
       mutate(s);
       assert.strictEqual(checkServer(s), undefined, `accepted ${what}`);
     }
+  });
+
+  // THE CATALOG BUILD, THIS CHECK AND THE DAEMON AGREE (2026-10-26). Each of
+  // these passed checkServer and was refused by the daemon at add: a card whose
+  // Add always failed. mochiii.in's build refuses them too.
+  test('an entry the daemon refuses at add is dropped here, not offered', () => {
+    const variants: [string, (s: any) => void][] = [
+      ['a key with a provider prefix as a name', (s) => (s.env = [{ name: 'AKIAABCDEFGHIJKLMNOP', required: true, secret: true }])],
+      ['a key with a GitHub prefix as a name', (s) => (s.env = [{ name: 'ghp_x', required: true, secret: true }])],
+      ['a long run of letters and digits as a name', (s) => (s.env = [{ name: 'TOKEN_abcdef1234567890XY', required: true, secret: true }])],
+      ["Mochiii's own credential in an argument", (s) => s.launch.args.push('--key', '${OPENROUTER_API_KEY}')],
+      ['the same with a default, in any case', (s) => s.launch.args.push('--key=${mochiii_proxy_key:-x}')],
+    ];
+    for (const [what, mutate] of variants) {
+      const s = good();
+      mutate(s);
+      assert.strictEqual(checkServer(s), undefined, `accepted ${what}`);
+    }
+    // What the daemon takes, this takes: a template naming a variable of the
+    // server's own, and an ordinary long variable name.
+    const templated = good();
+    templated.launch.args.push('--db', '${DATABASE_URL}');
+    assert.ok(checkServer(templated), 'refused a template of its own');
+    const longName = good();
+    longName.env = [{ name: 'MDB_MCP_ATLAS_TEMPORARY_DATABASE_USER_LIFETIME_MS', required: false, secret: false }];
+    assert.ok(checkServer(longName), 'refused an ordinary long variable name');
   });
 
   test('a file cannot hand out the other tier, and what is dropped is counted', () => {
@@ -227,13 +253,39 @@ suite("adding a server takes the daemon's two steps", function () {
       assert.strictEqual(requests.length, 2);
       const [first, second] = requests;
       assert.ok(second.acknowledged_unconfined, 'the second request is the acknowledged one');
-      for (const k of ['action', 'name', 'command', 'args', 'env']) {
+      for (const k of ['action', 'name', 'command', 'args', 'env', 'env_optional']) {
         assert.deepStrictEqual(second[k], first[k], `the acknowledged request changed ${k}`);
       }
       const warning = shown.confirm[0];
       assert.ok(warning.includes(provenance), 'the provenance was not shown');
       assert.ok(warning.indexOf(provenance) < warning.indexOf('YOUR full privileges'), "the daemon's warning came first");
       assert.ok(shown.info[0].startsWith('Added context7.'), shown.info[0]);
+    });
+  });
+
+  // Neuter check: drop envOptional from specFor, or env_optional from
+  // storeServer's request -- the daemon is not told, and reports a server that
+  // runs without CONTEXT7_API_KEY as "Needs a key".
+  test("the variables a catalog marks optional reach the daemon as optional", async () => {
+    const entry = good();
+    entry.env = [
+      { name: 'CONTEXT7_API_KEY', required: false, secret: true },
+      { name: 'NEEDED_TOKEN', required: true, secret: true },
+    ];
+    const s = checkServer(entry);
+    assert.ok(s);
+    const fromCatalog = specFor(s);
+    assert.deepStrictEqual(fromCatalog.env, ['CONTEXT7_API_KEY', 'NEEDED_TOKEN']);
+    assert.deepStrictEqual(fromCatalog.envOptional, ['CONTEXT7_API_KEY']);
+
+    const { stub, requests } = await startMCPDaemon();
+    await withDaemon(stub, async () => {
+      const { ui } = fakeUi({ confirm: true, typed: true });
+      assert.ok((await storeServer('test', fromCatalog, { action: 'add' }, ui))?.ok);
+      assert.strictEqual(requests.length, 2);
+      for (const r of requests) {
+        assert.deepStrictEqual(r.env_optional, ['CONTEXT7_API_KEY'], 'a request did not say which variable is optional');
+      }
     });
   });
 

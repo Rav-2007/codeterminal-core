@@ -7,6 +7,7 @@ import (
 	"log"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -218,7 +219,8 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 			Transport: strings.ToLower(srv.Type), Headers: headerNames, HeadersMissing: headersMissing,
 			Name: name, Command: commandLine(srv), Source: source, Disabled: srv.Disabled,
 			Program: srv.Command, Args: srv.Args, Env: maskedEnvNames(srv.Env), Cwd: srv.Cwd,
-			EnvMissing: maskedEnvNames(s.envMissing(name, srv.Env)), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
+			EnvOptional: maskedEnvNames(srv.EnvOptional),
+			EnvMissing:  maskedEnvNames(s.keysMissing(name, srv)), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
 			Warnings: missingTemplateWarnings(s.templateMissing(name, srv)),
 			State:    state.state, StateDetail: state.detail, ToolCount: state.tools, ToolsError: state.toolsErr,
 			ToolsListed: state.counted,
@@ -305,7 +307,7 @@ func grantWarning(lead string, srv MCPServerConfig) string {
 // start" is true -- the same honesty /connect owes a key.
 func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace bool) protocol.MCPResponse {
 	srv := MCPServerConfig{
-		Command: strings.TrimSpace(req.Command), Args: req.Args, Env: req.Env,
+		Command: strings.TrimSpace(req.Command), Args: req.Args, Env: req.Env, EnvOptional: req.EnvOptional,
 		AcknowledgedUnconfined: true, Cwd: strings.TrimSpace(req.Cwd),
 		ConnectTimeoutSeconds: req.ConnectTimeoutSeconds,
 	}
@@ -393,6 +395,17 @@ func (s *Server) mcpStoreBlockWith(ctx context.Context, name string, srv MCPServ
 		return protocol.MCPResponse{Error: fmt.Sprintf("no server named %s has been added; /mcp-server lists them", name)}
 	}
 	srv.Disabled = old.Disabled
+	// An update that does not say which variables are optional -- the edit
+	// form, which has no such field -- keeps what the server was added with,
+	// for the names it still reads. Otherwise editing a catalog server's
+	// arguments would bring back "Needs a key" for a variable it runs without.
+	if replace && srv.EnvOptional == nil {
+		for _, opt := range old.EnvOptional {
+			if slices.Contains(srv.Env, opt) {
+				srv.EnvOptional = append(srv.EnvOptional, opt)
+			}
+		}
+	}
 
 	if !req.AcknowledgedUnconfined {
 		warning := unconfinedWarning(name, srv)
@@ -515,7 +528,7 @@ func (s *Server) mcpSetDisabled(ctx context.Context, req protocol.MCPRequest, di
 func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCPServerConfig) (detail string, notes []string) {
 	// Every place a value can come from, not only the environment: a key
 	// stored with Set key or `mcp set-key` is the usual one now.
-	for _, env := range s.envMissing(name, srv.Env) {
+	for _, env := range s.keysMissing(name, srv) {
 		notes = append(notes, fmt.Sprintf("Mochiii has no value for %s, so the server starts without it. "+
 			"Set it with `mcp set-key %s %s` or Set key in VS Code.", env, name, env))
 	}

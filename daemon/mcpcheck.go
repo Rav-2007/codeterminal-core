@@ -139,10 +139,13 @@ func (s *Server) mcpGet(req protocol.MCPRequest) protocol.MCPResponse {
 	}
 	if len(srv.Env) > 0 {
 		var parts []string
+		unset := s.envMissing(name, srv.Env)
 		for _, n := range srv.Env {
 			switch {
 			case containsString(info.EnvMissing, n):
 				parts = append(parts, n+" (no value)")
+			case containsString(srv.EnvOptional, n) && containsString(unset, n):
+				parts = append(parts, n+" (optional, no value)")
 			case containsString(info.EnvStored, n):
 				parts = append(parts, n+" (stored)")
 			default:

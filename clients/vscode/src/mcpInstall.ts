@@ -29,6 +29,8 @@ export interface ServerSpec {
   args: string[];
   /** Variable NAMES, passed through from the daemon's environment. */
   env: string[];
+  /** The names in env the server runs without (a catalog's required: false). */
+  envOptional?: string[];
   /** '' for a private folder of its own, 'workspace' for the project. */
   cwd: string;
 }
@@ -91,6 +93,7 @@ export async function storeServer(
     command: spec.command,
     args: spec.args,
     env: spec.env,
+    ...(spec.envOptional?.length ? { env_optional: spec.envOptional } : {}),
     ...(spec.cwd ? { cwd: spec.cwd } : {}),
   };
 

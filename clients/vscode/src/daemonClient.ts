@@ -1762,7 +1762,9 @@ export interface MCPServerInfo {
   args?: string[];
   env?: string[];
   cwd?: string;
-  /** The names in env the daemon has no value for (FEATURE_MCP_ENV). */
+  /** The names in env the server runs without (a catalog's required: false). */
+  env_optional?: string[];
+  /** The names in env the daemon has no value for (FEATURE_MCP_ENV), optional ones aside. */
   env_missing?: string[];
   /** The names in env with a value in the daemon's key file (FEATURE_MCP_SECRETS). */
   env_stored?: string[];
@@ -1849,6 +1851,8 @@ export interface MCPRequest {
   args?: string[];
   /** Variable NAMES passed through from the daemon's environment; never a value. */
   env?: string[];
+  /** add/update: the names in env the server runs without; not reported missing. */
+  env_optional?: string[];
   cwd?: string;
   /** The user's typed agreement that the server runs with their full privileges. */
   acknowledged_unconfined?: boolean;
