@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -190,69 +189,6 @@ func listSaid(items []string) string {
 	}
 	return out
 }
-
-// testsPassClaims are the shapes of "the tests pass" as models write it:
-// "All 18 existing unit tests pass", "All tests now pass", "100% tests passed",
-// "the tests pass".
-var testsPassClaims = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\ball\s+(?:\d+\s+)?(?:of\s+the\s+)?(?:[a-z-]+\s+){0,3}?tests?\s+(?:now\s+|still\s+)?(?:pass|passes|passed|succeed|succeeded|are\s+passing)\b`),
-	regexp.MustCompile(`(?i)\b100%\s+(?:of\s+)?(?:the\s+)?tests\s+passed\b`),
-	regexp.MustCompile(`(?i)(?:^|[^0-9]\s)(?:the\s+)(?:[a-z-]+\s+){0,2}?tests?\s+(?:now\s+|all\s+)?(?:pass|passes|passed|are\s+passing)\b`),
-}
-
-// hedges make a sentence not a claim: "the tests should pass", "I could not
-// run the tests", "once all tests pass".
-var hedges = regexp.MustCompile(`(?i)\b(?:not|never|cannot|unable|should|would|might|may|if|once|until|expect|will|need|needs|try|let's|let\s+me|whether)\b|n't\b`)
-
-// claimsTestsPass reports whether text says, without a hedge, that the tests
-// pass.
-func claimsTestsPass(text string) bool {
-	for _, sentence := range regexp.MustCompile(`[.!?\n]+`).Split(text, -1) {
-		if hedges.MatchString(sentence) {
-			continue
-		}
-		for _, claim := range testsPassClaims {
-			if claim.MatchString(sentence) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// isVerifyingLine is isVerifyingCommand (taskmodes.go) for a shell line, as
-// run_command runs: true when one of its commands builds or tests the project.
-// `cd build && ctest` does; `cd build && ls`, `cat a.txt` and a script do not --
-// isVerifyingCommand was written for sandbox_exec, whose programs are all build
-// tools, and alone it would count any command with an argument.
-func isVerifyingLine(line string) bool {
-	for _, words := range shellCommandWords(line) {
-		core := commandCore(words)
-		if len(core) == 0 {
-			continue
-		}
-		program := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(core[0]), "./"), ".exe")
-		switch {
-		case strings.HasPrefix(program, "python") || program == "py":
-			if len(core) >= 3 && core[1] == "-m" && pythonTestModules[core[2]] && isVerifyingCommand(strings.Join(core, " ")) {
-				return true
-			}
-		case buildPrograms[program] && isVerifyingCommand(strings.Join(append([]string{program}, core[1:]...), " ")):
-			return true
-		}
-	}
-	return false
-}
-
-// buildPrograms build or test a project: the programs a check is run with.
-var buildPrograms = map[string]bool{"go": true, "npm": true, "npx": true, "yarn": true, "pnpm": true, "bun": true,
-	"deno": true, "make": true, "cargo": true, "cmake": true, "ctest": true, "mvn": true, "mvnw": true, "gradle": true,
-	"gradlew": true, "sbt": true, "pytest": true, "tox": true, "nox": true, "dotnet": true, "mix": true, "rspec": true,
-	"rake": true, "jest": true, "vitest": true, "phpunit": true, "swift": true, "bazel": true, "meson": true,
-	"ninja": true, "zig": true, "stack": true, "cabal": true, "dune": true}
-
-// pythonTestModules are what `python -m` runs a project's tests with.
-var pythonTestModules = map[string]bool{"pytest": true, "unittest": true, "tox": true, "nox": true, "nose2": true}
 
 // maxWrapUpReserve is the most of a turn's time kept back for its last call.
 const maxWrapUpReserve = 45 * time.Second

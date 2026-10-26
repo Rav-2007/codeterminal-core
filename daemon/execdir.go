@@ -166,22 +166,6 @@ func (s *Server) execCommandRefusal(words []execWord) string {
 	return s.execRefusal(first.text)
 }
 
-// looksLikeEnvAssignment reports a word in the NAME=VALUE shape a shell puts in
-// front of a command.
-func looksLikeEnvAssignment(word string) bool {
-	name, _, found := strings.Cut(word, "=")
-	if !found || name == "" {
-		return false
-	}
-	for i, r := range name {
-		letter := r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
-		if !letter && (i == 0 || r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
-}
-
 // hasAnyPrefix reports whether s begins with one of prefixes.
 func hasAnyPrefix(s string, prefixes []string) bool {
 	for _, p := range prefixes {
