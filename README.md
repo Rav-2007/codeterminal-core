@@ -55,6 +55,9 @@ Then, inside a project folder:
 mochiii
 ```
 
+If `mochiii` is not found in the terminal you installed from, run the line the
+installer printed last, or open a new terminal.
+
 The first run asks which AI provider to use, for its API key and for a model,
 and offers to index the folder so Mochiii can search your code.
 

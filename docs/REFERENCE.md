@@ -118,8 +118,13 @@ being asked for that folder. Other options:
 - "did not answer within 30s" when starting in your home folder, mostly on
   Windows: 1.2.1 and earlier walked the whole folder before answering. Update to
   1.2.2, or start Mochiii inside a project folder.
-- `mochiii: command not found` right after installing: open a new terminal. The
-  installer added `~/.local/bin` to your shell's startup file.
+- `mochiii: command not found` right after installing, in the terminal you
+  installed from: run the `export PATH=…` line the installer printed last, or open
+  a new terminal. An installer run by `curl … | sh` cannot change the PATH of the
+  terminal that ran it; new terminals find `mochiii` because the installer added
+  `~/.local/bin` to your shell's startup file. If it said that file cannot be
+  changed (one owned by root), run the `sudo chown` line it printed, then the
+  install command again.
 - Code search is off on Linux: it needs glibc 2.27+ (`ldd --version`). Chat and
   agent tools work regardless. On Alpine and other musl systems the installer
   gives you a static build without code search, since the regular one cannot
