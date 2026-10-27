@@ -43,6 +43,19 @@ recalled rather than found: in the first run, two fixes came out identical to up
 
 ## Run a round
 
+Each arm runs from a Mochiii tree of its own (`REALREPO_SRC`). An arm of today's code is a checkout of
+it. An arm of the code before one view -- Round 6's A -- is built from its commit, because the eval and
+what it measures with came later:
+
+```
+./baseline_tree.sh <commit> ~/Neww-main
+```
+
+That is the commit as it was, plus this eval and the two files it measures with
+(`daemon/turnevidence.go`, `daemon/shellline.go`), which nothing in the commit calls. Mochiii's record
+under the answer stays out: that code wrote none. The script refuses a commit that already has one
+view, and checks that the eval builds there.
+
 Write an arms file, one arm a line: its name, then the environment it runs with (`run_round.sh`
 says more). First a pilot, every arm once on one task, to measure $ per trial and how often the
 provider says 429. That sets the cap, and whether the arms can share the provider at all:
@@ -80,3 +93,13 @@ python3 -I compare.py A B D
   the turn with `IncompleteProviderError` and the work kept. The eval asks again without spending the
   agent's continues, and runs a trial the provider ended again from scratch (`REALREPO_PROVIDER_RETRIES`).
 - **`mawk` buffers its input.** Watch a log with `sed -u`, not an `awk` prefixer.
+- **Every arm by one measure.** The code before one view records no `run_command` result: it ran in
+  the real project, and its exit code went only to the model. Yet once a turn's edits are accepted,
+  the next turn's run there tests them. So the eval stands a wrapper in for the user's shell (bash or
+  zsh, as `run_command` would pick; it runs that shell with the same arguments and `SHELL`) and reads
+  each run's folder and exit code from its log. What changed in the real project outside review is
+  read the same way in every arm: what git shows changed while a turn ran, before anything it offered
+  was applied (build output the project ignores left out).
+- **Stale bytecode.** A run in the real project leaves `.pyc` files, and a one-character fix applied
+  in the same second keeps the source's size and time: Python then runs the old code. The grader keeps
+  Python's bytecode apart (`PYTHONPYCACHEPREFIX`).

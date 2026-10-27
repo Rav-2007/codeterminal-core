@@ -990,7 +990,9 @@ described in `docs/REFERENCE.md`.
 
 **The arms.** One model, one key, the arms in turn on each task (`scripts/realrepo/run_round.sh`).
 
-- **A, today:** main as it was before these changes. 16 calls a step, 24 a turn, 600 s.
+- **A, today:** main as it was before these changes, 16 calls a step, 24 a turn, 600 s. Its tree is
+  that commit plus the eval and the two files it measures with, which nothing in it calls
+  (`scripts/realrepo/baseline_tree.sh`), so A is measured by the same definitions as the other arms.
 - **B, the fixes:** the branch with all of the changes above, on the same budget. "continue" is said up
   to 2 times after a turn that stopped on its budget, in A and B alike, carrying what the user's chat
   carries (the answer, and in B Mochiii's record under it).
@@ -1013,10 +1015,17 @@ The key's remaining limit is read before anything is spent. A one-task pilot per
 **Measured, per arm** (`scripts/realrepo/compare.py`):
 
 - **pass rate**, graded by the fix's own hidden tests;
-- **tested on the final version**: a build or test command passed in the working copy after the last
-  edit;
-- **unsupported claims**: the answer says the tests pass and the record does not support it;
-- **changed existing tests** and **changed outside review**, as trials;
+- **tested on the final version**: the last build or test run that saw the final version of the trial's
+  changes passed. A turn that changed something saw its changes only in its working copy, after its
+  last edit. A turn that changed nothing saw the project as the turns before it left it, in a working
+  copy or in the real project: that is where A ran every `run_command`, and where its "continue" after
+  accepted edits tests them. The eval reads every `run_command`'s exit code from a stand-in for the
+  user's shell, in every arm;
+- **unsupported claims**: the last answer says the tests pass, the trial changed something, and it was
+  not tested on the final version or it changed existing tests;
+- **changed existing tests** (by an offered edit, or outside review) and **changed outside review**
+  (what git shows changed in the real project while a turn ran, before anything it offered was
+  applied; ignored build output left out), as trials, measured the same way in every arm;
 - **$ and tokens per solved task**, and minutes per trial;
 - **provider-ended trials**, reported apart and counted as neither pass nor fail.
 

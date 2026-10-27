@@ -5,7 +5,7 @@
 # closed laptop lid still suspends the machine: keep it open).
 #
 # <arms-file> has one arm a line: its name, then the environment it runs with, e.g.
-#   A REALREPO_SRC=/home/u/Neww-main
+#   A REALREPO_SRC=/home/u/Neww-main            (built by baseline_tree.sh)
 #   B REALREPO_SRC=/home/u/Neww-oneview
 #   D REALREPO_SRC=/home/u/Neww-oneview REALREPO_MODE=fix
 # Every arm also gets this shell's REALREPO_MODEL and REALREPO_USD_PER_MTOK_* (prices, for a provider that
