@@ -1162,6 +1162,56 @@ there would run in the project itself, so it always asks first, whatever the
 configuration says, and the prompt says "RUNS IN YOUR REAL PROJECT". See
 [`docs/SPEC_WORKFLOW.md`](SPEC_WORKFLOW.md#the-working-copy--why-the-agent-can-test-its-own-work).
 
+**One view of the project.** Every tool the agent works on your project with
+sees the same files: its edits, `read_file`, `sandbox_exec` and `run_command` all
+use the turn's working copy. A `run_command` inside the project runs there too, so
+a test it runs tests the agent's edits, a file it rewrites comes to you as a diff
+named as the command's, and a file it creates (a scratch program, say) is not
+offered at all. A path to your project in the command means the copy, and Python
+imports the copy's code even when your project is installed with `pip install -e`.
+Two kinds of command still run in your real project, and the prompt says "Run in
+your terminal" for them: `git`, because the copy has no `.git`, and package
+installers (`pip`, `npm install`, `cargo add`, `brew`...), because they change your
+environment. A `git` command that writes is refused while the agent has a working
+copy — you commit after reviewing — and a line that mixes the two places is
+refused with the way to split it. Whatever a command changes in your real project
+anyway is named above the review as "changed in your real project, outside
+review". The copy leaves out `.gitignored` files, such as `.env`.
+
+**How the agent tests a change.** It is told to run the project's own tests for
+the code it changed after its last edit — `sandbox_exec` preferred, since it is
+confined — and to say exactly which commands it ran and what they reported, or
+that it could not run them. A build or test run counts as the check shown above
+the review, whichever tool ran it; a `run_command` that only reads a file or lists
+a folder does not. `sandbox_exec` runs one program per call: quotes keep an argument whole
+(`mvn test -Dtest="A,B"`), `dir` runs it from a subfolder, and shell syntax — `cd`,
+`&&`, pipes, redirections, here-documents, `$(…)`, `NAME=value` in front — is
+refused by name with the way to do it instead.
+
+**Existing tests are evidence.** When the agent changes the existing lines of a
+test file — any language's convention, test data included — it is told at once
+that a failing existing test means its change broke something, and to change the
+code unless the test is wrong (and then to say which and why). You are shown it
+above the review: a pass after a changed test is never a "✓". Adding a test is not
+changing one.
+
+**Mochiii's record under the answer.** When a turn stops before it finishes, when
+tests were changed, when something changed outside review, or when the answer
+says the tests pass and the record says otherwise, Mochiii adds a short "Where
+this stands" block under the answer, written from its own record and not the
+model's words: why it stopped, what changed, the last check and whether it ran on
+the final version, and what was read. The last build or test run on the final
+version is the one that counts: a build that passed does not stand for a test run
+after it that failed. It stays in the chat, so "continue" carries
+on from it. A turn the provider stops part-way keeps its edits and offers them.
+
+**A busy provider is waited out.** After a turn has done work, a rate limit or a
+provider that stops answering is waited out inside the turn — a minute, then two,
+with the countdown — before the turn gives up, up to
+`mcp.budget.provider_patience_seconds` (300 by default; -1 switches it off).
+Tool arguments sent in the wrong JSON type — `"true"` for a boolean, `"5"` for a
+number — are read as the tool's schema says before you are asked about the call.
+
 **What the agent can reach on your machine.** Not only the project:
 
 | | Where | What you are asked |
@@ -1169,7 +1219,7 @@ configuration says, and the prompt says "RUNS IN YOUR REAL PROJECT". See
 | **Read** files, list folders | anywhere on the machine | yes/no for each path outside the project |
 | **Create and edit** files | the project, and anywhere in your home folder (`~/Desktop`, `~/Documents`, …) | every change is shown as a diff; nothing is written until you accept it |
 | **Delete, move, rename** | nowhere | there is no tool for it; the agent says so and gives you the command |
-| **Run** commands | a private copy of the project | build and test programs (`go`, `npm`, `make`, `cargo`), not a shell |
+| **Run** commands | the turn's working copy of the project; `git` and package installs in the project itself | `sandbox_exec` runs build and test programs, confined, not a shell; `run_command` runs any shell command and asks every time |
 
 Refused even if you say yes: reading private keys, credential stores and shell
 histories; writing hidden files and folders, `~/bin`, `.desktop` launchers, or

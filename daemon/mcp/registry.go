@@ -51,6 +51,14 @@ type Builtin struct {
 	// be made is to make it, and a copy made for a call that is then declined
 	// is a private directory nothing else sees. It must not touch the project.
 	InPlace func() bool
+
+	// Place is InPlace for a tool whose answer depends on the call itself:
+	// whether THIS call would run against the user's real files, and why it
+	// must not run at all ("" when it may) -- both decided before anyone is
+	// asked, so a call that would be refused is never put to the user first.
+	// Only a tool that declares ExecutesCode may set it, and like InPlace it
+	// may prepare (make the turn's working copy) but must not touch the project.
+	Place func(args json.RawMessage) (inPlace bool, refusal string)
 }
 
 // LaunchPlan is what one call would start, determined before it runs.
@@ -172,8 +180,8 @@ func (r *Registry) RegisterBuiltin(b Builtin) error {
 	if b.Launch != nil && !b.Tool.LaunchesSubprocess {
 		return fmt.Errorf("builtin %q has a Launch probe but does not declare LaunchesSubprocess", b.Tool.Name)
 	}
-	if b.InPlace != nil && !b.Tool.ExecutesCode {
-		return fmt.Errorf("builtin %q has an InPlace probe but does not declare ExecutesCode", b.Tool.Name)
+	if (b.InPlace != nil || b.Place != nil) && !b.Tool.ExecutesCode {
+		return fmt.Errorf("builtin %q has an InPlace or Place probe but does not declare ExecutesCode", b.Tool.Name)
 	}
 
 	b.Tool.Server = BuiltinServerName
@@ -506,18 +514,32 @@ func (r *Registry) LaunchPlan(qualified string, args json.RawMessage) LaunchPlan
 	return builtin.Launch(args)
 }
 
-// RunsInPlace reports whether this call would run against the user's real
-// files rather than a private copy (Builtin.InPlace). False for every tool
-// that does not say, which is every tool that runs nothing.
+// RunsInPlace reports whether a call with no arguments would run against the
+// user's real files rather than a private copy (Placement). False for every
+// tool that does not say, which is every tool that runs nothing.
 func (r *Registry) RunsInPlace(qualified string) bool {
+	inPlace, _ := r.Placement(qualified, nil)
+	return inPlace
+}
+
+// Placement reports where this call would run and why it must not run at all
+// (Builtin.Place), falling back to InPlace for a tool whose answer does not
+// depend on the call. Nothing for a tool that says neither.
+func (r *Registry) Placement(qualified string, args json.RawMessage) (inPlace bool, refusal string) {
 	server, name, err := SplitQualifiedName(qualified)
 	if err != nil || server != BuiltinServerName {
-		return false
+		return false, ""
 	}
 	r.mu.RLock()
 	builtin, ok := r.builtins[name]
 	r.mu.RUnlock()
-	return ok && builtin.InPlace != nil && builtin.InPlace()
+	switch {
+	case !ok:
+		return false, ""
+	case builtin.Place != nil:
+		return builtin.Place(args)
+	}
+	return builtin.InPlace != nil && builtin.InPlace(), ""
 }
 
 // Call dispatches an APPROVED tool call. It never consults consent -- the

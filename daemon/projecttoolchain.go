@@ -11,8 +11,8 @@ import (
 // sandbox_exec runs go, npm, make and cargo, and anything in
 // mcp.builtin.extra_programs where the host confines the command. A Python,
 // pnpm, Gradle or .NET project therefore could not test the agent's edits in
-// the turn's working copy at all: run_command runs in the real project, which
-// does not have them yet. "Fix it and run the tests" ended with untested code.
+// the turn's working copy at all: run_command ran in the real project (until
+// runplace.go, 2026-10-26), which does not have them. Untested code followed.
 //
 // So the runners a project's own manifests call for are added to the extras --
 // and, being extras, they run ONLY where the host confines the command, which

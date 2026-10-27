@@ -20,7 +20,7 @@ const (
 	reachNoWrite      = "You cannot create or change files in this turn."
 	reachNoDelete     = "You CANNOT delete, move or rename a file or folder"
 	reachDelete       = "DELETE, MOVE and RENAME files and folders with delete_path and move_path"
-	reachTerminal     = "RUN ANY SHELL COMMAND in the user's real project with run_command"
+	reachTerminal     = "RUN ANY SHELL COMMAND with run_command"
 	reachRun          = "RUN only build and test commands ("
 	reachNoRun        = "You cannot run commands in this turn."
 )

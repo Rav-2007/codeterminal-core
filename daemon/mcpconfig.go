@@ -464,6 +464,8 @@ type MCPBudgetConfig struct {
 	// Unset is defaultMaxTurnTokens. A long task is not bounded by this: its
 	// run has a budget of its own (task).
 	MaxTurnTokens int `json:"max_turn_tokens,omitempty"`
+	// ProviderPatienceSeconds is how long a turn that has done work waits on a busy provider (patience.go): 0 is 300, -1 off.
+	ProviderPatienceSeconds int `json:"provider_patience_seconds,omitempty"`
 
 	// MaxMessageBytes bounds ONE JSON-RPC message read from a Lane B server.
 	//

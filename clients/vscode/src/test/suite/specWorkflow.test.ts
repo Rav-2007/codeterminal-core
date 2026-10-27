@@ -124,6 +124,11 @@ suite('spec workflow', () => {
 
   test('the reports read at a glance', () => {
     assert.strictEqual(workingCopyText({ checked: 'go test ./...', passed: true }), '✓ checked: go test ./... passed');
+    // Never a tick for a version nobody ran, or for a pass after a changed test.
+    assert.ok(workingCopyText({ checked: 'go test ./...', passed: true, stale: true }).startsWith('! checked: go test ./... passed, and the changes went on'));
+    const bent = workingCopyText({ checked: 'ctest', passed: true, tests_changed: ['tests/t.c'], outside_review: ['package.json (npm i)'] });
+    assert.ok(!bent.includes('✓') && bent.includes('! the agent changed existing tests: tests/t.c'), bent);
+    assert.ok(bent.includes('! changed in your real project, outside review: package.json (npm i)'), bent);
     assert.ok(workingCopyText({}).startsWith('not checked'));
     assert.ok(
       workingCopyText({ checked: 'go test ./...', output: '--- FAIL: TestX' }).includes('  --- FAIL: TestX'),

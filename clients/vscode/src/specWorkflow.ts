@@ -267,12 +267,17 @@ export function appliedSpec(turnMode: string | undefined, appliedPaths: string[]
 
 export function workingCopyText(info: WorkingCopyInfo): string {
   const lines: string[] = [];
+  // A pass after the changes went on, or after existing tests were changed, is
+  // never a tick: kept word for word with the TUI's workingCopyText.
+  const stale = info.stale ? ', and the changes went on after it; the version offered was not run' : '';
   if (!info.checked) {
     lines.push('not checked: the agent did not build or test these changes');
-  } else if (info.passed) {
+  } else if (info.passed && !info.stale && !(info.tests_changed ?? []).length) {
     lines.push(`✓ checked: ${info.checked} passed`);
+  } else if (info.passed) {
+    lines.push(`! checked: ${info.checked} passed${stale}`);
   } else {
-    lines.push(`✗ checked: ${info.checked} FAILED`);
+    lines.push(`✗ checked: ${info.checked} FAILED${stale}`);
     for (const l of (info.output ?? '').split('\n')) {
       if (l.trim()) {
         lines.push('  ' + l);
@@ -285,6 +290,13 @@ export function workingCopyText(info: WorkingCopyInfo): string {
   // Kept word for word with the TUI's byCommandNote.
   for (const n of info.by_command ?? []) {
     lines.push('! changed by a command the agent ran, NOT written by the agent — read it before accepting: ' + n);
+  }
+  if ((info.tests_changed ?? []).length) {
+    lines.push('! the agent changed existing tests: ' + (info.tests_changed ?? []).join(', ') +
+      ' — a pass after that may come from the changed test; read those lines first');
+  }
+  for (const n of info.outside_review ?? []) {
+    lines.push('! changed in your real project, outside review: ' + n);
   }
   return lines.join('\n');
 }

@@ -106,9 +106,9 @@ type proposalSink struct {
 	tasks   []protocol.TaskItem
 	onTasks func([]protocol.TaskItem)
 
-	// textNotes are answer-text edits absorbText could not bring into the
-	// working copy, reported with the copy's other not-offered changes.
-	textNotes []string
+	// textNotes are answer-text edits absorbText could not bring into the copy;
+	// outsideReview, files a command changed in the REAL project (runplace.go).
+	textNotes, outsideReview []string
 
 	// task is the long task this request is running (longtask.go), or nil.
 	task     *taskRun
@@ -281,7 +281,7 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 	p.stage.close()
 	p.stage = nil
 	notOffered = append(notOffered, p.textNotes...)
-	info = &protocol.WorkingCopyInfo{Checked: p.checked, Passed: p.checkPassed, NotOffered: notOffered, ByCommand: byCommand}
+	info = &protocol.WorkingCopyInfo{Checked: p.checked, Passed: p.checkPassed, NotOffered: notOffered, ByCommand: byCommand, OutsideReview: p.outsideReview, TestsChanged: testsChangedIn(net)}
 	// A CHECK VOUCHES ONLY FOR WHAT IT RAN AGAINST. An edit after it -- with a
 	// tool, a restore, or written in the answer and absorbed above -- changed
 	// what is offered, and "checked: passed" alone would describe code that
@@ -295,7 +295,7 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 	// NOTHING CHANGED, NOTHING RAN: no report. "not checked: the agent did not
 	// build or test these changes" under a turn whose only edit FAILED read as
 	// though there were changes to test (2026-10-15).
-	if len(net) == 0 && len(p.blocks) == 0 && p.checked == "" && len(notOffered) == 0 && len(byCommand) == 0 {
+	if len(net) == 0 && len(p.blocks) == 0 && p.checked == "" && len(notOffered) == 0 && len(byCommand) == 0 && len(p.outsideReview) == 0 {
 		info = nil
 	}
 	return append(net, p.blocks...), info, degraded
@@ -352,8 +352,8 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	execSchema := `{
 					"type":"object",
 					"properties":{
-						"command":{"type":"string","description":"One build or test command: go, npm, make or cargo and its arguments, e.g. go test ./... -- NOT a shell: no pipes, &&, cat or echo. To see a file, use read_file."},
-						"timeout_seconds":{"type":"integer","minimum":1,"description":"How long it may run. Leave out for the default; give more for a whole test suite or a build."}
+						"command":{"type":"string","description":"One build or test command: go, npm, make or cargo and its arguments, e.g. go test ./... -- NOT a shell: no cd (give dir), pipes, &&, cat or echo. To see a file, use read_file."},
+						"timeout_seconds":{"type":"integer","minimum":1,"description":"How long it may run. Leave out for the default; give more for a whole test suite or a build."},"dir":{"type":"string","description":"The folder to run it in, relative to the project root, e.g. gson for a module. Leave out for the root."}
 					},
 					"required":["command"],
 					"additionalProperties":false
@@ -638,7 +638,7 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 			})
 	}
 
-	tools = append(append(tools, s.fileOpTools(proposals, mode)...), s.runCommandTools(mode)...) // fileops.go, runcommand.go
+	tools = append(append(tools, s.fileOpTools(proposals, mode)...), s.runCommandTools(mode, proposals)...) // fileops.go, runcommand.go
 	// PLAN MODE DROPS EVERY TOOL THAT EXECUTES CODE OR REACHES THE NETWORK.
 	//
 	// This used to be one line above -- `if mode != "plan"` removing
@@ -1042,7 +1042,7 @@ func applyInWorkingCopy(proposals *proposalSink, block editapply.EditBlock) (mcp
 	return mcp.Result{Content: "Done: " + what + " in this turn's working copy of the project. " +
 		"read_file now shows the file as it is, and sandbox_exec runs against it. Nothing reaches the " +
 		"user's real files until they review all of this turn's changes when you finish -- so do not " +
-		"repeat this edit; build on it."}, true
+		"repeat this edit; build on it." + testEditNote(rel, block, prepared.Creates)}, true // testedits.go
 }
 
 // realWorkspaceRoot resolves s.workspace to the symlink-free form the
@@ -1124,5 +1124,5 @@ func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, prop
 	return mcp.Result{Content: fmt.Sprintf(
 		"Proposed: %s %s lines %d-%d%s. NOT applied — the user will review this as a diff and "+
 			"decide. Do not propose it again, and do not assume it has taken effect.",
-		args.Path, verb, prepared.StartLine, prepared.EndLine, note)}, nil
+		args.Path, verb, prepared.StartLine, prepared.EndLine, note) + testEditNote(args.Path, block, prepared.Creates)}, nil
 }

@@ -226,17 +226,17 @@ export interface PromptRequest {
   chat_revision?: string;
 }
 
-// WorkingCopyInfo mirrors protocol.WorkingCopyInfo: what the agent last ran
-// against its changes in the turn's private working copy, and changes it is
-// not offering (build output, files the user changed meanwhile).
+// WorkingCopyInfo mirrors protocol.WorkingCopyInfo: the agent's last check of its changes in the turn's
+// private working copy, and what it is not offering. by_command and outside_review: "path (the command)".
 export interface WorkingCopyInfo {
   checked?: string;
   passed?: boolean;
+  stale?: boolean; // the changes went on after that check: the version offered was not run
   output?: string;
   not_offered?: string[];
-  // by_command names the offered files a COMMAND changed, each as
-  // "path (the command)": changes the agent did not write.
-  by_command?: string[];
+  by_command?: string[]; // offered files a COMMAND changed: changes the agent did not write
+  tests_changed?: string[]; // existing test files whose existing lines the changes alter
+  outside_review?: string[]; // files a command changed in the REAL project, unreviewed
 }
 
 // SpecCriterionResult / SpecReport mirror protocol's: a /spec check's (or

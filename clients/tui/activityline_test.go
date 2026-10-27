@@ -254,3 +254,13 @@ func TestAPipelineStepStaysItsOwnLine(t *testing.T) {
 		t.Errorf("a step and the call after it are not a blank line apart:\n%s", got)
 	}
 }
+
+// run_command reads as what it does, like sandbox_exec: since it runs in the
+// working copy it is the agent's other way to build and test (the daemon's
+// runplace.go), not a tool to be named by its internal name.
+func TestARunCommandReadsAsARun(t *testing.T) {
+	v, _ := activityFor(call("c1", "run_command", "cd build && ctest", protocol.ToolPhaseSucceeded, 130))
+	if got := v.plain(); !strings.HasPrefix(got, "● Run    cd build && ctest") {
+		t.Errorf("run_command is drawn as %q", got)
+	}
+}

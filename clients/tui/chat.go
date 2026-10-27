@@ -1033,7 +1033,7 @@ func workingCopyText(info *protocol.WorkingCopyInfo) string {
 	switch {
 	case info.Checked == "":
 		lines = append(lines, "not checked: the agent did not build or test these changes")
-	case info.Passed && info.Stale:
+	case info.Passed && (info.Stale || len(info.TestsChanged) > 0): // workingcopymore.go says why
 		lines = append(lines, "! checked: "+sanitizeText(info.Checked)+" passed"+stale)
 	case info.Passed:
 		lines = append(lines, "✓ checked: "+sanitizeText(info.Checked)+" passed")
@@ -1053,7 +1053,7 @@ func workingCopyText(info *protocol.WorkingCopyInfo) string {
 	for _, n := range info.ByCommand {
 		lines = append(lines, byCommandNote+sanitizeText(n))
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(append(lines, workingCopyMore(info)...), "\n") // workingcopymore.go
 }
 
 func (m chatModel) handleEditProposals(msg editProposalsMsg) (tea.Model, tea.Cmd) {
@@ -2848,15 +2848,15 @@ func approvalQuestion(req protocol.ToolApprovalRequest) string {
 		}
 		switch req.Tool {
 		case "run_command":
-			// Not "Run command:" -- that is sandbox_exec's, in a private copy.
-			// This one runs in the user's real project, as their terminal would.
+			// Not "Run command:" -- that is sandbox_exec's. This one is a real shell, in the
+			// turn's working copy or (git, installs) the real project: InPlace says which.
 			cmd, _ := args["command"].(string)
 			if cmd != "" {
 				where := ""
 				if cwd, _ := args["cwd"].(string); cwd != "" {
 					where = " (in " + sanitizeText(cwd) + ")"
 				}
-				return "Run in your terminal" + where + ": " + sanitizeText(cmd) + " ?"
+				return runCommandVerb(req) + where + ": " + sanitizeText(cmd) + " ?" // runcommandverb.go
 			}
 		case "delete_path":
 			if p := str("path"); p != "" {

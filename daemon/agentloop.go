@@ -103,7 +103,7 @@ type agentTurn struct {
 	// emptyInARow counts empty replies in a row: the first is asked again on
 	// the same host, the second elsewhere, the third ends the turn. A reply with
 	// anything in it resets it, so empties apart are each asked again.
-	emptyInARow int
+	emptyInARow, providerWaits int // providerWaits: patience.go
 	// lastFailure is the most recent failed tool call's reason, as the user
 	// would read it ("propose_edit: ... is a directory ..."), or "" once a call
 	// succeeds. A turn that ends on empty replies says it, so the failure the
@@ -688,24 +688,24 @@ func (s *Server) runAgentLoop(
 				}
 				err = refusal
 			}
+			// A BUSY PROVIDER IS WAITED OUT first, once the turn has done work (patience.go).
+			if s.waitOutProvider(ctx, turn, &bud, err, full.String()[textBefore:], onActivity) {
+				continue
+			}
 			// A FAILURE PART-WAY THROUGH IS AN INCOMPLETE TURN, NOT A VOID ONE
 			// (QA gate 2026-08-01, P1-1).
 			//
-			// This used to return agentResult{}, throwing away everything the
-			// loop had produced. The user had already WATCHED that text arrive
-			// -- it streamed through onToken on its way here -- so discarding it
-			// meant the edit blocks in it were never offered, the turn never
-			// reached conversation memory, and the answer on screen was
-			// contradicted by an error. Meanwhile budgetStop, ten lines up, keeps
-			// all of it, explicitly, because "the work done so far is real and
-			// the user keeps it". Both are mid-turn stops; only one of them was
-			// treating the work as real.
+			// This used to return agentResult{}, throwing away everything the loop
+			// had produced -- text the user had already WATCHED arrive, edit blocks
+			// never offered, a turn never remembered -- while budgetStop keeps all
+			// of it, explicitly, because "the work done so far is real and the user
+			// keeps it". Both are mid-turn stops; only one treated the work as real.
 			//
 			// The first iteration is the exception: nothing has been produced,
 			// so there is no work to preserve and the error is the whole story.
 			// Reporting a bare failure as an "incomplete answer" would be worse
 			// than reporting it as a failure.
-			if full.Len() == 0 {
+			if full.Len() == 0 && len(turn.toolNames) == 0 { // nothing said AND nothing done: no work to keep
 				return agentResult{}, err
 			}
 			s.logger.Printf("agent: stopping at iteration %d after a provider failure, keeping %d byte(s) of answer: %v",
@@ -1036,7 +1036,7 @@ func (s *Server) budgetStop(turn *agentTurn, bud budget) *protocol.IncompleteInf
 			return stop.incomplete()
 		}
 	}
-	if time.Now().After(bud.deadline) {
+	if time.Now().After(bud.deadline.Add(-s.wrapUpReserve(bud))) { // turnreport.go: time kept for the answer
 		// Which deadline bit changes what the user should be told. A phase that
 		// spent the slice reserved for it has not run the turn out of time --
 		// the orchestrator will carry on to the next phase and this Incomplete
@@ -1118,7 +1118,7 @@ func (s *Server) dispatchToolCall(
 	// bytes handed to the tool, and the audit record. Re-reading the call for
 	// any of the three would be how "what you approved" and "what ran" drift
 	// apart.
-	arguments := call.Function.Arguments
+	arguments := s.coercedArguments(ctx, registry, &call) // argcoerce.go: the tool's own types, before anyone reads them
 	server, tool, splitErr := mcp.SplitQualifiedName(name)
 	if splitErr != nil {
 		// The model named a tool WITHOUT the server prefix. MEASURED against a
@@ -1619,14 +1619,14 @@ func (s *Server) resolveExecutable(
 	// that host". A grant for these exact arguments, checked below, still is.
 	egress := webEgressReview(turn, bud, spec, arguments)
 
-	// A COMMAND THAT WOULD RUN IN THE REAL PROJECT IS ALWAYS ASKED ABOUT, for
-	// the same reason. "allow" on sandbox_exec was written about a command
-	// that runs in a private copy and cannot touch the user's files; when this
-	// turn has no copy (the project is too large, or copies are switched off)
-	// the same command writes straight into the project, .git/hooks included,
-	// and nothing reviews what it wrote. Asked here, the copy is made if it
-	// can be -- see mcp.Builtin.InPlace.
-	inPlace := spec.ExecutesCode && registry.RunsInPlace(qualified)
+	// A COMMAND THAT WOULD RUN IN THE REAL PROJECT IS ALWAYS ASKED ABOUT: "allow"
+	// was written about a private copy, and in the project what a command writes
+	// (.git/hooks included) is not reviewed. The copy is made here if it can be,
+	// and a call its tool refuses is refused before anyone is asked (mcp.Builtin.Place).
+	inPlace, refused := registry.Placement(qualified, json.RawMessage(arguments))
+	if inPlace = inPlace && spec.ExecutesCode; refused != "" {
+		return toolDecision{tool: spec, policy: policy, source: auditRefusedByTool, cause: denyByTool, reason: refused}
+	}
 
 	// Config "allow" skips the per-call prompt. It never skips a launch: a
 	// user who allowed a lookup did not thereby agree to start a third-party

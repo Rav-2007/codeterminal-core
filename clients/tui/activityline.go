@@ -119,7 +119,7 @@ func (t turn) activity() activityView {
 // activityVerbs are the built-in tools, said as what they do.
 var activityVerbs = map[string]string{
 	"read_file": "Read", "list_directory": "List", "search_code": "Search", "grep": "Grep",
-	"find_files": "Find", "repo_map": "Repo map", "sandbox_exec": "Run", "web_search": "Search web",
+	"find_files": "Find", "repo_map": "Repo map", "sandbox_exec": "Run", "run_command": "Run", "web_search": "Search web",
 	"web_fetch": "Fetch", "propose_edit": "Edit", "propose_ast_edit": "Edit", "rename_symbol": "Rename",
 	"query_compiler_definition": "Definition", "query_compiler_references": "References",
 	"git_history": "Git", "github": "GitHub", "investigate": "Investigate", "find_tools": "Find tools",

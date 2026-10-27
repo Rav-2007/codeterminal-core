@@ -51,20 +51,22 @@ const (
 	runCommandDrain = 5 * time.Second
 )
 
-func (s *Server) runCommandTools(mode string) []mcp.Builtin {
+func (s *Server) runCommandTools(mode string, proposals *proposalSink) []mcp.Builtin {
 	if isPlanMode(mode) || isCheckMode(mode) || isSpecMode(mode) || isLongTaskMode(mode) {
 		return nil
 	}
 	return []mcp.Builtin{{
 		Tool: mcp.Tool{
 			Name: runCommandToolName,
-			Description: "Run a shell command in the user's REAL project folder, as if they typed it in their own " +
-				"terminal: install packages (pip, npm, cargo, brew...), run scripts, use git, start a build. The user " +
-				"is asked first, every time, and sees the exact command. It is NOT sandboxed: it runs with their full " +
-				"access and network, and what it changes is not reviewed. Edits you proposed this turn are not in the " +
-				"real project until the user accepts them -- to test your edits, use sandbox_exec. Nothing can be typed " +
-				"into it: use non-interactive flags (-y, --yes); sudo cannot ask for a password, so tell the user to run " +
-				"such a command themselves. Output is kept to its last part. Times out after timeout_seconds (default " +
+			Description: "Run a shell command as if the user typed it in their own terminal: " +
+				"install packages (pip, npm, cargo, brew...), run scripts, use git, start a build. The user is asked first, " +
+				"every time, and sees the exact command. It is NOT sandboxed: it runs with their full access and network. Inside the project it runs in " +
+				"this turn's WORKING COPY, which has your edits, and what it changes there comes to the user for review " +
+				"with them -- files it creates are not offered (create files with propose_edit). git and package installs " +
+				"run in the user's real project, which has your edits only once they accept them; git commands that write " +
+				"wait until then. The copy leaves out .gitignored files (such as .env). Nothing can be typed into it: use " +
+				"non-interactive flags (-y, --yes); sudo cannot ask for a password, so tell the user to run such a command " +
+				"themselves. Output is kept to its last part. Times out after timeout_seconds (default " +
 				fmt.Sprintf("%d, at most %d).", int(runCommandTimeout/time.Second), int(maxRunCommandTimeout/time.Second)),
 			Schema: schema(`{"type":"object","properties":{` +
 				`"command":{"type":"string","description":"The command line, run by the user's shell."},` +
@@ -74,9 +76,12 @@ func (s *Server) runCommandTools(mode string) []mcp.Builtin {
 			ExecutesCode: true,
 			Confined:     false,
 		},
-		Handler: s.builtinRunCommand,
-		// Said on the prompt: it runs in the real project, not a copy.
-		InPlace: func() bool { return true },
+		Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
+			return s.builtinRunCommandIn(ctx, raw, proposals) // runplace.go
+		},
+		// Said on the prompt: where THIS call runs, the working copy or the real
+		// project, and a call that may not run at all is refused before it (runplace.go).
+		Place: func(raw json.RawMessage) (bool, string) { return s.runCommandPlacement(raw, proposals) },
 	}}
 }
 
@@ -113,11 +118,7 @@ func (s *Server) runCommandDir(cwd string) (string, error) {
 }
 
 func (s *Server) builtinRunCommand(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
-	var args struct {
-		Command        string `json:"command"`
-		Cwd            string `json:"cwd"`
-		TimeoutSeconds int    `json:"timeout_seconds"`
-	}
+	var args runCommandArgs // runplace.go
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return toolError("the arguments were not a valid JSON object: %v", err)
 	}
@@ -128,15 +129,26 @@ func (s *Server) builtinRunCommand(ctx context.Context, raw json.RawMessage) (mc
 	if err != nil {
 		return toolError("not run: %v", err)
 	}
+	s.logger.Printf("agent: run_command in %s: %s", dir, truncateForClient(args.Command, 200))
+	res, _, err := s.runShellLine(ctx, args.Command, dir, nil, args.TimeoutSeconds)
+	return res, err
+}
+
+// runShellLine runs line through the user's shell in dir, with extraEnv after
+// runCommandEnv, and reports how it ended -- to the model, and as an outcome a
+// run in the working copy is recorded by (runplace.go). The real project and
+// the working copy run commands the same way; only where differs.
+func (s *Server) runShellLine(ctx context.Context, line, dir string, extraEnv []string, timeoutSeconds int) (mcp.Result, execOutcome, error) {
 	timeout := runCommandTimeout
-	if args.TimeoutSeconds > 0 {
-		timeout = min(time.Duration(args.TimeoutSeconds)*time.Second, maxRunCommandTimeout)
+	if timeoutSeconds > 0 {
+		timeout = min(time.Duration(timeoutSeconds)*time.Second, maxRunCommandTimeout)
 	}
 	timeout = withinDeadline(ctx, timeout) // the turn's deadline binds it too
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := shellCommand(runCtx, args.Command) // its environment: runCommandEnv
+	cmd := shellCommand(runCtx, line) // its environment: runCommandEnv
+	cmd.Env = append(cmd.Env, extraEnv...)
 	cmd.Dir = dir
 	cmd.Stdin = nil // reads as end-of-file: nothing can be typed into it
 	cmd.WaitDelay = runCommandDrain
@@ -145,28 +157,32 @@ func (s *Server) builtinRunCommand(ctx context.Context, raw json.RawMessage) (mc
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 
 	start := time.Now()
-	s.logger.Printf("agent: run_command in %s: %s", dir, truncateForClient(args.Command, 200))
-	err = cmd.Run()
+	err := cmd.Run()
 	took := time.Since(start).Round(100 * time.Millisecond)
+	outcome := execOutcome{ran: true, exit: -1, elapsed: took, output: buf.String()}
 	out := commandDigest(buf.String(), s.execDigestLimit())
 	if out == "" {
 		out = "(no output)"
 	}
 	switch {
 	case runCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
+		outcome.timedOut = true
 		return mcp.Result{Content: fmt.Sprintf("The command was stopped after %s, its time limit. Output so far:\n%s",
-			humanDuration(timeout), out)}, nil
+			humanDuration(timeout), out)}, outcome, nil
 	case ctx.Err() != nil:
-		return mcp.Result{Content: "The command was stopped because the turn ended. Output so far:\n" + out}, nil
+		return mcp.Result{Content: "The command was stopped because the turn ended. Output so far:\n" + out}, outcome, nil
 	case err == nil:
-		return mcp.Result{Content: fmt.Sprintf("Exit code 0 (%s).\n%s", took, out)}, nil
+		outcome.exit = 0
+		return mcp.Result{Content: fmt.Sprintf("Exit code 0 (%s).\n%s", took, out)}, outcome, nil
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		// A failing command is a RESULT for the model to read, not a tool failure.
-		return mcp.Result{Content: fmt.Sprintf("Exit code %d (%s).\n%s", exit.ExitCode(), took, out)}, nil
+		outcome.exit = exit.ExitCode()
+		return mcp.Result{Content: fmt.Sprintf("Exit code %d (%s).\n%s", exit.ExitCode(), took, out)}, outcome, nil
 	}
-	return toolError("the command could not be run: %v", err)
+	res, err := toolError("the command could not be run: %v", err)
+	return res, execOutcome{exit: -1}, err
 }
 
 // shellPath is the user's shell when it reads -lc as bash does, so a login

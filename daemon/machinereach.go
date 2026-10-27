@@ -117,10 +117,10 @@ func machineReach(offered func(tool string) bool, mode string, programs []string
 	}
 
 	if offered(runCommandToolName) {
-		b.WriteString("\n- RUN ANY SHELL COMMAND in the user's real project with run_command, as they would in their " +
-			"terminal (installing packages, scripts, git): the user approves each exact command, it is not sandboxed, " +
-			"and what it changes is not reviewed. Your unaccepted edits are not in the real project; test them with " +
-			"sandbox_exec.")
+		b.WriteString("\n- RUN ANY SHELL COMMAND with run_command, as the user would in their terminal: they approve each " +
+			"exact command, and it is not sandboxed. Inside the project it runs in this turn's working copy, so it sees " +
+			"your edits and what it changes there is reviewed with them; package installs and git run in the user's " +
+			"real project, and git commands that write wait until the user has reviewed your changes.")
 	}
 	if offered(builtinSandboxExecName) {
 		b.WriteString("\n- RUN only build and test commands (" + strings.Join(programs, ", ") +

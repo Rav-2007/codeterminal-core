@@ -100,7 +100,7 @@ func activityTarget(server, tool, arguments string) string {
 		t = within(quoted(str("pattern")), str("path"))
 	case "find_files":
 		t = within(str("pattern"), str("path"))
-	case "sandbox_exec":
+	case "sandbox_exec", "run_command":
 		t = str("command")
 	case "web_fetch":
 		t = str("url")

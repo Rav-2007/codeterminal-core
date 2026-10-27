@@ -89,3 +89,17 @@ func TestAWaitAfterTheAnswerHasStartedIsShown(t *testing.T) {
 		t.Errorf("a wait after the answer began is not shown:\n%s", view)
 	}
 }
+
+// A provider that has gone silent is waited out too, within a turn, and the
+// countdown says which it is (the daemon's patience.go).
+func TestAWaitOnASilentProviderSaysSo(t *testing.T) {
+	m := streamingModelWithBacklog(t)
+	u, _ := m.Update(toolActivityMsg{protocol.ToolActivity{
+		Phase: protocol.ToolPhaseStep, Tool: protocol.ToolWaiting, DurationMS: 60000,
+		Detail: "the model provider is not answering; trying again in 60s",
+	}})
+	m = u.(chatModel)
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "the model provider is not answering — trying again in 60s") {
+		t.Errorf("the wait on a silent provider is not said as one:\n%s", view)
+	}
+}
