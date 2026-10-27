@@ -5,7 +5,7 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
-## Unreleased
+## v1.5.0 — 2026-10-27
 
 ### Copy from the terminal app with your terminal's own keys
 
@@ -70,8 +70,10 @@ to fix its code instead unless the test is wrong, and you see "! the agent chang
 existing tests" above the review — a pass after that is no longer a "✓". When a
 turn stops part-way, or its answer says the tests pass and Mochiii's record says
 otherwise, a short "Where this stands" record is added under the answer; it stays
-in the chat, so "continue" carries on from it. A turn the provider stopped after
-doing work keeps its edits instead of losing them.
+in the chat, so "continue" carries on from it. The record goes by the last build
+or test run on the final version: a build that passed does not stand for a test
+run after it that failed. A turn the provider stopped after doing work keeps its
+edits instead of losing them.
 
 ### `sandbox_exec` understands quotes and says why a shell line is refused
 
@@ -93,6 +95,37 @@ instead of the whole call being refused.
 **What changed.** A request over your plan's token limit, with nothing in it
 that could be left out, could be reported as "6,344 of them could not be left
 out" instead of "none of it could be left out".
+
+### MCP servers from the catalog: an optional setting is not a missing key
+
+**What changed.** Five of the catalog's servers (context7, memory, mongodb, redis
+and terraform) showed "Needs a key" while they were running, because a setting the
+catalog marks optional was counted as a missing key. It no longer is: not in the
+status line, when you add the server, or in what the agent is told. `mcp get`
+labels such a setting "(optional, no value)". A catalog entry that Mochiii would
+refuse to add is no longer offered, so Add does not fail on it.
+
+**If you stored a server yourself** with a setting name that is not a variable
+name (`MY-VAR`, say), it now loads as not usable, with the reason. Mochiii could
+never accept a value for such a name.
+
+### Windows: stopping Mochiii can no longer hang
+
+**What changed.** Closing the background service's connection point on Windows
+could wait forever in a rare case, so stopping or replacing the service could
+hang. The Windows pipe library is now v0.6.4, which fixes it.
+
+### Fewer tokens when no web tool is offered
+
+**What changed.** The instructions for using the web tools were sent with every
+question, even when no web tool was offered. They are now left out of plain chat
+questions and of agent turns without a web tool.
+
+### Mochiii is open source, under Apache-2.0
+
+**What changed.** Mochiii's licence was a proprietary end-user licence. It is now
+the Apache License 2.0, and the npm packages and the VS Code extension say so.
+Contributions are welcome; `CONTRIBUTING.md` says how.
 
 ## v1.4.0 — 2026-10-24
 
