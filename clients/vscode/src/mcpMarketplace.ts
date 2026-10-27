@@ -33,6 +33,7 @@ import {
   catalogUrlFrom,
   fetchCatalogText,
   parseCatalog,
+  validIconSlug,
   validServerName,
 } from './mcpCatalog';
 import { ServerSpec, storeServer } from './mcpInstall';
@@ -57,8 +58,33 @@ export interface CardView {
   env: { name: string; required: boolean; secret: boolean; description?: string }[];
   hasHomepage: boolean;
   hasPackageUrl: boolean;
+  /**
+   * The slug of a logo this extension bundles, present ONLY when the file is
+   * there (see bundledIconSlugs). The page turns it into media/mcp-icons/<slug>.svg
+   * beside its own script; with none, it draws a generated placeholder.
+   */
+  icon?: string;
   /** '' (not added), 'added', 'disabled', or 'taken' (a config server has the name). */
   installed: '' | 'added' | 'disabled' | 'taken';
+}
+
+/** Where the bundled logos live, under media/: one <slug>.svg each. */
+export const ICON_DIR = 'mcp-icons';
+
+/**
+ * bundledIconSlugs is the set of logos this extension carries. A catalog entry's
+ * icon names one of these or none: the slug is only ever matched against file
+ * names found here, so it cannot reach any other file, and nothing is fetched.
+ * A missing folder is an empty set, not an error -- every card then gets its
+ * placeholder.
+ */
+export async function bundledIconSlugs(extensionPath: string): Promise<Set<string>> {
+  try {
+    const names = await fs.readdir(path.join(extensionPath, 'media', ICON_DIR));
+    return new Set(names.filter((n) => n.endsWith('.svg')).map((n) => n.slice(0, -'.svg'.length)).filter(validIconSlug));
+  } catch {
+    return new Set();
+  }
 }
 
 const RUNTIME: Record<CatalogServer['package']['registry'], string> = {
@@ -71,7 +97,7 @@ function quote(a: string): string {
   return /^[A-Za-z0-9@%+=:,./_-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`;
 }
 
-export function cardFor(s: CatalogServer, state: McpServersState): CardView {
+export function cardFor(s: CatalogServer, state: McpServersState, bundledIcons: ReadonlySet<string> = new Set()): CardView {
   const mine = state.servers.find((x) => x.name === s.id);
   const installed: CardView['installed'] = !mine ? '' : mine.source !== MCP_SOURCE_USER ? 'taken' : mine.disabled ? 'disabled' : 'added';
   return {
@@ -88,6 +114,7 @@ export function cardFor(s: CatalogServer, state: McpServersState): CardView {
     env: s.env,
     hasHomepage: !!s.homepage,
     hasPackageUrl: !!s.package.url,
+    ...(s.icon && bundledIcons.has(s.icon) ? { icon: s.icon } : {}),
     installed,
   };
 }
@@ -319,6 +346,14 @@ export class MarketplaceCore implements vscode.Disposable {
     }
   }
 
+  private bundledIcons: Set<string> | undefined;
+
+  /** The logos this extension carries, read once: they change only with the extension. */
+  private async icons(): Promise<Set<string>> {
+    this.bundledIcons ??= await bundledIconSlugs(this.context.extensionUri.fsPath);
+    return this.bundledIcons;
+  }
+
   private lookup(id: string): CatalogServer | undefined {
     return this.catalog?.servers.find((s) => s.id === id) ?? this.community?.servers.find((s) => s.id === id);
   }
@@ -417,11 +452,12 @@ export class MarketplaceCore implements vscode.Disposable {
           : [...this.catalog.servers, ...(this.community?.servers ?? [])];
     const hits = pool.filter((s) => matches(s, query.q, query.category));
     const state = this.provider.current;
+    const icons = await this.icons();
     this.post({
       type: 'results',
       query,
       total: hits.length,
-      items: hits.slice(query.offset, query.offset + query.limit).map((s) => cardFor(s, state)),
+      items: hits.slice(query.offset, query.offset + query.limit).map((s) => cardFor(s, state, icons)),
       communityReady: !!this.community,
     });
   }
@@ -442,9 +478,10 @@ export class MarketplaceCore implements vscode.Disposable {
       await this.loadCommunity();
       server = this.lookup(id);
     }
+    const icons = await this.icons();
     this.post(
       server
-        ? { type: 'focus', item: cardFor(server, this.provider.current) }
+        ? { type: 'focus', item: cardFor(server, this.provider.current, icons) }
         : { type: 'notice', kind: 'warning', text: `The link asked for a server named "${id}", which this catalog does not list.` },
     );
   }
@@ -597,6 +634,10 @@ export function mcpMarketplaceStyles(scope = ''): string {
     display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   ${s('.card.focused')} { border-color: var(--mk-focus); }
   ${s('.head')} { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+  ${s('.who')} { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
+  ${s('.ico')} { width: 32px; height: 32px; flex: none; border-radius: 6px; object-fit: contain; }
+  ${s('.ico.ph')} { display: flex; align-items: center; justify-content: center; font-weight: 600;
+    background: var(--mk-badge-bg); color: var(--mk-badge-fg); }
   ${s('.head h2')} { font-size: 1.1em; margin: 0; overflow-wrap: anywhere; }
   ${s('.pub')} { color: var(--mk-muted); font-size: 0.88em; }
   ${s('.tier')} { flex: none; font-size: 0.78em; padding: 1px 7px; border-radius: 10px; background: var(--mk-badge-bg); color: var(--mk-badge-fg); }

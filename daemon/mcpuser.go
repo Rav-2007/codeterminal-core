@@ -139,6 +139,9 @@ func validateUserServer(name string, srv MCPServerConfig) error {
 	if err := validateUserServerName(name); err != nil {
 		return err
 	}
+	if err := validateIconSlug(srv.Icon); err != nil {
+		return err
+	}
 	// BEFORE validateServerBlock, whose own message for this quotes the whole
 	// entry. That is right for a config file, where the value is already on
 	// disk in front of the person reading the error; here the entry came from
@@ -201,6 +204,37 @@ func validateUserServerName(name string) error {
 		}
 		return fmt.Errorf("server name %q may hold only lower-case letters, digits, '-' and '_', and must start "+
 			"with a letter or digit", name)
+	}
+	return nil
+}
+
+// maxIconSlug bounds an icon slug: the same number as the catalog's
+// (clients/vscode/src/mcpCatalog.ts MAX_ICON, mochiii_website
+// scripts/mcp/catalog-rules.mjs MAX_ICON).
+const maxIconSlug = 32
+
+// validateIconSlug accepts a slug of lower-case letters, digits and '-', at most
+// maxIconSlug of them, and refuses anything else -- in particular anything that
+// could be a URL or a path, which has a ':' or a '/' or a '.' in it.
+//
+// THE SAME RULE as the catalog's two validators (mcpCatalog.ts validIconSlug,
+// catalog-rules.mjs validIconSlug), with one difference that cannot be removed: a
+// Go string cannot tell an absent icon from an empty one, so "" is "no icon" here.
+// Both catalog validators refuse "", so no catalog entry reaches this as one.
+func validateIconSlug(icon string) error {
+	if icon == "" {
+		return nil
+	}
+	if len(icon) > maxIconSlug {
+		return fmt.Errorf("icon is %d characters; the most is %d", len(icon), maxIconSlug)
+	}
+	for i := 0; i < len(icon); i++ {
+		c := icon[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			continue
+		}
+		return fmt.Errorf("icon %q may hold only lower-case letters, digits and '-': a slug, never a URL or a path",
+			truncateForClient(icon, 40))
 	}
 	return nil
 }

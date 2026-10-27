@@ -19,6 +19,18 @@
 
   const PAGE = 40;
 
+  // WHERE THE BUNDLED LOGOS ARE: media/mcp-icons beside this very script. Read
+  // now, while the script runs -- document.currentScript is null afterwards. Both
+  // hosts (the editor tab and the chat's Customize page) load this file with a
+  // plain <script src>, so the folder is a webview resource of the extension and
+  // nothing here can name another host. A card carries a slug, never a URL, and
+  // the slug is checked once more here before it becomes part of one.
+  const ICON_BASE = (() => {
+    const src = document.currentScript instanceof HTMLScriptElement ? document.currentScript.src : '';
+    return src ? src.slice(0, src.lastIndexOf('/') + 1) + 'mcp-icons/' : '';
+  })();
+  const ICON_SLUG = /^[a-z0-9-]{1,32}$/;
+
   /**
    * @param {HTMLElement} app where to draw
    * @param {(msg: any) => void} post how a request reaches the host
@@ -30,7 +42,8 @@
    * @typedef {{ name: string, required: boolean, secret: boolean, description?: string }} EnvView
    * @typedef {{ id: string, name: string, description: string, publisher: string, namespace?: string,
    *   tier: 'verified' | 'community', categories: string[], pkg: string, runtime: string, commandLine: string,
-   *   env: EnvView[], hasHomepage: boolean, hasPackageUrl: boolean, installed: '' | 'added' | 'disabled' | 'taken' }} Card
+   *   env: EnvView[], hasHomepage: boolean, hasPackageUrl: boolean, icon?: string,
+   *   installed: '' | 'added' | 'disabled' | 'taken' }} Card
    */
 
   const state = {
@@ -183,6 +196,36 @@
   // ---- cards -----------------------------------------------------------------
 
   /**
+   * placeholder is the logo a server gets when it has none: its first letter on
+   * the theme's badge colours. Decorative -- the name is right beside it.
+   * @param {Card} c
+   * @returns {HTMLElement}
+   */
+  function placeholder(c) {
+    const ph = el('span', 'ico ph', (Array.from(c.name.trim())[0] || '?').toUpperCase());
+    ph.setAttribute('aria-hidden', 'true');
+    return ph;
+  }
+
+  /**
+   * logo is the bundled image for a card's icon slug, or the placeholder: when the
+   * card names none, or when the file will not load.
+   * @param {Card} c
+   * @returns {HTMLElement}
+   */
+  function logo(c) {
+    if (!ICON_BASE || typeof c.icon !== 'string' || !ICON_SLUG.test(c.icon)) {
+      return placeholder(c);
+    }
+    const img = document.createElement('img');
+    img.className = 'ico';
+    img.alt = '';
+    img.src = `${ICON_BASE}${c.icon}.svg`;
+    img.addEventListener('error', () => img.replaceWith(placeholder(c)), { once: true });
+    return img;
+  }
+
+  /**
    * @param {Card} c
    * @param {boolean} [focused]
    * @returns {HTMLElement}
@@ -194,7 +237,9 @@
     const head = el('div', 'head');
     const title = el('div', '');
     title.append(el('h2', '', c.name), el('div', 'pub', c.publisher));
-    head.append(title, el('span', c.tier === 'verified' ? 'tier verified' : 'tier', c.tier === 'verified' ? 'Verified' : 'Community'));
+    const who = el('div', 'who');
+    who.append(logo(c), title);
+    head.append(who, el('span', c.tier === 'verified' ? 'tier verified' : 'tier', c.tier === 'verified' ? 'Verified' : 'Community'));
     node.append(head, el('p', 'desc', c.description));
 
     if (c.categories.length > 0) {

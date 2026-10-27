@@ -7,6 +7,7 @@
 
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { sendMCP } from '../../daemonClient';
 import {
@@ -17,10 +18,11 @@ import {
   communityUrl,
   fetchCatalogText,
   parseCatalog,
+  validIconSlug,
   validServerName,
 } from '../../mcpCatalog';
 import { StoreUi, resultMessage, splitArgs, storeServer } from '../../mcpInstall';
-import { cardFor, matches, provenanceOf, specFor } from '../../mcpMarketplace';
+import { ICON_DIR, bundledIconSlugs, cardFor, matches, provenanceOf, specFor } from '../../mcpMarketplace';
 import { McpServersState, nodesFor } from '../../mcpServersView';
 import { StubDaemon, writeLine } from '../stubDaemon';
 
@@ -42,6 +44,33 @@ const good = (): any => ({
 
 const doc = (servers: unknown[], extra: Record<string, unknown> = {}): string =>
   JSON.stringify({ schemaVersion: 1, generatedAt: '2026-10-13T00:00:00Z', servers, ...extra });
+
+// THE ICON IS A SLUG, NEVER A URL OR A PATH. These two lists are the agreement
+// with mochiii_website scripts/mcp/catalog.test.mjs and the daemon's
+// mcpcatalogparity_test.go, which carry the same strings: change one list and the
+// other two have to change with it, or an entry the site publishes is dropped here
+// with no reason shown.
+const ICON_ACCEPTED = ['github', 'chrome-devtools', 'a', 'x1', '0', 'a--b', 'x'.repeat(32)];
+const ICON_REFUSED: unknown[] = [
+  '',
+  'x'.repeat(33),
+  'GitHub',
+  'git_hub',
+  'git hub',
+  'https://example.com/github.svg',
+  '//evil.example/a',
+  '../github',
+  'a/b',
+  'github.svg',
+  'a\n',
+  '%2e%2e',
+  '\uff47ithub', // a full-width letter
+  null,
+  42,
+  true,
+  {},
+  ['github'],
+];
 
 suite('the MCP catalog is checked, not trusted', () => {
   test('a well-formed entry passes, with only the fields this extension reads', () => {
@@ -99,6 +128,25 @@ suite('the MCP catalog is checked, not trusted', () => {
     const longName = good();
     longName.env = [{ name: 'MDB_MCP_ATLAS_TEMPORARY_DATABASE_USER_LIFETIME_MS', required: false, secret: false }];
     assert.ok(checkServer(longName), 'refused an ordinary long variable name');
+  });
+
+  // Neuter check: drop the icon rule from checkServer (or loosen validIconSlug) --
+  // every refused slug is accepted, and a URL reaches a card.
+  test('an icon is a slug, and an entry with anything else is dropped', () => {
+    const withIcon = checkServer({ ...good(), icon: 'github' });
+    assert.strictEqual(withIcon?.icon, 'github', 'positive control: a good slug is kept');
+    assert.ok(!('icon' in checkServer(good())!), 'an entry with no icon has no icon');
+    for (const icon of ICON_ACCEPTED) {
+      assert.ok(validIconSlug(icon), `refused ${JSON.stringify(icon)}`);
+      assert.strictEqual(checkServer({ ...good(), icon })?.icon, icon, `dropped an entry with icon ${JSON.stringify(icon)}`);
+    }
+    for (const icon of ICON_REFUSED) {
+      assert.ok(!validIconSlug(icon), `accepted ${JSON.stringify(icon)}`);
+      assert.strictEqual(checkServer({ ...good(), icon }), undefined, `accepted an entry with icon ${JSON.stringify(icon)}`);
+    }
+    const c = parseCatalog(doc([{ ...good(), icon: 'https://example.com/github.svg' }, good()]), 'x');
+    assert.deepStrictEqual(c.servers.map((x) => x.id), ['context7']);
+    assert.strictEqual(c.rejected, 1, 'the entry with a URL for an icon is counted, not repaired');
   });
 
   test('a file cannot hand out the other tier, and what is dropped is counted', () => {
@@ -335,6 +383,31 @@ suite('the MCP views say what is true', () => {
     assert.strictEqual(with_([{ name: 'context7', command: 'npx', source: 'user' }]), 'added');
     assert.strictEqual(with_([{ name: 'context7', command: 'npx', source: 'user', disabled: true }]), 'disabled');
     assert.strictEqual(with_([{ name: 'context7', command: 'npx', source: 'config' }]), 'taken');
+  });
+
+  // Neuter check: drop the bundledIcons.has check from cardFor -- a card names a
+  // logo the extension does not carry, and the page asks for a file that is not there.
+  test('a card carries an icon only when the extension bundles that logo', () => {
+    const s = checkServer({ ...good(), icon: 'context7' })!;
+    assert.strictEqual(cardFor(s, base, new Set(['context7'])).icon, 'context7', 'positive control');
+    assert.strictEqual(cardFor(s, base).icon, undefined, 'no bundle given');
+    assert.strictEqual(cardFor(s, base, new Set(['github'])).icon, undefined, 'a logo this extension does not carry');
+    assert.strictEqual(cardFor(checkServer(good())!, base, new Set(['context7'])).icon, undefined, 'an entry with no icon');
+  });
+
+  test('the bundled logos are the slug-named svg files in media/mcp-icons, and nothing else', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mochiii-icons-'));
+    try {
+      const icons = path.join(dir, 'media', ICON_DIR);
+      fs.mkdirSync(icons, { recursive: true });
+      for (const f of ['github.svg', 'chrome-devtools.svg', 'Upper.svg', 'a.b.svg', '..svg', 'x.png', 'notes.txt']) {
+        fs.writeFileSync(path.join(icons, f), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+      }
+      assert.deepStrictEqual([...(await bundledIconSlugs(dir))].sort(), ['chrome-devtools', 'github']);
+      assert.strictEqual((await bundledIconSlugs(path.join(dir, 'nowhere'))).size, 0, 'a missing folder is no logos, not an error');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('a community server is never presented as reviewed', () => {

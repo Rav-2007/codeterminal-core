@@ -33,6 +33,10 @@ export const MAX_CATALOG_BYTES = 2 * 1024 * 1024;
 export const MAX_COMMUNITY_BYTES = 32 * 1024 * 1024;
 export const CATALOG_TIMEOUT_MS = 30_000;
 
+// An icon is a slug, at most this long. mochiii_website scripts/mcp/catalog-rules.mjs
+// MAX_ICON and daemon/mcpuser.go maxIconSlug say the same.
+export const MAX_ICON = 32;
+
 export interface CatalogEnv {
   name: string;
   required: boolean;
@@ -59,6 +63,12 @@ export interface CatalogServer {
   tier: 'verified' | 'community';
   categories: string[];
   homepage?: string;
+  /**
+   * A slug naming a logo this extension bundles (media/mcp-icons/<slug>.svg),
+   * never a URL and never a path. Nothing is fetched for it; a slug with no file
+   * behind it is drawn as a generated placeholder.
+   */
+  icon?: string;
   package: CatalogPackage;
   launch: { command: string; args: string[] };
   env: CatalogEnv[];
@@ -110,6 +120,16 @@ export function validServerName(id: unknown): id is string {
     !id.includes('__') &&
     id !== 'builtin'
   );
+}
+
+/**
+ * validIconSlug: letters a-z, digits and hyphens, 1 to MAX_ICON of them. Not a
+ * URL, not a path, not a file name -- there is no "." or "/" in it to make one.
+ * The same rule as mochiii_website scripts/mcp/catalog-rules.mjs validIconSlug
+ * and daemon/mcpuser.go validateIconSlug.
+ */
+export function validIconSlug(icon: unknown): icon is string {
+  return typeof icon === 'string' && icon.length > 0 && icon.length <= MAX_ICON && /^[a-z0-9-]+$/.test(icon);
 }
 
 /**
@@ -189,6 +209,11 @@ export function checkServer(raw: unknown): CatalogServer | undefined {
   if (s.namespace !== undefined && !plainText(s.namespace, 200)) {
     return undefined;
   }
+  // Dropped, not repaired, like every other rule: an icon that is not a slug is
+  // an entry the site's build would have refused.
+  if (s.icon !== undefined && !validIconSlug(s.icon)) {
+    return undefined;
+  }
   const categories = Array.isArray(s.categories) ? s.categories : [];
   if (categories.length > 10 || categories.some((c: unknown) => !plainText(c, 32))) {
     return undefined;
@@ -266,6 +291,9 @@ export function checkServer(raw: unknown): CatalogServer | undefined {
   const homepage = httpsUrl(s.homepage);
   if (homepage) {
     out.homepage = homepage;
+  }
+  if (s.icon !== undefined) {
+    out.icon = s.icon;
   }
   if (s.cwd === 'workspace') {
     out.cwd = 'workspace';
