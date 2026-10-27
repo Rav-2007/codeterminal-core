@@ -62,7 +62,7 @@ works_here() {
 echo "A. zsh, ~/.local/bin not on PATH"
 h=$work/A
 if install A /bin/zsh; then ok "installed"; else bad "the installer failed: $(tail -3 "$work/A.out")"; fi
-if [ "$(grep -c '.local/bin' "$h/.zshrc" 2>/dev/null)" = 1 ]; then ok "one line in ~/.zshrc"; else bad "~/.zshrc does not have the line once"; fi
+if [ "$(grep -c '.local/bin' "$h/.zshrc" 2>/dev/null)" = 1 ]; then ok "one line in ~/.zshrc"; else bad "the line is not in ~/.zshrc once"; fi
 if says A "This terminal cannot find mochiii yet" && line A "    export PATH=\"$h/.local/bin:\$PATH\""; then
 	ok "ends on the line this terminal needs, on its own"
 else
@@ -73,7 +73,7 @@ if says A "New terminals find it by themselves."; then ok "says new terminals fi
 
 echo "B. the same home, installed again"
 if install A /bin/zsh; then ok "installed"; else bad "the second install failed"; fi
-if [ "$(grep -c '.local/bin' "$h/.zshrc")" = 1 ]; then ok "still one line in ~/.zshrc"; else bad "~/.zshrc got a second line"; fi
+if [ "$(grep -c '.local/bin' "$h/.zshrc")" = 1 ]; then ok "still one line in ~/.zshrc"; else bad "a second line went into ~/.zshrc"; fi
 if says A "This terminal cannot find mochiii yet"; then ok "still says the line"; else bad "no longer says the line"; fi
 
 echo "C. a ~/.zshrc it cannot change"
@@ -83,7 +83,7 @@ if install C /bin/zsh; then ok "installed"; else bad "the installer stopped: $(t
 if says C "cannot be changed, so new terminals will not find mochiii either"; then ok "warns"; else bad "no warning"; fi
 if says C "is ready" && line C "    cd your-project && mochiii"; then ok "reached the end"; else bad "did not reach the end"; fi
 if line C "    sudo chown \"\$USER\" \"$h/.zshrc\" && chmod u+w \"$h/.zshrc\""; then ok "prints the fix"; else bad "no fix printed"; fi
-if [ "$(cat "$h/.zshrc")" = "echo hi" ]; then ok "~/.zshrc untouched"; else bad "~/.zshrc changed"; fi
+if [ "$(cat "$h/.zshrc")" = "echo hi" ]; then ok "left ~/.zshrc as it was"; else bad "changed ~/.zshrc"; fi
 if says C "Permission denied"; then bad "the shell's own error reached the user"; else ok "no raw shell error"; fi
 if works_here C; then ok "the printed line works in this terminal"; else bad "the printed line does not find mochiii"; fi
 
@@ -92,7 +92,7 @@ h=$work/D
 mkdir -p "$h/.local" && chmod 555 "$h/.local"
 if install D /bin/zsh; then ok "installed"; else bad "the installer stopped: $(tail -3 "$work/D.out")"; fi
 if says D "cannot be written to, so mochiii goes on your PATH from"; then ok "warns"; else bad "no warning"; fi
-if grep -qF "$h/.mochiii/bin:" "$h/.zshrc" 2>/dev/null; then ok "~/.zshrc names ~/.mochiii/bin"; else bad "~/.zshrc does not name ~/.mochiii/bin"; fi
+if grep -qF "$h/.mochiii/bin:" "$h/.zshrc" 2>/dev/null; then ok "the line in ~/.zshrc names ~/.mochiii/bin"; else bad "the line in ~/.zshrc does not name ~/.mochiii/bin"; fi
 if works_here D; then ok "the printed line works in this terminal"; else bad "the printed line does not find mochiii"; fi
 
 echo "E. ~/.local/bin already on PATH"
