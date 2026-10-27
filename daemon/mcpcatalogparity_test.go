@@ -132,3 +132,49 @@ func TestAnOptionalVariableMustBeOneTheServerReads(t *testing.T) {
 		t.Errorf("an optional variable inside env refused: %v", err)
 	}
 }
+
+// THE ICON IS A SLUG, NEVER A URL OR A PATH (2026-10-28). These lists are the
+// agreement with mochiii_website scripts/mcp/catalog.test.mjs and the extension's
+// mcpMarketplace.test.ts, which carry the same strings: change one list and the
+// other two have to change with it, or a catalog entry the site publishes is
+// dropped by the extension with no reason shown.
+//
+// "" is not in the refused list: a Go string cannot tell an absent icon from an
+// empty one, so it means "no icon" here. The catalog's validators refuse it.
+//
+// Neuter check: drop the validateIconSlug call from validateUserServer, or make
+// validateIconSlug return nil -- every slug in refused is stored, and a URL gets
+// into a file a client trusts to hold a name.
+func TestAnIconIsASlugAndNeverAURLOrAPath(t *testing.T) {
+	accepted := []string{"github", "chrome-devtools", "a", "x1", "0", "a--b", strings.Repeat("x", 32), ""}
+	refused := []string{
+		strings.Repeat("x", 33),
+		"GitHub",
+		"git_hub",
+		"git hub",
+		"https://example.com/github.svg",
+		"//evil.example/a",
+		"../github",
+		"a/b",
+		"github.svg",
+		"a\n",
+		"%2e%2e",
+		"ｇithub", // a full-width letter
+	}
+	if err := validateUserServer("srv", MCPServerConfig{Command: "npx", Icon: "github"}); err != nil {
+		t.Fatalf("positive control: a good slug refused: %v", err)
+	}
+	for _, icon := range accepted {
+		if err := validateUserServer("srv", MCPServerConfig{Command: "npx", Icon: icon}); err != nil {
+			t.Errorf("icon %q refused: %v", icon, err)
+		}
+	}
+	for _, icon := range refused {
+		err := validateUserServer("srv", MCPServerConfig{Command: "npx", Icon: icon})
+		if err == nil {
+			t.Errorf("icon %q accepted", icon)
+		} else if !strings.Contains(err.Error(), "icon") {
+			t.Errorf("icon %q refused, but not for being an icon: %v", icon, err)
+		}
+	}
+}

@@ -378,6 +378,12 @@ type MCPServerConfig struct {
 	// Disabled turns one configured server off without deleting its block.
 	Disabled bool `json:"disabled,omitempty"`
 
+	// Icon is the slug of the logo a client bundles for this server ("github"),
+	// from a marketplace catalog entry. A slug and nothing else -- never a URL,
+	// never a path (validateIconSlug) -- so whatever shows it can only look it up
+	// among its own files. Empty means none.
+	Icon string `json:"icon,omitempty"`
+
 	// Cwd is the folder the server is started in. Empty -- the default -- is a
 	// private folder of the server's own, holding nothing a project put there.
 	// ServerCwdWorkspace is the project being worked on, for a server that is
