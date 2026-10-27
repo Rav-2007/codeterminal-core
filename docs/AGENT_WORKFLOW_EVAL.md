@@ -912,6 +912,12 @@ at all is run again on the same host, then moved to another host for the rest of
 the task, before it counts toward `stuck` (`daemon/longtask.go`). A segment
 whose call was *refused* did call a tool and still counts as before.
 
+**A note added on 2026-10-26, about arm A.** Until then the task eval timed every turn of a trial from
+the trial's own start, while the product starts one clock per message. So a "continue" turn in arm A
+(`TASK_EVAL_CONTINUES`) had less of `turn_timeout_seconds` than a user's would, and could be cut off
+part-way. Its multi-turn results carry that bias against arm A. The eval now starts one clock per
+turn (`tasksuccess_eval_test.go`).
+
 ## Round 5 — the self-correcting loop (rules written 2026-10-15, before any run)
 
 **What is measured.** Long tasks with the judge acting against the same long
@@ -968,3 +974,81 @@ run, with the key's remaining limit read first where the provider has an endpoin
 for it.
 
 ### Status: not yet run (2026-10-15)
+
+## Round 6 — real repositories, one view of the project (rules written 2026-10-26, before any run)
+
+**Why.** On eight real fixes from real GitHub projects (C, C++, Java, Python), run on 2026-10-26 with
+one try each on NVIDIA's free tier, the agent tested code without its own fix and said "All 18 tests
+pass". It rewrote a file through the shell with no diff, left heredoc files in the project, and once
+rewrote an existing test so its fix would pass. A fix branch with a testing rule and a 40-call budget
+passed 6 of 8 against today's 7, at 2.6 times the tokens. Eight single tries prove neither number. The
+cause was two copies: edits, reads and `sandbox_exec` worked in the turn's private copy, and
+`run_command` in the real project. The changes measured here (`run_command` in the working copy, git
+and installers in the real project, changed tests flagged, Mochiii's record under the answer, a
+provider failure keeping the work, patience with a busy provider, lenient tool arguments) are
+described in `docs/REFERENCE.md`.
+
+**The arms.** One model, one key, the arms in turn on each task (`scripts/realrepo/run_round.sh`).
+
+- **A, today:** main as it was before these changes, 16 calls a step, 24 a turn, 600 s. Its tree is
+  that commit plus the eval and the two files it measures with, which nothing in it calls
+  (`scripts/realrepo/baseline_tree.sh`), so A is measured by the same definitions as the other arms.
+- **B, the fixes:** the branch with all of the changes above, on the same budget. "continue" is said up
+  to 2 times after a turn that stopped on its budget, in A and B alike, carrying what the user's chat
+  carries (the answer, and in B Mochiii's record under it).
+- **D, the fixes through `/fix`:** B's code as a long task (`REALREPO_MODE=fix`), on the default task
+  budget. It is one request, with no "continue".
+- **C, the fixes at 40 calls**, run only if B loses three or more tasks to the 16-call limit:
+  `REALREPO_MAX_ITERATIONS=40`, `REALREPO_MAX_TURN_ITERATIONS=60`, `REALREPO_TURN_TIMEOUT=1200`,
+  `REALREPO_MAX_TURN_TOKENS=1500000`.
+
+**Tasks and tries.** The eight tasks of 2026-10-26, plus at least twelve more. Each language gets at
+least five, and at least half of all tasks are fixes merged after 2026-06-01, newer than the models'
+training data. Every task is proven by `build_tasks.py --validate`: it fails as given and passes with
+the real fix. Three tries per task per arm.
+
+**The model and the money.** DeepSeek V4 Pro, the default tier, on a paid key the owner funds and
+connects, chosen over the free tier, whose 429s and stalls cut 11 attempts in one day's two fixed lanes.
+The key's remaining limit is read before anything is spent. A one-task pilot per arm sets the cap
+(`REALREPO_ROUND_USD`), about $20–40 for the round, and the owner says yes to it before the round starts.
+
+**Measured, per arm** (`scripts/realrepo/compare.py`):
+
+- **pass rate**, graded by the fix's own hidden tests;
+- **tested on the final version**: the last build or test run that saw the final version of the trial's
+  changes passed. A turn that changed something saw its changes only in its working copy, after its
+  last edit. A turn that changed nothing saw the project as the turns before it left it, in a working
+  copy or in the real project: that is where A ran every `run_command`, and where its "continue" after
+  accepted edits tests them. The eval reads every `run_command`'s exit code from a stand-in for the
+  user's shell, in every arm;
+- **unsupported claims**: the last answer says the tests pass, the trial changed something, and it was
+  not tested on the final version or it changed existing tests;
+- **changed existing tests** (by an offered edit, or outside review) and **changed outside review**
+  (what git shows changed in the real project while a turn ran, before anything it offered was
+  applied; ignored build output left out), as trials, measured the same way in every arm;
+- **$ and tokens per solved task**, and minutes per trial;
+- **provider-ended trials**, reported apart and counted as neither pass nor fail.
+
+**Rules.**
+
+- **B replaces A as what ships** if its pass rate is no more than one task below A's, its unsupported
+  claims are fewer, and its $ per solved task is no more than 1.2 times A's.
+- **D becomes the documented way to fix a bug** (README and `/help`) if it passes at least two more
+  trials than B, at no more than 1.5 times B's $ per solved task. Prompts are not routed to it on their
+  own: shape routing was falsified twice.
+- **C raises the default budget** only if it passes at least two more trials than B, at no more than
+  1.5 times B's $ per solved task.
+- **Defects, fixed before any recommendation, whatever the totals:**
+  - a test run through `run_command` that did not see the agent's edits;
+  - a file a command created, offered or left in the project;
+  - a changed existing test not shown in the review;
+  - a "Where this stands" record contradicted by the trial's own log.
+- **Reported, not ruled:** passes per language, per task and per try, and the daemon log's counts of
+  429s, stalls, patience waits and coerced arguments.
+- **VOID:** a trial the harness itself broke, or one run on a harness other than the commit recorded
+  here before the first trial.
+
+**The harness.** `daemon/realrepo_eval_test.go` and `scripts/realrepo/`, at the commit recorded here
+before the first trial (filled in when the round starts).
+
+### Status: not yet run (2026-10-26)
