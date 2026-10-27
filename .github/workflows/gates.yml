@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v shellcheck >/dev/null || { echo "::error::shellcheck is not on this runner"; exit 1; }
-          shellcheck -s sh install/install.sh install/build-archive.sh install/check-notices.sh install/smoke/run-smoke.sh install/smoke/old-glibc.sh install/smoke/alpine.sh
+          shellcheck -s sh install/install.sh install/build-archive.sh install/check-notices.sh install/smoke/run-smoke.sh install/smoke/path-cases.sh install/smoke/old-glibc.sh install/smoke/alpine.sh
           for f in npm/build.js npm/mochiii/bin/mochiii npm/mochiii/install.js npm/mochiii/platform.js install/smoke/npm-smoke.js; do
             node --check "$f"
           done

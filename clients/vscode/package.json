@@ -2,7 +2,7 @@
   "name": "mochiii-vscode",
   "displayName": "Mochiii",
   "description": "A local-first AI coding assistant. Your code is indexed, embedded and retrieved on your own machine.",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "publisher": "MochiiiAIAgent",
   "license": "Apache-2.0",
   "icon": "media/icon.png",

@@ -3,6 +3,12 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [1.5.1] - 2026-10-27
+
+No change to the extension. The release fixes the macOS and Linux installer,
+which ends on the line the terminal it ran in needs, and no longer stops part-way
+on a startup file it cannot change.
+
 ## [1.5.0] - 2026-10-27
 
 ### Changed
