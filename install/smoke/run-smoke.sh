@@ -20,7 +20,10 @@
 #   6. a tampered archive is refused and the installed version keeps working;
 #   7. re-installing over a running service stops it and works;
 #   8. `mochiii --stop` ends the service and its embedder helper, and
-#      --uninstall removes the program and keeps ~/.mochiii.
+#      --uninstall removes the program and keeps ~/.mochiii;
+#   9. with ~/.local/bin not on PATH, as on a Mac, the installer ends on the one
+#      line the terminal it ran in needs, and a startup file or a ~/.local it
+#      cannot change does not stop it part-way (path-cases.sh).
 #
 # Exit status 0 only if every check passed.
 set -eu
@@ -205,5 +208,9 @@ sh "$installer" --uninstall || fail "--uninstall failed"
 [ ! -e "$HOME/.local/bin/mochiii" ] || fail "--uninstall left the mochiii link"
 [ -d "$HOME/.mochiii/models" ] || fail "--uninstall removed the downloaded models, which it must keep"
 pass "uninstalled; models and settings kept"
+
+# 9. PATH, in the cases users have hit, each in a home of its own
+sh "$here/path-cases.sh" "$installer" http://127.0.0.1:18471 "$want" || fail "the installer's PATH cases above"
+pass "PATH: the installer ends on the line this terminal needs, and an unwritable startup file or ~/.local does not stop it"
 
 echo "SMOKE PASSED ($want on $(uname -s) $(uname -m))"

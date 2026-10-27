@@ -308,32 +308,51 @@ stop_running() {
 	say "    stopped the running background service; the next \`mochiii\` starts the new one"
 }
 
+# THE TERMINAL THE INSTALLER RUNS IN CANNOT BE TOLD. `curl ... | sh` is a child
+# of the user's shell, so the line added to the startup file reaches only new
+# terminals -- and macOS has no ~/.local/bin on its PATH. A Mac user (2026-10-26)
+# typed `mochiii` in the same window and got "command not found", the way out
+# having been a parenthesis at the end of a sentence. So THIS_TERMINAL is the one
+# line that works there, which the installer ends on, on a line of its own.
+#
+# A startup file it cannot change (another Mac, 2026-10-25: a ~/.zshrc owned by
+# root) used to end the installer under `set -e`, after the program was in place
+# and before the model: it warns instead, and says how to fix it. So does a
+# ~/.local it cannot write to (`sudo pip install --user` leaves one owned by
+# root): the PATH then names ~/.mochiii/bin itself.
 link_and_path() {
-	mkdir -p "$LINK_DIR"
-	ln -sf "$BIN_DIR/mochiii" "$LINK_DIR/mochiii"
+	if ! { mkdir -p "$LINK_DIR" && ln -sf "$BIN_DIR/mochiii" "$LINK_DIR/mochiii"; } 2>/dev/null; then
+		warn "$LINK_DIR cannot be written to, so mochiii goes on your PATH from $BIN_DIR"
+		LINK_DIR=$BIN_DIR
+	fi
 	case ":$PATH:" in
 	*":$LINK_DIR:"*) return 0 ;;
 	esac
-	if [ -n "$NO_MODIFY_PATH" ]; then
-		NEEDS_PATH="add $LINK_DIR to your PATH"
-		return 0
-	fi
+	line="export PATH=\"$LINK_DIR:\$PATH\""
 	case "$(basename "${SHELL:-sh}")" in
-	zsh) rc="$HOME/.zshrc" line="export PATH=\"$LINK_DIR:\$PATH\"" ;;
+	zsh) rc="$HOME/.zshrc" ;;
 	bash)
 		rc="$HOME/.bashrc"
 		[ "$(uname -s)" = Darwin ] && rc="$HOME/.bash_profile"
-		line="export PATH=\"$LINK_DIR:\$PATH\""
 		;;
 	fish) rc="$HOME/.config/fish/config.fish" line="fish_add_path $LINK_DIR" ;;
-	*) rc="$HOME/.profile" line="export PATH=\"$LINK_DIR:\$PATH\"" ;;
+	*) rc="$HOME/.profile" ;;
 	esac
-	if ! grep -qF "$MARKER" "$rc" 2>/dev/null; then
-		mkdir -p "$(dirname "$rc")"
-		printf '\n%s\n%s\n' "$MARKER" "$line" >>"$rc"
-		say "    added $LINK_DIR to your PATH in $rc"
+	THIS_TERMINAL=$line
+	if [ -n "$NO_MODIFY_PATH" ]; then
+		NEW_TERMINALS="For new terminals to find it too, add that line to $rc."
+		return 0
 	fi
-	NEEDS_PATH="open a new terminal (or run: export PATH=\"$LINK_DIR:\$PATH\")"
+	if grep -qF "$MARKER" "$rc" 2>/dev/null; then
+		NEW_TERMINALS="New terminals find it by themselves."
+	elif { mkdir -p "$(dirname "$rc")" && printf '\n%s\n%s\n' "$MARKER" "$line" >>"$rc"; } 2>/dev/null; then
+		say "    added $LINK_DIR to your PATH in $rc"
+		NEW_TERMINALS="New terminals find it by themselves."
+	else
+		warn "$rc cannot be changed, so new terminals will not find mochiii either"
+		NEW_TERMINALS="New terminals will not find it: $rc cannot be changed. To fix that, run this, then the install command again:"
+		RC_FIX="sudo chown \"\$USER\" \"$rc\" && chmod u+w \"$rc\""
+	fi
 }
 
 fetch_model() {
@@ -381,7 +400,7 @@ main() {
 	setup_download
 	TMP=$(mktemp -d 2>/dev/null || mktemp -d -t mochiii)
 	trap 'rm -rf "$TMP"' EXIT INT TERM
-	NEEDS_PATH=""
+	THIS_TERMINAL="" NEW_TERMINALS="" RC_FIX=""
 	download_and_verify
 	install_files
 	stop_running
@@ -389,8 +408,19 @@ main() {
 	fetch_model
 	say ""
 	say "${BOLD}Mochiii $INSTALLED is ready.${RESET}"
-	if [ -n "$NEEDS_PATH" ]; then
-		say "First $NEEDS_PATH, then run it inside a project folder:"
+	if [ -n "$THIS_TERMINAL" ]; then
+		say ""
+		say "This terminal cannot find mochiii yet. Run this line in it first:"
+		say ""
+		say "    ${BOLD}$THIS_TERMINAL${RESET}"
+		say ""
+		say "$NEW_TERMINALS"
+		if [ -n "$RC_FIX" ]; then
+			say ""
+			say "    $RC_FIX"
+		fi
+		say ""
+		say "Then run it inside a project folder:"
 	else
 		say "Run it inside a project folder:"
 	fi
