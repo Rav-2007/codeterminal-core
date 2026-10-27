@@ -3,6 +3,39 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [1.5.0] - 2026-10-27
+
+### Changed
+
+- **The agent's commands see its own edits.** A command it runs inside your
+  project now runs in the same private copy as its edits, reads and checks, so a
+  test run tests the change. What a command changes there comes to your review
+  with the edits, named as the command's; a file it creates is not offered. The
+  approval question says where the call runs: in this turn's working copy, or,
+  for `git` and package installers, in your real project. A `git` command that
+  writes waits until you have reviewed the changes.
+- **A changed test is shown.** When the agent changes the existing lines of a
+  test, a pass after that is no longer a "✓", and the check line says which
+  tests changed. A check of an earlier version of the changes is no longer a
+  "✓" either. Files a command changed in your real project, outside review, are
+  named.
+- **"Where this stands" under an unfinished answer.** When a turn stops before
+  it finishes, or its answer says the tests pass and Mochiii's record says
+  otherwise, a short record is added under the answer: why it stopped, what
+  changed, and the last check on the final version.
+- **A provider failure after the agent has worked keeps its edits,** and a rate
+  limit or a silent provider is waited out inside the turn, each wait shown as a
+  step of its work.
+- **MCP catalog:** a server whose optional settings are unset no longer shows
+  "Needs a key", and an entry Mochiii would refuse to add is not offered.
+- **Windows:** stopping or replacing the background service can no longer hang.
+- **The licence is Apache-2.0.**
+
+### Fixed
+
+- **A request too large to send** no longer reports a count of what could not be
+  left out when nothing could be.
+
 ## [1.4.0] - 2026-10-24
 
 ### Changed
