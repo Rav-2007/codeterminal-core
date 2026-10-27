@@ -5,6 +5,31 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## v1.5.1 — 2026-10-27
+
+### The installer ends on the line your terminal needs
+
+**What changed.** On a Mac, the one-line install finished with "Mochiii is
+ready", and `mochiii`, typed in the same window, said "command not found". An
+installer run by `curl … | sh` cannot change the PATH of the terminal that ran it,
+and macOS has no `~/.local/bin` on its PATH; the way out was a parenthesis at the
+end of a sentence. Now, when the terminal you installed from cannot find
+`mochiii` yet, the installer ends on the one line to run there, on a line of its
+own:
+
+    export PATH="/Users/you/.local/bin:$PATH"
+
+New terminals find `mochiii` by themselves, as before.
+
+### A startup file the installer cannot change no longer stops it
+
+**What changed.** On a Mac whose `~/.zshrc` belonged to root, the installer put
+Mochiii in place and then stopped with "Permission denied", before the
+code-search model and the closing instructions. It now finishes, warns, and
+prints how to fix the file: `sudo chown "$USER" ~/.zshrc`, then the install
+command again. A `~/.local` it cannot write to no longer stops it either:
+`mochiii` then goes on your PATH from `~/.mochiii/bin`.
+
 ## v1.5.0 — 2026-10-27
 
 ### Copy from the terminal app with your terminal's own keys
