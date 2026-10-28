@@ -157,6 +157,14 @@ version", "who is"). `realrepo_eval` turns `web_search` and `web_fetch` off. Non
 changes a system message or a tool description, so no recorded eval number moves (PLAUSIBLE:
 read, not re-run).
 
+**Correction after PR #77's CI: wrong for one eval.** The locate eval (`retrieval eval / locate
+eval (whole-repo corpus)`) searches this repository's own code, so any edit can move it. It
+cuts files into fixed 40-line windows. #77's first version put a 10-line comment in
+`agentTurn`, which pushed agentloop.go's iteration stop from line 995 to 1008, out of the window
+that answers "where does the agent loop stop iterating". Retrieved fell from 30/49 to 29/49, and
+the gate failed (CONFIRMED on CI and locally). Moving the comment beside the check in
+groundingnudge.go restored it: no question changed (CONFIRMED locally against `faf04a8`).
+
 ## 6. Related, not in any option
 
 - `preflightGroundingDirective` (livequestion.go:228) and `uncheckedNudge` both say "Call
