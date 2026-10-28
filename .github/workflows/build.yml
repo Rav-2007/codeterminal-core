@@ -127,7 +127,7 @@ jobs:
     # 2026-07-30). Until the repo goes public or onto Pro, a red run is a signal
     # someone has to read, not a merge that cannot happen. Making it enforceable
     # is tracked in BACKLOG.md.
-    name: go (${{ matrix.module }})
+    name: go (${{ matrix.module }}${{ matrix.part && format(', {0}', matrix.part) || '' }})
     # NO same-repo PR skip on this job, deliberately, and it is the only job
     # without one.
     #
@@ -152,7 +152,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [daemon, editapply, proxy, helper, protocol, clients/tui]
+        module: [editapply, proxy, helper, protocol, clients/tui]
+        # DAEMON RUNS AS THREE JOBS, side by side. Its raced suite took 417-651s
+        # on these runners, past go test's 10-minute default, because 1,855
+        # tests run one after another (none is t.Parallel) and -race multiplies
+        # each. Measured 2026-10-29, the two halves below are 280s and 283s.
+        #
+        # The halves are one pattern used twice -- -run in the first, -skip in
+        # the second -- so every test, Example and Fuzz seed is in exactly one
+        # of them, including tests not yet written. No list to keep up to date.
+        # The unraced coverage run is the third job, so it no longer waits for
+        # the raced one to finish.
+        include:
+          - module: daemon
+            part: race 1/2
+            filter: -run=^Test[A-G]
+          - module: daemon
+            part: race 2/2
+            filter: -skip=^Test[A-G]
+          - module: daemon
+            part: coverage
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -243,6 +262,7 @@ jobs:
 
       # gofmt -l prints offending files and exits 0, so the output is the signal.
       - name: gofmt
+        if: ${{ !matrix.part || matrix.part == 'race 1/2' }}
         working-directory: ${{ matrix.module }}
         run: |
           unformatted=$(gofmt -l .)
@@ -253,6 +273,7 @@ jobs:
           fi
 
       - name: Vet
+        if: ${{ !matrix.part || matrix.part == 'race 1/2' }}
         run: go vet ./...
         working-directory: ${{ matrix.module }}
 
@@ -270,7 +291,7 @@ jobs:
       # eval suite itself stays schedule-only for the reasons the eval job
       # records -- what was missing was knowing the code still BUILDS.
       - name: Vet (build-tagged suites)
-        if: matrix.module == 'daemon'
+        if: matrix.module == 'daemon' && matrix.part == 'race 1/2'
         run: |
           go vet -tags eval ./...
           go vet -tags warnscan ./...
@@ -279,6 +300,7 @@ jobs:
       # -race, not a bare `go test`: this repo's concurrency work (the Gate 6
       # apply/undo locking in particular) is only defended by the race detector.
       - name: Test
+        if: matrix.part != 'coverage'
         # MOCHIII_REQUIRE_SANDBOX makes the bubblewrap confinement tests
         # FAIL instead of skip when bwrap cannot create a user namespace.
         #
@@ -292,6 +314,9 @@ jobs:
         # so it gets a tripwire rather than a comment.
         env:
           MOCHIII_REQUIRE_SANDBOX: ${{ matrix.module == 'daemon' && '1' || '' }}
+          # This half's -run or -skip (empty for the other modules). Passed as
+          # one quoted word so the shell never globs the [A-G].
+          TEST_FILTER: ${{ matrix.filter }}
         # -count=1: setup-go restores the build cache between runs, so without
         # it `go test` can serve a PASS computed before the commit under test.
         # The local gate carries the same flag for the same reason.
@@ -301,7 +326,7 @@ jobs:
         # on main and on every PR (2026-10-28: main 80eaabe twice, 40581904603,
         # #78's push run three times) with "panic: test timed out after 10m0s".
         # A real hang still fails, at 20 minutes instead of 10.
-        run: go test -race -count=1 -timeout 20m ./...
+        run: go test -race -count=1 -timeout 20m ${TEST_FILTER:+"$TEST_FILTER"} ./...
         working-directory: ${{ matrix.module }}
 
       # THE SOAK AT FULL LENGTH, UNRACED, and this step is the other half of a
@@ -333,6 +358,7 @@ jobs:
       # No working-directory: the script runs from the repo root and takes the
       # module as an argument, since the floors it reads are repo-wide.
       - name: Coverage ratchet
+        if: ${{ !startsWith(matrix.part, 'race') }}
         run: ./scripts/coverage-ratchet.sh ${{ matrix.module }}
 
   lint:
