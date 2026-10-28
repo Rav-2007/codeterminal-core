@@ -116,6 +116,52 @@ func main() {
 		})
 	}
 
+	// THE openWorldHint TOOLS, for the grounding check (daemon/groundingnudge.go).
+	// Offered only when asked for, like "cwd". "lookup" declares true and
+	// answers, as Terraform's registry tools do; "recall" declares false, as
+	// the Memory server does; "lookup_fails" declares true and fails; "peek"
+	// annotates itself but leaves openWorldHint out, as Chrome DevTools and
+	// SQLite do. The plain "echo" above has no annotations at all.
+	if len(os.Args) > 1 && os.Args[1] == "--open-world" {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "peek",
+			Description: "Read something on this machine.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, func(_ context.Context, _ *mcp.CallToolRequest, args echoArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "local: " + args.Text}},
+			}, nil, nil
+		})
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "lookup",
+			Description: "Look the supplied text up in an outside registry.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: boolPtr(true)},
+		}, func(_ context.Context, _ *mcp.CallToolRequest, args echoArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "registry: " + args.Text}},
+			}, nil, nil
+		})
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "recall",
+			Description: "Read back something stored on this machine.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: boolPtr(false)},
+		}, func(_ context.Context, _ *mcp.CallToolRequest, args echoArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "stored: " + args.Text}},
+			}, nil, nil
+		})
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "lookup_fails",
+			Description: "Look something up in an outside registry, and fail.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: boolPtr(true)},
+		}, func(_ context.Context, _ *mcp.CallToolRequest, _ echoArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: "the registry could not be reached"}},
+			}, nil, nil
+		})
+	}
+
 	// A SERVER THAT NEEDS A KEY, the way most real ones do: started without
 	// the variable it names, it says so on stderr and exits before the
 	// handshake (perplexity's "PERPLEXITY_API_KEY environment variable is

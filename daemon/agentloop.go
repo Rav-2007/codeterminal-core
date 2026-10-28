@@ -120,6 +120,18 @@ type agentTurn struct {
 	// stands as the model wrote it.
 	nudgedForGrounding bool
 
+	// openWorldLookup records that a tool whose server declares openWorldHint
+	// returned a result this turn, without an error: an MCP lookup of the live
+	// world, which counts for the grounding check the way web_search does.
+	//
+	// FOUND 2026-10-28, live: the Terraform server returned aws 6.70.0 from the
+	// registry, the model answered from it, and the check -- which knew only
+	// web_search and web_fetch -- still forced another call (+9,105 tokens) and
+	// an "I didn't answer from memory" paragraph. A failed call does not count:
+	// it proves nothing about the answer. (A failed web_search does count; see
+	// TestNoNudgeAfterTheModelAlreadySearched.)
+	openWorldLookup bool
+
 	// grants holds the tools the user answered ApprovalApproveForTurn for.
 	//
 	// KEYED BY QUALIFIED NAME for an ordinary tool -- not by arguments, because
@@ -836,6 +848,7 @@ func (s *Server) runAgentLoop(
 			if !turn.nudgedForGrounding &&
 				webAvailable &&
 				!webToolUsed(turn.toolNames) &&
+				!turn.openWorldLookup &&
 				(hedged || unchecked) {
 
 				turn.nudgedForGrounding = true
@@ -1359,6 +1372,9 @@ func (s *Server) dispatchToolCall(
 		turn.lastFailure = activity.Tool + ": " + failReason
 	} else {
 		turn.lastFailure = ""
+		if decision.tool.OpenWorldHint {
+			turn.openWorldLookup = true
+		}
 	}
 	if decision.tool.Lane == protocol.LaneThirdParty {
 		rendered = outcome + frameLaneBOutput(decision.tool.Server, rendered)

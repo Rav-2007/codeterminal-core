@@ -59,6 +59,27 @@ func TestAnnotationBool_ReadOnlyHint(t *testing.T) {
 	}
 }
 
+// openWorldHint counts only when the server SAYS true. The spec's default for
+// an absent hint is true, and reading it that way would make every silent tool
+// -- a filesystem, a linter -- count as a live lookup (Tool.OpenWorldHint).
+func TestAnnotationBool_OpenWorldHintOnlyWhenDeclaredTrue(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name string
+		tool *sdk.Tool
+		want bool
+	}{
+		{"no annotations block", &sdk.Tool{}, false},
+		{"hint absent", &sdk.Tool{Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}}, false},
+		{"hint false", &sdk.Tool{Annotations: &sdk.ToolAnnotations{OpenWorldHint: &no}}, false},
+		{"hint true", &sdk.Tool{Annotations: &sdk.ToolAnnotations{OpenWorldHint: &yes}}, true},
+	} {
+		if got := annotationBool(tc.tool, openWorld); got != tc.want {
+			t.Errorf("%s: openWorld read as %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // flattenContent is what the model actually sees. The branch that matters is
 // the non-text one: a server can return an image, an embedded resource, or
 // anything else the SDK models, and the result must be a stated omission rather

@@ -68,6 +68,7 @@ func listSessionTools(ctx context.Context, session *sdk.ClientSession, server, r
 			ReachesNetwork: remote != "",
 			ReadOnlyHint:   annotationBool(t, readOnly),
 			Destructive:    annotationBool(t, destructive),
+			OpenWorldHint:  annotationBool(t, openWorld),
 		})
 	}
 	SortTools(tools)
@@ -79,6 +80,7 @@ type annotationKind int
 const (
 	readOnly annotationKind = iota
 	destructive
+	openWorld
 )
 
 // annotationBool reads a server's own hint about its tool, defensively.
@@ -103,6 +105,11 @@ func annotationBool(t *sdk.Tool, kind annotationKind) bool {
 			return true
 		}
 		return *t.Annotations.DestructiveHint
+	case openWorld:
+		// Also *bool with a spec default of true -- and here an absent hint
+		// reads as false, the other way round from destructive, for the same
+		// reason: "nothing said" must not become a claim. See Tool.OpenWorldHint.
+		return t.Annotations.OpenWorldHint != nil && *t.Annotations.OpenWorldHint
 	}
 	return false
 }
