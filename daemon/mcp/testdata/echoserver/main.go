@@ -119,9 +119,19 @@ func main() {
 	// THE openWorldHint TOOLS, for the grounding check (daemon/groundingnudge.go).
 	// Offered only when asked for, like "cwd". "lookup" declares true and
 	// answers, as Terraform's registry tools do; "recall" declares false, as
-	// the Memory server does; "lookup_fails" declares true and fails. The plain
-	// "echo" above is the tool that says nothing.
+	// the Memory server does; "lookup_fails" declares true and fails; "peek"
+	// annotates itself but leaves openWorldHint out, as Chrome DevTools and
+	// SQLite do. The plain "echo" above has no annotations at all.
 	if len(os.Args) > 1 && os.Args[1] == "--open-world" {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "peek",
+			Description: "Read something on this machine.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, func(_ context.Context, _ *mcp.CallToolRequest, args echoArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "local: " + args.Text}},
+			}, nil, nil
+		})
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "lookup",
 			Description: "Look the supplied text up in an outside registry.",

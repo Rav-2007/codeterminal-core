@@ -67,9 +67,11 @@ func TestMCPCallsThatAreNotLookupsStillGetTheNudge(t *testing.T) {
 		// A Memory-like tool: it reads back what was stored on this machine,
 		// which may be exactly the stale fact the check exists to catch.
 		{"recall", "openWorldHint false"},
-		// Says nothing. The spec's default would be true; nothing said is not
-		// a claim (mcp.Tool.OpenWorldHint).
-		{"echo", "no openWorldHint"},
+		// Say nothing. The spec's default would be true; nothing said is not
+		// a claim (mcp.Tool.OpenWorldHint). "peek" has annotations that leave
+		// the hint out, as Chrome DevTools and SQLite do; "echo" has none.
+		{"peek", "openWorldHint absent from its annotations"},
+		{"echo", "no annotations at all"},
 		// Reaches the world but failed: nothing came back to answer from.
 		{"lookup_fails", "openWorldHint true, but the call failed"},
 	} {
