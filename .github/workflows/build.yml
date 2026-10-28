@@ -295,7 +295,13 @@ jobs:
         # -count=1: setup-go restores the build cache between runs, so without
         # it `go test` can serve a PASS computed before the commit under test.
         # The local gate carries the same flag for the same reason.
-        run: go test -race -count=1 ./...
+        #
+        # -timeout 20m: under -race the daemon package takes 417-651s on these
+        # runners, and `go test`'s default 10-minute limit killed passing runs
+        # on main and on every PR (2026-10-28: main 80eaabe twice, 40581904603,
+        # #78's push run three times) with "panic: test timed out after 10m0s".
+        # A real hang still fails, at 20 minutes instead of 10.
+        run: go test -race -count=1 -timeout 20m ./...
         working-directory: ${{ matrix.module }}
 
       # THE SOAK AT FULL LENGTH, UNRACED, and this step is the other half of a
