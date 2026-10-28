@@ -59,6 +59,44 @@ func TestStatusLines(t *testing.T) {
 	}
 }
 
+// /mcp-server prints each server's whole count and says the ones a turn leaves
+// off its list are reached with find_tools -- without promising how many fit.
+// Neuter check: drop the hint from writeServerStatus and the first case fails.
+func TestTheServerListSaysTheRestAreReachedWithFindTools(t *testing.T) {
+	info := func(i protocol.MCPServerInfo) protocol.MCPServerInfo {
+		i.Name, i.Command = "redis", "npx redis-mcp"
+		i.StatusLine = mcpStatusLine(i)
+		return i
+	}
+	listed := info(protocol.MCPServerInfo{State: protocol.MCPStateRunning, ToolCount: 53, ToolsListed: true})
+	for _, c := range []struct {
+		name  string
+		infos []protocol.MCPServerInfo
+		hint  bool
+	}{
+		{"running, its tools listed", []protocol.MCPServerInfo{listed}, true},
+		{"running, not listed yet", []protocol.MCPServerInfo{info(protocol.MCPServerInfo{State: protocol.MCPStateRunning})}, false},
+		{"listed, none offered", []protocol.MCPServerInfo{info(protocol.MCPServerInfo{State: protocol.MCPStateRunning, ToolsListed: true})}, false},
+		{"disabled", []protocol.MCPServerInfo{info(protocol.MCPServerInfo{Disabled: true, State: protocol.MCPStateRunning, ToolCount: 53, ToolsListed: true})}, false},
+		{"failed", []protocol.MCPServerInfo{info(protocol.MCPServerInfo{State: protocol.MCPStateFailed})}, false},
+	} {
+		var b strings.Builder
+		writeServerStatus(&b, c.infos)
+		out := b.String()
+		if got := strings.Contains(out, "find_tools"); got != c.hint {
+			t.Errorf("%s: find_tools hint = %v, want %v:\n%s", c.name, got, c.hint, out)
+		}
+		if c.hint && !strings.Contains(out, "✔ Connected (53 tools)") {
+			t.Errorf("%s: the whole count is not shown:\n%s", c.name, out)
+		}
+		for _, n := range []string{"up to", "places", "24"} {
+			if strings.Contains(out, n) {
+				t.Errorf("%s: says %q, a number of places no list outside a turn can know:\n%s", c.name, n, out)
+			}
+		}
+	}
+}
+
 func TestATimedOutLauncherIsToldToWaitLonger(t *testing.T) {
 	err := fmt.Errorf("server x: %w", context.DeadlineExceeded)
 	if hint := timeoutHint(MCPServerConfig{Command: "npx"}, err); !strings.Contains(hint, "downloads the package") {

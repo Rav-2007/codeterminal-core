@@ -43,7 +43,7 @@
    * @typedef {{ id: string, name: string, description: string, publisher: string, namespace?: string,
    *   tier: 'verified' | 'community', categories: string[], pkg: string, runtime: string, commandLine: string,
    *   env: EnvView[], hasHomepage: boolean, hasPackageUrl: boolean, icon?: string,
-   *   installed: '' | 'added' | 'disabled' | 'taken' }} Card
+   *   installed: '' | 'added' | 'disabled' | 'taken', tools?: string }} Card
    */
 
   const state = {
@@ -246,6 +246,10 @@
       node.append(el('div', 'meta', c.categories.join(' · ')));
     }
     node.append(el('div', 'meta', `${c.pkg} — needs ${c.runtime}`));
+    // The host sets it only from what the daemon listed (cardFor); no count is shown otherwise.
+    if (c.tools) {
+      node.append(el('div', 'meta', `Offers ${c.tools}`));
+    }
 
     if (c.env.length > 0) {
       const env = el('div', 'env');

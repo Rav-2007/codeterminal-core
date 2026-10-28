@@ -37,7 +37,7 @@ import {
   validServerName,
 } from './mcpCatalog';
 import { ServerSpec, storeServer } from './mcpInstall';
-import { MCP_SERVERS_VIEW_ID, McpServersProvider, McpServersState } from './mcpServersView';
+import { MCP_SERVERS_VIEW_ID, McpServersProvider, McpServersState, toolCountLabel } from './mcpServersView';
 
 export const MARKETPLACE_VIEW_TYPE = 'mochiiiMcpMarketplace';
 export const NOTICE_ACCEPTED_KEY = 'mochiii.mcp.marketplaceNoticeAccepted';
@@ -66,6 +66,12 @@ export interface CardView {
   icon?: string;
   /** '' (not added), 'added', 'disabled', or 'taken' (a config server has the name). */
   installed: '' | 'added' | 'disabled' | 'taken';
+  /**
+   * "53 tools": what the server offered when the daemon last listed it. Only for a
+   * server the user added from here, and only once it has been listed; absent
+   * otherwise, never estimated. The catalog itself carries no count.
+   */
+  tools?: string;
 }
 
 /** Where the bundled logos live, under media/: one <slug>.svg each. */
@@ -116,6 +122,11 @@ export function cardFor(s: CatalogServer, state: McpServersState, bundledIcons: 
     hasPackageUrl: !!s.package.url,
     ...(s.icon && bundledIcons.has(s.icon) ? { icon: s.icon } : {}),
     installed,
+    // A 'taken' name is some other server in models.json: its count says nothing
+    // about this entry.
+    ...((installed === 'added' || installed === 'disabled') && mine?.tools_listed
+      ? { tools: toolCountLabel(mine.tool_count ?? 0) }
+      : {}),
   };
 }
 
