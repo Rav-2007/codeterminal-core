@@ -602,7 +602,7 @@ const (
 // Flat, so the number went back to 12.
 //
 // MEASURED PAST 12 ON 2026-10-12, because 12 had become a wall: the shipped
-// agent config's own tools take 11 places, so a server a user added with
+// agent config's own tools took 11 places then, so a server a user added with
 // /mcp-server got ONE tool on the menu. Same seven prompts, five trials a size,
 // on nvidia/nemotron-3-super-120b-a12b (same doc, "Past 12"):
 //
@@ -613,8 +613,19 @@ const (
 // Every miss is that same one prompt again -- 5/5, 3/5 and 2/5 right -- and the
 // other six are 30/30 at every size. So a wider menu cost nothing on a clear
 // request and something on a borderline one, at five trials a cell. The owner
-// was shown these numbers and chose 24: thirteen places for added servers.
-// Whoever has added no server sees no wider menu; eleven tools fit either way.
+// was shown these numbers and chose 24, for thirteen places for added servers.
+//
+// THAT THIRTEEN NO LONGER HOLDS (measured 2026-10-28,
+// docs/MENU_NOTE_FOR_RAV_2026-10-28.md). Built-ins added on 10-14 and 10-15
+// mean the daemon's own tools take 16-18 places on an ordinary turn, and more
+// in a long task, so added servers get about 6-8, and a second server the
+// request does not name may get none. The cap was kept at 24 on 2026-10-28,
+// because the eval in that note found no benefit from a larger menu. Whoever
+// has added no server sees no wider menu: the built-ins fit either way.
+//
+// A CUT MENU CARRIES 25 TOOLS. The cap bounds what the registry advertises;
+// when it left anything out, find_tools is added on top (agentloop.go), so the
+// model can still reach what was cut.
 //
 // THE OTHER COST is tokens. Every advertised tool's full JSON schema rides on
 // every request of every iteration: in that eval 12 tools is 3,649 bytes of tool
