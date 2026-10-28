@@ -1,6 +1,6 @@
 # Documentation index
 
-**89 documents: 79 in `docs/`, 1 in `docs/ARCHIVE/`, and 9 at the repository root.**
+**90 documents: 80 in `docs/`, 1 in `docs/ARCHIVE/`, and 9 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -200,6 +200,7 @@ date attached.
 | [`TOOL_MENU_SIZE_2026-08-01.md`](TOOL_MENU_SIZE_2026-08-01.md) | Selection accuracy vs menu width: flat between 5 and 12; measured to 32 on 2026-10-12 |
 | [`MCP_MENU_DECISION_2026-10-28.md`](MCP_MENU_DECISION_2026-10-28.md) | The 24-tool menu measured on the real code path: built-ins take 16-18 places, added servers 6-8; the options and the cap-24/64 eval |
 | [`MENU_NOTE_FOR_RAV_2026-10-28.md`](MENU_NOTE_FOR_RAV_2026-10-28.md) | The decision note behind keeping the menu cap at 24 (2026-10-28) |
+| [`GROUNDING_MCP_PROPOSAL_2026-10-28.md`](GROUNDING_MCP_PROPOSAL_2026-10-28.md) | Why the live-facts check ignored MCP lookups, the options and their measured cost; option (d), openWorldHint, was chosen |
 | [`TOOL_SELECTION_SENSITIVITY_2026-10-25.md`](TOOL_SELECTION_SENSITIVITY_2026-10-25.md) | Which tool-description changes move tool selection on the production menu: the name decides; only a description stating a capability the name hides (run_command's install line) moved a score. The matrix behind the production-menu eval |
 | [`TOOLCALL_RELIABILITY_2026-07-31.md`](TOOLCALL_RELIABILITY_2026-07-31.md) | Tool-selection degradation as the menu widens |
 | [`AGENT_LOOP_RELIABILITY_2026-07-31.md`](AGENT_LOOP_RELIABILITY_2026-07-31.md) | Agent-loop failure modes that did **not** occur |
