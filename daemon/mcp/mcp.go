@@ -142,6 +142,18 @@ type Tool struct {
 	ReadOnlyHint bool
 	Destructive  bool
 
+	// OpenWorldHint is the server's claim that its tool reaches the world
+	// outside this machine (the MCP spec's openWorldHint) -- a registry, a docs
+	// service, a web page. True only when the server SAYS so: the spec's
+	// default for an absent hint is true, but "nothing said" must not count.
+	//
+	// Not a gate either. It decides one thing: a successful call to such a tool
+	// counts as having looked a live fact up, so the grounding check
+	// (daemon/groundingnudge.go) does not send the model back to search. A
+	// server lying about it saves itself one model call at most -- it already
+	// controls what its tool returns.
+	OpenWorldHint bool
+
 	// Remote is the host a remote server is reached at ("" for a program on
 	// this machine): the approval prompt says the arguments are SENT there.
 	Remote string
