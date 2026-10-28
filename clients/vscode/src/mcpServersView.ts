@@ -253,6 +253,19 @@ export function nodesFor(state: McpServersState): McpNode[] {
  * for. A server marked "Active" that exits on every start was the bug this is for
  * (2026-10-14). Exported for the chat's Customize page and for tests.
  */
+/**
+ * A server's whole tool count is not what a turn offers: the menu has a cap, the
+ * daemon's own tools come first, and how many places are left depends on the mode
+ * and the other servers. So no number of places is promised here -- only how the
+ * rest are reached. The daemon's /mcp-server report says the same (writeServerStatus).
+ */
+export const FIND_TOOLS_HINT = "A turn's tool list may not hold all of a server's tools at once; the model adds the ones it needs with find_tools.";
+
+/** "1 tool", "53 tools". */
+export function toolCountLabel(n: number): string {
+  return `${n} tool${n === 1 ? '' : 's'}`;
+}
+
 export function serverStatus(s: MCPServerInfo): { short: string; detail: string; needsKey: boolean } {
   const missing = s.env_missing ?? [];
   const needsKey = missing.length > 0;
@@ -272,7 +285,8 @@ export function serverStatus(s: MCPServerInfo): { short: string; detail: string;
     };
   }
   if (s.state === MCP_STATE_RUNNING) {
-    return { short: 'running', detail: 'Started and answered the last time a turn used it.', needsKey };
+    const offers = s.tools_listed ? ` It offers ${toolCountLabel(s.tool_count ?? 0)}. ${FIND_TOOLS_HINT}` : '';
+    return { short: 'running', detail: `Started and answered the last time a turn used it.${offers}`, needsKey };
   }
   return { short: '', detail: 'Not started yet: it starts with the next question in agent mode.', needsKey };
 }

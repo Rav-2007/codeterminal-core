@@ -23,7 +23,7 @@ import {
 } from '../../mcpCatalog';
 import { StoreUi, resultMessage, splitArgs, storeServer } from '../../mcpInstall';
 import { ICON_DIR, bundledIconSlugs, cardFor, matches, provenanceOf, specFor } from '../../mcpMarketplace';
-import { McpServersState, nodesFor } from '../../mcpServersView';
+import { FIND_TOOLS_HINT, McpServersState, nodesFor, serverStatus } from '../../mcpServersView';
 import { StubDaemon, writeLine } from '../stubDaemon';
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -393,6 +393,31 @@ suite('the MCP views say what is true', () => {
     assert.strictEqual(cardFor(s, base).icon, undefined, 'no bundle given');
     assert.strictEqual(cardFor(s, base, new Set(['github'])).icon, undefined, 'a logo this extension does not carry');
     assert.strictEqual(cardFor(checkServer(good())!, base, new Set(['context7'])).icon, undefined, 'an entry with no icon');
+  });
+
+  // Neuter check: drop the tools line from cardFor -- the positive controls fail.
+  test("a card shows the tool count the daemon listed, and nothing it did not", () => {
+    const s = checkServer(good())!;
+    const tools = (mine?: McpServersState['servers'][number]) => cardFor(s, { ...base, servers: mine ? [mine] : [] }).tools;
+    const added = { name: 'context7', command: 'npx', source: 'user', state: 'running' };
+    assert.strictEqual(tools({ ...added, tool_count: 53, tools_listed: true }), '53 tools', 'positive control');
+    assert.strictEqual(tools({ ...added, tool_count: 1, tools_listed: true }), '1 tool');
+    assert.strictEqual(tools({ ...added, tools_listed: true }), '0 tools', 'listed with none: the count is known, and it is 0');
+    assert.strictEqual(tools({ ...added, disabled: true, tool_count: 53, tools_listed: true }), '53 tools', 'paused, last listed');
+    assert.strictEqual(tools({ ...added, tool_count: 53 }), undefined, 'not listed: a count the daemon has not confirmed');
+    assert.strictEqual(tools({ ...added, source: 'config', tool_count: 53, tools_listed: true }), undefined, "another server's name");
+    assert.strictEqual(tools(), undefined, 'not added: the catalog carries no count');
+  });
+
+  // Neuter check: drop the offers clause from serverStatus -- the first two asserts fail.
+  test("a running server's detail gives its whole count and how the rest are reached, with no number of places", () => {
+    const running = { name: 'redis', command: 'npx redis-mcp', source: 'user', state: 'running' };
+    const listed = serverStatus({ ...running, tool_count: 53, tools_listed: true }).detail;
+    assert.ok(listed.includes('It offers 53 tools.'), listed);
+    assert.ok(listed.includes(FIND_TOOLS_HINT) && FIND_TOOLS_HINT.includes('find_tools'), listed);
+    assert.ok(!/up to|places|\b24\b/.test(listed), `no number of places is promised: ${listed}`);
+    const unlisted = serverStatus(running).detail;
+    assert.ok(!unlisted.includes('find_tools') && !/\d+ tools?/.test(unlisted), `not listed yet: no count, no hint: ${unlisted}`);
   });
 
   test('the bundled logos are the slug-named svg files in media/mcp-icons, and nothing else', async () => {

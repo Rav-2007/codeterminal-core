@@ -178,11 +178,23 @@ func writeServerStatus(w io.Writer, infos []protocol.MCPServerInfo) {
 		return
 	}
 	_, _ = fmt.Fprintln(w, "MCP servers:")
+	listed := false
 	for _, info := range infos {
 		_, _ = fmt.Fprintf(w, "  %s: %s - %s\n", info.Name, info.Command, info.StatusLine)
+		listed = listed || (!info.Disabled && info.State == protocol.MCPStateRunning && info.ToolsListed && info.ToolCount > 0)
+	}
+	// The count above is each server's whole list, not what a turn offers: the menu
+	// has a cap, the daemon's own tools come first, and the places left depend on
+	// the mode and the other servers, so no number of places is printed. The
+	// extension's server view says the same (FIND_TOOLS_HINT, mcpServersView.ts).
+	if listed {
+		_, _ = fmt.Fprintln(w, "  "+findToolsHint)
 	}
 	_, _ = fmt.Fprintln(w)
 }
+
+// findToolsHint is said under the servers whenever one has listed its tools.
+const findToolsHint = "A turn's tool list may not hold all of a server's tools at once; the model adds the ones it needs with find_tools."
 
 // agentModeOffReport is what a list says when there are no tools to list.
 func agentModeOffReport(configPath string) string {
