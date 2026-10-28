@@ -85,11 +85,17 @@ const (
 
 // annotationBool reads a server's own hint about its tool, defensively.
 //
-// These are DISPLAY ONLY (see Tool.ReadOnlyHint). The defaults are chosen so
-// that a server saying nothing produces the least reassuring prompt: absent
-// readOnlyHint reads as "not known to be read-only", absent destructiveHint as
-// "not known to be destructive" -- neither is treated as a claim of safety,
-// because neither is one.
+// They never decide WHETHER a call is asked about (see Tool.ReadOnlyHint). The
+// defaults are chosen so that a server saying nothing gets the least reassuring
+// reading: absent readOnlyHint reads as "not read-only", and absent
+// destructiveHint as destructive, the spec's own default -- neither silence is
+// treated as a claim of safety, because neither is one.
+//
+// Destructive is NOT display only: it also narrows a "yes for this task" to the
+// exact arguments approved (grantKey, daemon/agentloop.go). Whether the prompt
+// SAYS "marked destructive" is decided where the request is built, which leaves
+// it off a read-only tool -- the spec calls destructiveHint meaningful only
+// when readOnlyHint is false.
 func annotationBool(t *sdk.Tool, kind annotationKind) bool {
 	if t.Annotations == nil {
 		return false

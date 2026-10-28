@@ -183,6 +183,24 @@ func main() {
 		})
 	}
 
+	// THE DESTRUCTIVE LABEL, three ways a server describes a tool. "reads"
+	// declares readOnlyHint and leaves destructiveHint out, as the Filesystem
+	// server's read tools do; "says_nothing" sends an empty annotations block;
+	// "destroys" declares destructiveHint. Offered only when asked for.
+	if len(os.Args) > 1 && os.Args[1] == "--read-only-hints" {
+		for _, t := range []*mcp.Tool{
+			{Name: "reads", Description: "Read something.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
+			{Name: "says_nothing", Description: "Do something.", Annotations: &mcp.ToolAnnotations{}},
+			{Name: "destroys", Description: "Delete something.", Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(true)}},
+		} {
+			mcp.AddTool(s, t, func(_ context.Context, _ *mcp.CallToolRequest, args echoArgs) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: "done: " + args.Text}},
+				}, nil, nil
+			})
+		}
+	}
+
 	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}

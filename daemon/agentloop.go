@@ -1717,9 +1717,16 @@ func (s *Server) resolveExecutable(
 		LaunchesSubprocess: startsProgram,
 		// Which program, so "STARTS gopls" and "ASKS gopls, already running"
 		// can both be said by name instead of "gopls, tsserver or pyright".
-		Program:       launch.Program,
-		ReadOnlyHint:  spec.ReadOnlyHint,
-		Destructive:   spec.Destructive,
+		Program:      launch.Program,
+		ReadOnlyHint: spec.ReadOnlyHint,
+		// THE LABEL, NOT THE GRANT. A tool that declares readOnlyHint and says
+		// nothing about destructiveHint was shown "marked destructive" -- every
+		// read-only Filesystem tool, live on 2026-10-28. The spec calls
+		// destructiveHint "meaningful only when ReadOnlyHint == false", so the
+		// prompt leaves it off. spec.Destructive itself is unchanged: it still
+		// scopes a "yes for this task" to these arguments (grantKey), so when
+		// Mochiii asks is exactly what it was.
+		Destructive:   spec.Destructive && !spec.ReadOnlyHint,
 		Iteration:     turn.iteration,
 		MaxIterations: bud.maxIterations,
 		// THE TOOL'S OWN DESCRIPTION, at the moment of consent.
