@@ -177,6 +177,17 @@ func webToolUsed(called []string) bool {
 	return false
 }
 
+// AN MCP LOOKUP COUNTS TOO: agentTurn.openWorldLookup, set in dispatchToolCall
+// when a tool whose server declares openWorldHint returns a result without an
+// error, and checked beside webToolUsed at the loop's exit.
+//
+// FOUND 2026-10-28, live: the Terraform server returned aws 6.70.0 from the
+// registry, the model answered from it, and this check -- which knew only
+// web_search and web_fetch -- still forced another call (+9,105 tokens) and an
+// "I didn't answer from memory" paragraph. A failed call does not count: it
+// proves nothing about the answer. (A failed web_search does count; see
+// TestNoNudgeAfterTheModelAlreadySearched.)
+
 // unqualifiedToolName strips a "server__" prefix if there is one.
 //
 // Uses the same separator mcp.SplitQualifiedName does, via that function, so a
