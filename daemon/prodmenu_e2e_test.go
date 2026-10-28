@@ -158,8 +158,8 @@ func TestTheProdMenuBuilderMatchesTheRealDaemonsFirstRequest(t *testing.T) {
 		t.Fatal("the daemon never called the model")
 	}
 
-	// The one host probe the two sides cannot share. sandbox_exec's description
-	// says whether a memory and process cap applies, from mcp.LimiterUsable,
+	// The two host probes the two sides cannot share. First, sandbox_exec's
+	// description says whether a memory and process cap applies, from mcp.LimiterUsable,
 	// which reaches the user's systemd through XDG_RUNTIME_DIR. startE2E gives
 	// the daemon a temporary XDG_RUNTIME_DIR, so on a host that exports no
 	// DBUS_SESSION_BUS_ADDRESS (a CI runner) the daemon finds no limiter, while
@@ -171,6 +171,16 @@ func TestTheProdMenuBuilderMatchesTheRealDaemonsFirstRequest(t *testing.T) {
 	restoreLimiter := mcp.LimiterUsable
 	t.Cleanup(func() { mcp.LimiterUsable = restoreLimiter })
 	mcp.LimiterUsable = func() bool { return daemonLimited }
+
+	// Second, it says whether the egress firewall blocks the metadata endpoint,
+	// from a probe that runs the real helper once per process with a 15s timeout
+	// (mcp.BwrapEgressUsable / EgressFilterUsable). Each side runs its own, and on
+	// a loaded runner one can pass while the other times out: main 24c9274 went
+	// red with the daemon saying "blocked" and this process "can also reach". The
+	// builder takes the daemon's answer here too.
+	// TestAConfinedPromptDisclosesNetworkReach covers both wordings, and
+	// TestMetadataIsRefusedThroughTheRealTool the firewall itself.
+	useDaemonsEgressAnswer(t, strings.Contains(reqs[0].raw, "which are blocked"))
 
 	setup := prodMenuTestSetup(t, e2eConfigWithShippedMCP(t, section), model.srv.URL+"/api/v1")
 	setup.workspace = d.workspace
