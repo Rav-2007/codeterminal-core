@@ -161,7 +161,7 @@ read, not re-run).
 eval (whole-repo corpus)`) searches this repository's own code, so any edit can move it. It
 cuts files into fixed 40-line windows. #77's first version put a 10-line comment in
 `agentTurn`, which pushed agentloop.go's iteration stop from line 995 to 1008, out of the window
-that answers "where does the agent loop stop iterating". Retrieved fell from 30/49 to 29/49, and
+that answers locate question 13 (see `rerank_eval_test.go`). Retrieved fell from 30/49 to 29/49, and
 the gate failed (CONFIRMED on CI and locally). Moving the comment beside the check in
 groundingnudge.go restored it: no question changed (CONFIRMED locally against `faf04a8`).
 
