@@ -1129,11 +1129,21 @@ thing with no daemon running.)
 - **Its tools ask before every call**, like any tool with no policy listed.
 - **The model is shown at most 24 tools at a time**
   (`mcp.budget.max_advertised_tools`), and the daemon's own come first. With
-  `models.agent.json` as shipped those take 11, so the servers you add share
-  13 places (until 2026-10-12 the limit was 12, which left them one). The add
+  `models.agent.json` as shipped those take 16-18 places on an ordinary turn,
+  and more in a long task, so the servers you add share about 6-8, and a second
+  server your request does not name may get none. When tools are left out,
+  `find_tools` is added on top of the 24, so a cut menu carries 25 tools: the
+  model uses it to reach the rest. The cap was kept at 24 on 2026-10-28,
+  because the eval in `docs/MENU_NOTE_FOR_RAV_2026-10-28.md` found no benefit
+  from a larger menu (until 2026-10-12 the limit was 12). The add
   tells you how many of a server's tools will actually reach the model, and
   `/mcp-server` lists the ones left out. Each tool on the menu costs tokens on
   every request, and a wider menu measured slightly worse on a borderline one.
+- **Known limitation: a server with many tools is only partly on the menu.**
+  Servers such as redis (53 tools) or github (46) get only some of their tools
+  on the menu at once; the model reaches the rest with `find_tools`. Showing
+  fewer built-ins on an ordinary turn, and a curated subset of each server's
+  tools, were both considered and deferred until there is real usage data.
 - **`--env` takes a variable's NAME**, passed through from the daemon's
   environment — export it, or put it in `.env`, before starting Mochiii. A
   `NAME=value` on the line is refused and kept out of the transcript; the

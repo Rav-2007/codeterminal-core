@@ -176,10 +176,15 @@ func SearchTools(candidates []Tool, query string, limit int) []Tool {
 
 // A SERVER THE USER NAMES GETS A FEW PLACES ON THE MENU.
 //
-// Built-ins come first when the cap bites (Registry.Advertised), and there
-// are enough of them that a 24-place menu left TWO places for every connected
-// server together. MEASURED 2026-10-15: Supabase (29 tools) and Firecrawl (17)
-// were connected, "have you connected to the supabase via mcp?" was asked, and
+// Built-ins come first when the cap bites (Registry.Advertised), and they take
+// 16-18 of the 24 places on an ordinary turn, more in a long task, so the
+// connected servers share about 6-8, and a second server the request does not
+// name may get none (measured 2026-10-28, docs/MENU_NOTE_FOR_RAV_2026-10-28.md).
+// The cap was kept at 24 on 2026-10-28, because the eval in that note found no
+// benefit from a larger menu.
+//
+// SEEN 2026-10-15: Supabase (29 tools) and Firecrawl (17) were connected,
+// "have you connected to the supabase via mcp?" was asked, and
 // the model was shown supabase__query_logs and supabase__search_docs and
 // nothing else from either -- so it told the user those were the only
 // Supabase tools it had.
