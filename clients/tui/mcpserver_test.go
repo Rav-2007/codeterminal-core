@@ -464,3 +464,174 @@ func TestSignInShowsTheAddressThenWaits(t *testing.T) {
 		t.Errorf("sent %+v", reqs)
 	}
 }
+
+// A KEY IS ASKED FOR WHEN THE SERVER IS ADDED (askNextAddKey). keyedAddDaemon
+// answers as the real daemon does for a server whose keys Mochiii has no value
+// for: the add's answer lists them as missing, set_env keeps one, and check
+// starts the server.
+func keyedAddDaemon(t *testing.T) *recordingDaemon {
+	t.Helper()
+	t.Cleanup(func() { addKeys.server, addKeys.pending, addKeys.stored = "", nil, false })
+	return startRequestRecorder(t, []string{protocol.FeatureMCPAdmin}, func(raw json.RawMessage) any {
+		var req protocol.MCPRequest
+		_ = json.Unmarshal(raw, &req)
+		switch {
+		case req.Action == protocol.MCPActionAdd && !req.AcknowledgedUnconfined:
+			return protocol.MCPResponse{NeedsAcknowledgement: true, AgentMode: true,
+				Detail: "Adding \"" + req.Name + "\" will make this daemon run: " + req.Command + " with YOUR full privileges."}
+		case req.Action == protocol.MCPActionAdd:
+			return protocol.MCPResponse{Ok: true, AgentMode: true,
+				Detail: "Added " + req.Name + ". It started and offers 2 tool(s): read, write.",
+				Notes: []string{"Mochiii has no value for " + strings.Join(req.Env, ", ") + ", so the server starts without it. " +
+					"Set it with `mcp set-key " + req.Name + " " + req.Env[0] + "` or Set key in VS Code."},
+				Servers: []protocol.MCPServerInfo{{Name: req.Name, Source: protocol.MCPSourceUser, Env: req.Env, EnvMissing: req.Env}}}
+		case req.Action == protocol.MCPActionSetEnv:
+			return protocol.MCPResponse{Ok: true, AgentMode: true, Detail: req.EnvName + " is set for " + req.Name + ", from its next start."}
+		case req.Action == protocol.MCPActionCheck:
+			return protocol.MCPResponse{Ok: true, AgentMode: true, Detail: req.Name + ": ✔ Connected (2 tools)"}
+		}
+		return protocol.MCPResponse{Ok: true, AgentMode: true}
+	})
+}
+
+// follow feeds in every answer cmd brings back, and the answers to the
+// commands those return: one whole exchange, follow-ups included.
+func follow(m chatModel, cmd tea.Cmd) chatModel {
+	for i := 0; cmd != nil && i < 10; i++ {
+		answer, ok := findMsgWithin[mcpResultMsg](cmd, 3e9)
+		if !ok {
+			break
+		}
+		var updated tea.Model
+		updated, cmd = m.Update(answer)
+		m = updated.(chatModel)
+	}
+	return m
+}
+
+// enterLine types line and presses enter, following the whole exchange.
+func enterLine(m chatModel, line string) chatModel {
+	m, cmd := pressEnter(typeText(m, line))
+	return follow(m, cmd)
+}
+
+func turnsContaining(m chatModel, s string) int {
+	n := 0
+	for _, tn := range m.turns {
+		if strings.Contains(tn.text, s) {
+			n++
+		}
+	}
+	return n
+}
+
+// Once the add is agreed to, its missing key is asked for once, hidden; the
+// value goes to the daemon only, and the server is started again with it.
+//
+// Neuter check: in handleMCPResult, return m, nil instead of askNextAddKey()
+// after an acknowledged add -- no prompt opens and nothing is asked.
+func TestAnAddAsksForItsMissingKeyHiddenAndStartsTheServerWithIt(t *testing.T) {
+	daemon := keyedAddDaemon(t)
+	const secret = "fake-gh-token-91d3"
+	m := enterLine(newTestModel(), "/mcp-server add gh --env GITHUB_TOKEN docker run -i ghcr.io/example/server")
+	m = enterLine(m, "gh")
+
+	if m.pendingMCPAdd == nil || m.pendingMCPAdd.Action != protocol.MCPActionSetEnv || m.pendingMCPAdd.EnvName != "GITHUB_TOKEN" ||
+		m.input.EchoMode != textinput.EchoPassword {
+		t.Fatalf("no hidden prompt for the key after the add: pending %+v, echo %v", m.pendingMCPAdd, m.input.EchoMode)
+	}
+	if n := turnsContaining(m, "gh reads GITHUB_TOKEN, which Mochiii has no value for"); n != 1 {
+		t.Errorf("asked %d time(s), want once", n)
+	}
+	if !strings.Contains(lastTurn(t, m), "Enter on its own skips it") {
+		t.Errorf("the question does not say how to skip:\n%s", lastTurn(t, m))
+	}
+
+	m = enterLine(m, secret)
+	reqs := mcpRequests(t, daemon)
+	if len(reqs) != 4 {
+		t.Fatalf("%d requests in all, want add, acknowledged add, set_env and check: %+v", len(reqs), reqs)
+	}
+	if r := reqs[2]; r.Action != protocol.MCPActionSetEnv || r.Name != "gh" || r.EnvName != "GITHUB_TOKEN" || r.EnvValue != secret {
+		t.Errorf("the key was sent as %+v", r)
+	}
+	if r := reqs[3]; r.Action != protocol.MCPActionCheck || r.Name != "gh" {
+		t.Errorf("the server was not started again with its key: %+v", r)
+	}
+	if !strings.Contains(lastTurn(t, m), "gh: ✔ Connected") {
+		t.Errorf("the check's answer was not shown:\n%s", lastTurn(t, m))
+	}
+	if m.pendingMCPAdd != nil || m.input.EchoMode != textinput.EchoNormal || m.input.Placeholder != defaultInputPlaceholder {
+		t.Error("the prompt did not go back to normal")
+	}
+	if turnsContaining(m, secret) != 0 {
+		t.Fatal("the value is in the transcript")
+	}
+	for _, h := range m.promptHistory {
+		if strings.Contains(h, secret) {
+			t.Fatal("the value is in the up-arrow recall")
+		}
+	}
+}
+
+// Enter on its own skips the key: nothing more is sent, the server stays
+// added, and both the add's note and the skip name the key it needs.
+func TestEnterOnItsOwnSkipsAnAddsKey(t *testing.T) {
+	daemon := keyedAddDaemon(t)
+	m := enterLine(newTestModel(), "/mcp-server add gh --env GITHUB_TOKEN docker run -i ghcr.io/example/server")
+	m = enterLine(m, "gh")
+	m = enterLine(m, "")
+
+	if n := len(mcpRequests(t, daemon)); n != 2 {
+		t.Errorf("%d requests, want only the add and its acknowledgement", n)
+	}
+	if !strings.Contains(lastTurn(t, m), "Skipped GITHUB_TOKEN: gh stays added without it, marked as needing it. "+
+		"Set it later with /mcp-server key gh GITHUB_TOKEN.") {
+		t.Errorf("the skip does not say what the server needs:\n%s", lastTurn(t, m))
+	}
+	if turnsContaining(m, "NOTE: Mochiii has no value for GITHUB_TOKEN") != 1 {
+		t.Error("the add's own note about the missing key is not shown")
+	}
+	if m.pendingMCPAdd != nil || m.input.EchoMode != textinput.EchoNormal || addKeys.server != "" {
+		t.Error("the prompt did not close")
+	}
+}
+
+// Esc skips every key still to ask.
+func TestEscSkipsTheRestOfAnAddsKeys(t *testing.T) {
+	daemon := keyedAddDaemon(t)
+	m := enterLine(newTestModel(), "/mcp-server add two --env KEY_A --env KEY_B run-it")
+	m = enterLine(m, "two")
+	if m.pendingMCPAdd == nil || m.pendingMCPAdd.EnvName != "KEY_A" {
+		t.Fatalf("not asking for KEY_A: %+v", m.pendingMCPAdd)
+	}
+	m = pressKey(t, m, tea.KeyEsc)
+	if n := len(mcpRequests(t, daemon)); n != 2 {
+		t.Errorf("%d requests, want only the add and its acknowledgement", n)
+	}
+	if !strings.Contains(lastTurn(t, m), "Skipped KEY_A, KEY_B: two stays added without it") {
+		t.Errorf("esc did not skip both:\n%s", lastTurn(t, m))
+	}
+	if m.pendingMCPAdd != nil || addKeys.server != "" {
+		t.Error("a prompt is still open after esc")
+	}
+}
+
+// Enter on an empty line still answers nothing where it never did: the name
+// an add waits for, and /mcp-server key's value.
+func TestAnEmptyLineStillAnswersNothingElsewhere(t *testing.T) {
+	daemon := keyedAddDaemon(t)
+	m := enterLine(newTestModel(), "/mcp-server add gh --env GITHUB_TOKEN docker run -i ghcr.io/example/server")
+	m = enterLine(m, "")
+	if m.pendingMCPAdd == nil || m.pendingMCPAdd.Action != protocol.MCPActionAdd || len(mcpRequests(t, daemon)) != 1 ||
+		turnsContaining(m, "Not added") != 0 {
+		t.Errorf("an empty line answered the add's question: pending %+v", m.pendingMCPAdd)
+	}
+
+	m = pressKey(t, m, tea.KeyEsc)
+	m = enterLine(m, "/mcp-server key gh GITHUB_TOKEN")
+	m = enterLine(m, "")
+	if m.pendingMCPAdd == nil || m.pendingMCPAdd.Action != protocol.MCPActionSetEnv || len(mcpRequests(t, daemon)) != 1 {
+		t.Errorf("an empty line answered /mcp-server key: pending %+v", m.pendingMCPAdd)
+	}
+}

@@ -1393,7 +1393,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	raw := strings.TrimSpace(m.input.Value())
-	if raw == "" {
+	if raw == "" && m.pendingMCPAdd == nil {
 		return m, nil
 	}
 	// A "/mcp-server add" is waiting for the server's name: this line is the

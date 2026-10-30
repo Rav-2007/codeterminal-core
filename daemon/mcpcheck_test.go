@@ -50,6 +50,8 @@ func TestStatusLines(t *testing.T) {
 		{protocol.MCPServerInfo{State: protocol.MCPStateRunning}, "✔ Connected"},
 		{protocol.MCPServerInfo{State: protocol.MCPStateToolsFailed}, "! Connected · tools fetch failed"},
 		{protocol.MCPServerInfo{State: protocol.MCPStateFailed, StateDetail: "boom"}, "✘ Failed to connect: boom"},
+		{protocol.MCPServerInfo{State: protocol.MCPStateFailed, StateDetail: "boom", EnvMissing: []string{"A"}},
+			"✘ Failed to connect: boom · needs a key: A"},
 		{protocol.MCPServerInfo{EnvMissing: []string{"A", "B"}}, "! Needs a key: A, B"},
 		{protocol.MCPServerInfo{Disabled: true, State: protocol.MCPStateFailed}, "⊘ Disabled"},
 	} {

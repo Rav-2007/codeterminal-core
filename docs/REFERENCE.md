@@ -1119,6 +1119,14 @@ thing with no daemon running.)
 - **Then it is tried.** The server is started once and asked for its tools, so
   the answer is either "it started and offers N tools" or "saved, but it did
   not start", with the reason. It is live from your next question: no restart.
+- **A key it needs is asked for then.** For each `--env NAME` Mochiii has no
+  value for, `mcp add` asks after the name is typed, with `mcp set-key`'s
+  hidden prompt, so the first start already has it; `/mcp-server add` asks
+  right after the add with `/mcp-server key`'s hidden prompt, then starts the
+  server again. Either way the value is kept in `~/.mochiii/mcp-secrets.json`
+  for that server. Enter skips a key: the server is still added, and the add's
+  note and its `/mcp-server` line name what it needs. With no terminal (a
+  script), nothing is asked and only the note is printed.
 - **It starts in a folder of its own, not in your project.** A launcher such
   as `npx`, `uvx` or `python -m` decides what to run partly from the folder it
   starts in — a project's `.npmrc` can name another registry — so a server you
