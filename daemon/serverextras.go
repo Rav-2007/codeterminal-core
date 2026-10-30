@@ -57,6 +57,9 @@ type serverExtras struct {
 	// mcpSecrets is ~/.mochiii/mcp-secrets.json (mcpsecrets.go): the keys the
 	// user stored, kept across restarts. Nil keeps nothing on disk.
 	mcpSecrets *mcpSecretStore
+	// mcpFromCLI is set on the Server `mochiii mcp ...` builds for itself
+	// (mcpAdminServer): its answers name the CLI's commands, not the chat's.
+	mcpFromCLI bool
 	// mcpStates is what happened the last time each server was started.
 	mcpStates mcpStateBook
 	// mcpAuth is the remote-server sign-ins in progress (mcpoauth.go).

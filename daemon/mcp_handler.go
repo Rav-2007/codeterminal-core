@@ -557,6 +557,14 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 	defer func() { _ = registry.Close() }()
 	for _, err := range connectErrs {
 		if strings.HasPrefix(err.Error(), "server "+name+":") {
+			// A KEY IT READS HAS NO VALUE: that, not the command, is the likely
+			// reason (FOUND 2026-10-31: "fix the command" was said to a user
+			// whose command was fine and whose key was missing).
+			if missing := s.keysMissing(name, srv); len(missing) > 0 {
+				return fmt.Sprintf("%s %s, but it did NOT start when tried: %v. It is saved, and its command is likely "+
+					"fine: Mochiii has no value for %s, which it reads. %s", done, name, err,
+					strings.Join(missing, ", "), s.setKeyAdvice(name, missing)), notes
+			}
 			return fmt.Sprintf("%s %s, but it did NOT start when tried: %v. It is saved; fix the command "+
 				"(`/mcp-server remove %s`, then add it again) or see the daemon log.", done, name, err, name), notes
 		}
@@ -596,6 +604,25 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 		"(%d are not on the default list: %s). Each asks before it runs. To show more at once, raise "+
 		"mcp.budget.max_advertised_tools in %s -- each tool on the list costs tokens on every request.",
 		done, name, total, limit, len(leftOut), someNames(leftOut), s.configPathOrDefault()), notes
+}
+
+// setKeyAdvice is the command that gives server a value for each of keys, in
+// the words of the client asking: the CLI's `mcp set-key`, or the chat's
+// /mcp-server key, which a VS Code user also has as Set key.
+func (s *Server) setKeyAdvice(server string, keys []string) string {
+	cmds := make([]string, len(keys))
+	for i, k := range keys {
+		if s.mcpFromCLI {
+			cmds[i] = fmt.Sprintf("`mochiii mcp set-key %s %s`", server, k)
+		} else {
+			cmds[i] = fmt.Sprintf("`/mcp-server key %s %s`", server, k)
+		}
+	}
+	advice := map[bool]string{true: "Set it with ", false: "Set them with "}[len(keys) == 1] + strings.Join(cmds, ", then ")
+	if !s.mcpFromCLI {
+		advice += " (in VS Code, Set key on the server)"
+	}
+	return advice + "; its next start uses it."
 }
 
 // someNames lists names for a sentence, cutting a long list short.
