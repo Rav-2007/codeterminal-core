@@ -409,6 +409,30 @@ suite('the MCP views say what is true', () => {
     assert.strictEqual(tools(), undefined, 'not added: the catalog carries no count');
   });
 
+  // Testing found Redis, Git and Fetch (uvx) fail without uv, and GitHub and
+  // Terraform (docker) without Docker; npx comes with Node.
+  // Neuter check: make NEEDS give undefined for every registry -- the uv and
+  // Docker asserts fail.
+  test('a card says when a server needs uv or Docker, from its registry alone', () => {
+    const pypi = checkServer({
+      ...good(), id: 'redis', name: 'Redis', env: [],
+      package: { registry: 'pypi', identifier: 'redis-mcp-server', version: '0.5.1' },
+      launch: { command: 'uvx', args: ['redis-mcp-server@0.5.1'] },
+    });
+    const oci = checkServer({
+      ...good(), id: 'github', name: 'GitHub',
+      env: [{ name: 'GITHUB_PERSONAL_ACCESS_TOKEN', required: true, secret: true }],
+      package: { registry: 'oci', identifier: 'ghcr.io/github/github-mcp-server', version: '2.0.3' },
+      launch: { command: 'docker', args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', 'ghcr.io/github/github-mcp-server:2.0.3'] },
+    });
+    assert.ok(pypi && oci, 'both entries pass the catalog check');
+    assert.strictEqual(cardFor(pypi!, base).needs, 'Needs uv');
+    assert.strictEqual(cardFor(oci!, base).needs, 'Needs Docker');
+    const npm = cardFor(checkServer(good())!, base);
+    assert.strictEqual(npm.needs, undefined, 'npm: no label');
+    assert.ok(!('needs' in npm), 'npm: not even an empty one');
+  });
+
   // Neuter check: drop the offers clause from serverStatus -- the first two asserts fail.
   test("a running server's detail gives its whole count and how the rest are reached, with no number of places", () => {
     const running = { name: 'redis', command: 'npx redis-mcp', source: 'user', state: 'running' };
