@@ -266,3 +266,112 @@ func TestSetKeyReadsTheValueFromStdin(t *testing.T) {
 		t.Errorf("a value given as an argument was not refused: %v", err)
 	}
 }
+
+// REMOVING ONE SERVER KEEPS EVERY OTHER SERVER'S KEYS. forgetServer drops the
+// removed server's own entry only, values every server reads stay, and the
+// file goes away only once nothing is left in it.
+
+// addKeyedEcho adds the echo server under name, needing variable, with value
+// stored for it as `mcp add --env NAME=value` stores one.
+func addKeyedEcho(t *testing.T, s *Server, name, variable, value string) {
+	t.Helper()
+	t.Setenv(variable, "")
+	req := addRequest(name, buildEchoServer(t), "--require-env", variable)
+	req.Env = []string{variable}
+	req.EnvValues = map[string]string{variable: value}
+	req.AcknowledgedUnconfined = true
+	if resp := s.mcpResult(context.Background(), req); !resp.Ok {
+		t.Fatalf("adding %s: %s %s", name, resp.Error, resp.Detail)
+	}
+}
+
+// Neuter check: make forgetServer empty the whole file (`*f = mcpSecretsFile{}`)
+// -- b's key and the shared value go with a's, and the file with them.
+func TestRemovingOneServerKeepsTheOthersKeys(t *testing.T) {
+	const keyA, keyB, shared = "MOCHIII_TEST_KEY_A", "MOCHIII_TEST_KEY_B", "MOCHIII_TEST_SHARED"
+	s := mcpAdminTestServer(t)
+	path := withKeyFile(t, s)
+	addKeyedEcho(t, s, "a", keyA, "fake-key-a")
+	addKeyedEcho(t, s, "b", keyB, "fake-key-b")
+	t.Setenv(shared, "")
+	if resp := s.mcpResult(context.Background(), setEnvRequest(shared, "fake-shared")); !resp.Ok {
+		t.Fatalf("set_env %s: %s", shared, resp.Error)
+	}
+
+	if resp := s.mcpResult(context.Background(), manageRequest(protocol.MCPActionRemove, "a")); !resp.Ok {
+		t.Fatalf("removing a: %s", resp.Error)
+	}
+
+	file, info, err := readMCPSecrets(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info == nil {
+		t.Error("the key file is gone after removing one of two servers")
+	}
+	if _, kept := file.Servers["a"]; kept {
+		t.Error("the removed server's key was kept")
+	}
+	if got := file.Servers["b"].Env[keyB]; got != "fake-key-b" {
+		t.Errorf("b's stored key is %q after removing a, want fake-key-b", got)
+	}
+	if got := file.Vars[shared]; got != "fake-shared" {
+		t.Errorf("the shared value is %q after removing a, want fake-shared", got)
+	}
+
+	if v, ok := s.mcpEnvValueFor("a")(keyA); ok {
+		t.Errorf("a's key is still looked up: %q", v)
+	}
+	if v, _ := s.mcpEnvValueFor("b")(keyB); v != "fake-key-b" {
+		t.Errorf("b is given %q, want fake-key-b", v)
+	}
+	if v, _ := s.mcpEnvValueFor("b")(shared); v != "fake-shared" {
+		t.Errorf("b is given %q for the shared variable, want fake-shared", v)
+	}
+	// b's process starts only with its key (--require-env), so this is the key
+	// reaching the server, not just the file holding it.
+	if !registryOffers(t, s, "b__secret") {
+		t.Error("b no longer starts with its key after a was removed")
+	}
+
+	added := storedServers(t, s)
+	if _, ok := added["a"]; ok {
+		t.Error("a is still in the added servers")
+	}
+	if _, ok := added["b"]; !ok {
+		t.Error("b is no longer in the added servers")
+	}
+}
+
+// Removing the last server with a key deletes the key file rather than leaving
+// an empty one. The lock file beside it stays: it is what update() locks.
+func TestRemovingTheLastKeyedServerDeletesTheKeyFile(t *testing.T) {
+	const key = "MOCHIII_TEST_KEY_ONLY"
+	s := mcpAdminTestServer(t)
+	path := withKeyFile(t, s)
+	addKeyedEcho(t, s, "only", key, "fake-key-only")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the add stored no key file: %v", err)
+	}
+
+	if resp := s.mcpResult(context.Background(), manageRequest(protocol.MCPActionRemove, "only")); !resp.Ok {
+		t.Fatalf("removing only: %s", resp.Error)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		data, _ := os.ReadFile(path)
+		t.Fatalf("the key file was left behind (%d bytes): %v", len(data), err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != mcpSecretsFileName+".lock" {
+			t.Errorf("left behind in the key file's folder: %s", e.Name())
+		}
+	}
+	if v, ok := s.mcpEnvValueFor("only")(key); ok {
+		t.Errorf("the removed server's key is still looked up: %q", v)
+	}
+}
