@@ -429,7 +429,82 @@ func (m chatModel) handleMCPResult(msg mcpResultMsg) (tea.Model, tea.Cmd) {
 	m.appendTurn(turn{role: roleAssistant, local: true, verbatim: true, text: text})
 	m.resizeViewport()
 	m.refreshViewport()
+	if msg.err == nil && msg.resp.Ok && msg.req.Action == protocol.MCPActionAdd && msg.req.AcknowledgedUnconfined {
+		for _, info := range msg.resp.Servers {
+			if info.Name == msg.req.Name && len(info.EnvMissing) > 0 {
+				addKeys.server, addKeys.pending, addKeys.stored = info.Name, append([]string(nil), info.EnvMissing...), false
+			}
+		}
+		return m.askNextAddKey()
+	}
+	if msg.req.Action == protocol.MCPActionSetEnv && addKeys.server != "" && msg.req.Name == addKeys.server {
+		addKeys.stored = addKeys.stored || (msg.err == nil && msg.resp.Ok)
+		return m.askNextAddKey()
+	}
 	return m, nil
+}
+
+// addKeys is what a just-added server reads that Mochiii has no value for,
+// asked for one at a time with the hidden key prompt. FOUND 2026-10-30: an add
+// that needed a token said so only in a note, and the server looked added while
+// every call failed. Package state, like lastAuthID: one add is open at a time.
+var addKeys struct {
+	server  string
+	pending []string // still to ask; the first is the one being asked
+	stored  bool     // a value was kept: start the server again once all are answered
+}
+
+// askingAddKey says whether req is the hidden prompt askNextAddKey opened.
+func askingAddKey(req protocol.MCPRequest) bool {
+	return req.Action == protocol.MCPActionSetEnv && req.HeaderName == "" && addKeys.server != "" &&
+		req.Name == addKeys.server && len(addKeys.pending) > 0 && req.EnvName == addKeys.pending[0]
+}
+
+// askNextAddKey opens the hidden prompt for the next key, or -- when none is
+// left -- starts the server again if a key was given, so it is tried with it.
+func (m chatModel) askNextAddKey() (tea.Model, tea.Cmd) {
+	server := addKeys.server
+	if len(addKeys.pending) == 0 {
+		stored := addKeys.stored
+		addKeys.server, addKeys.stored = "", false
+		if !stored {
+			return m, nil
+		}
+		m.appendTurn(turn{role: roleAssistant, local: true, text: "starting " + sanitizeText(server) + " again with its key…"})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionCheck, Name: server})
+	}
+	variable := addKeys.pending[0]
+	pending := protocol.MCPRequest{Action: protocol.MCPActionSetEnv, Name: server, EnvName: variable}
+	m.pendingMCPAdd = &pending
+	m.input.EchoMode = textinput.EchoPassword
+	m.input.Placeholder = "the value of " + sanitizeText(variable) + " — hidden; enter skips"
+	m.appendTurn(turn{role: roleAssistant, local: true, verbatim: true, text: sanitizeText(server) + " reads " +
+		sanitizeText(variable) + ", which Mochiii has no value for. Type it and press enter: it is not shown, and Mochiii " +
+		"keeps it in ~/.mochiii/mcp-secrets.json, readable only by you. Enter on its own skips it; esc skips the rest."})
+	m.resizeViewport()
+	m.refreshViewport()
+	return m, nil
+}
+
+// skipAddKeys drops n of the keys still to ask (all, for n < 0) and says which
+// the server stays without -- the same names its note and status line give.
+func (m chatModel) skipAddKeys(n int) (tea.Model, tea.Cmd) {
+	if n < 0 || n > len(addKeys.pending) {
+		n = len(addKeys.pending)
+	}
+	skipped := addKeys.pending[:n]
+	addKeys.pending = addKeys.pending[n:]
+	if len(skipped) > 0 {
+		names := sanitizeText(strings.Join(skipped, ", "))
+		m.appendTurn(turn{role: roleAssistant, local: true, text: "Skipped " + names + ": " + sanitizeText(addKeys.server) +
+			" stays added without it, marked as needing it. Set it later with /mcp-server key " +
+			sanitizeText(addKeys.server) + " " + sanitizeText(skipped[0]) + "."})
+		m.resizeViewport()
+		m.refreshViewport()
+	}
+	return m.askNextAddKey()
 }
 
 // formatMCPResult turns the response into the lines a user reads. Everything in
@@ -487,7 +562,17 @@ func userServerNames(servers []protocol.MCPServerInfo) []string {
 // typed without noticing a confirmation was open.
 func (m chatModel) answerMCPAdd(raw string) (tea.Model, tea.Cmd) {
 	req := *m.pendingMCPAdd
+	addKey := askingAddKey(req)
+	if raw == "" && !addKey {
+		return m, nil // as before: an empty line answers nothing
+	}
 	m.endMCPConfirm()
+	if addKey && raw == "" {
+		return m.skipAddKeys(1)
+	}
+	if addKey {
+		addKeys.pending = addKeys.pending[1:]
+	}
 	if req.Action == protocol.MCPActionSetEnv {
 		// The hidden key prompt: the line is the value, sent and forgotten.
 		m.input.SetValue("")
@@ -521,6 +606,11 @@ func (m chatModel) answerMCPAdd(raw string) (tea.Model, tea.Cmd) {
 
 // cancelMCPAdd is esc while an add waits for its confirmation.
 func (m chatModel) cancelMCPAdd() (tea.Model, tea.Cmd) {
+	if askingAddKey(*m.pendingMCPAdd) {
+		m.endMCPConfirm()
+		m.input.SetValue("")
+		return m.skipAddKeys(-1)
+	}
 	what := "Not added; nothing was stored."
 	if m.pendingMCPAdd.Action == protocol.MCPActionSetEnv {
 		what = "Cancelled; no value was stored."

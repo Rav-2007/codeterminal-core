@@ -1049,7 +1049,8 @@ consequence, and it is why the environment is built rather than pruned.
 A server usually reads a key of its own (perplexity's `PERPLEXITY_API_KEY`).
 Until this date the only source was the daemon's environment, and an editor
 launched from a desktop icon has none, so such servers exited on every start.
-The user now gives the value — `mcp set-key`, `mcp add --env NAME=value`, or
+The user now gives the value — `mcp set-key`, `mcp add --env NAME=value`, the
+hidden prompt `mcp add` and `/mcp-server add` open for a key with no value, or
 Set key in VS Code — and the daemon keeps it in `~/.mochiii/mcp-secrets.json`
 (`daemon/mcpsecrets.go`):
 

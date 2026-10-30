@@ -25,14 +25,14 @@ func mcpStatusLine(info protocol.MCPServerInfo) string {
 		if info.StateDetail != "" {
 			line += ": " + info.StateDetail
 		}
+		// A server that exits for want of its key failed too, and the reason
+		// it gave may not name the variable: the line does (as VS Code's does).
+		if keys := missingKeys(info); len(keys) > 0 {
+			line += " · needs a key: " + strings.Join(keys, ", ")
+		}
 		return line
 	case len(info.EnvMissing) > 0 || len(info.HeadersMissing) > 0:
-		var keys []string
-		keys = append(keys, info.EnvMissing...)
-		for _, h := range info.HeadersMissing {
-			keys = append(keys, h+" header")
-		}
-		return "! Needs a key: " + strings.Join(keys, ", ")
+		return "! Needs a key: " + strings.Join(missingKeys(info), ", ")
 	case info.State == protocol.MCPStateToolsFailed:
 		return "! Connected · tools fetch failed"
 	case info.State == protocol.MCPStateRunning && !info.ToolsListed:
@@ -41,4 +41,13 @@ func mcpStatusLine(info protocol.MCPServerInfo) string {
 		return fmt.Sprintf("✔ Connected (%d tool%s)", info.ToolCount, map[bool]string{true: "", false: "s"}[info.ToolCount == 1])
 	}
 	return "○ Not started yet"
+}
+
+// missingKeys names what a server reads that Mochiii has no value for.
+func missingKeys(info protocol.MCPServerInfo) []string {
+	keys := append([]string(nil), info.EnvMissing...)
+	for _, h := range info.HeadersMissing {
+		keys = append(keys, h+" header")
+	}
+	return keys
 }

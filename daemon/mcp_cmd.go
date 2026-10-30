@@ -371,21 +371,77 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 	if *inProject {
 		req.Cwd = protocol.MCPCwdWorkspace
 	}
+	// One reader for the typed name and the keys after it. A terminal is read
+	// as itself: readSecretLine needs the *os.File to turn its echo off, and a
+	// terminal hands over one line per read, so nothing is read ahead.
+	in := mcpIn
+	if _, ok := in.(*os.File); !ok {
+		in = bufio.NewReader(in)
+	}
 	ctx := context.Background()
+	if req.AcknowledgedUnconfined {
+		askMissingKeys(srv, in, &req)
+	}
 	resp := srv.mcpResult(ctx, req)
 	if resp.NeedsAcknowledgement {
 		// THE WORD IS TYPED, not implied by having run the command: the same
 		// gate models.json's acknowledged_unconfined is, at the moment it applies.
 		_, _ = fmt.Fprintf(mcpOut, "%s\n\nType the server's name (%s) to add it, or anything else to cancel: ", resp.Detail, name)
-		typed, _ := bufio.NewReader(mcpIn).ReadString('\n')
+		typed, _ := bufio.NewReader(in).ReadString('\n')
 		if strings.TrimSpace(typed) != name {
 			_, _ = fmt.Fprintln(mcpOut, "Cancelled; nothing was added.")
 			return nil
 		}
 		req.AcknowledgedUnconfined = true
+		askMissingKeys(srv, in, &req)
 		resp = srv.mcpResult(ctx, req)
 	}
 	return printMCPResponse(resp)
+}
+
+// mcpKeysAskable says whether `mcp add` may ask for a key: only at a terminal.
+// A script gets no question it would sit waiting on, and today's note instead.
+var mcpKeysAskable = func(in io.Reader) bool {
+	f, ok := in.(*os.File)
+	return ok && isTerminal(f)
+}
+
+// askMissingKeys asks for each variable the server reads that Mochiii has no
+// value for, with the same hidden prompt as `mcp set-key`. FOUND 2026-10-30:
+// `mcp add github --env GITHUB_PERSONAL_ACCESS_TOKEN ...` added the server
+// without its token and said so in a note; it looked added, and every call
+// failed. The answers go into the add's own values, so they are stored with it
+// in mcp-secrets.json and its first start already has them. Enter skips one:
+// the server is still added, and its note and status line name what it needs.
+func askMissingKeys(srv *Server, in io.Reader, req *protocol.MCPRequest) {
+	if !mcpKeysAskable(in) {
+		return
+	}
+	for _, variable := range srv.envMissing(req.Name, req.Env) {
+		if _, given := req.EnvValues[variable]; given {
+			continue
+		}
+		_, _ = fmt.Fprintf(mcpOut, "\n%s reads %s, which Mochiii has no value for. Type it now, or press Enter to skip.\n",
+			req.Name, variable)
+		for {
+			value, err := readSecretLine(in, mcpOut, fmt.Sprintf("Value for %s (%s), not shown: ", variable, req.Name))
+			value = strings.TrimSpace(value)
+			if err != nil || value == "" {
+				_, _ = fmt.Fprintf(mcpOut, "Skipped: %s will be added without %s.\n", req.Name, variable)
+				break
+			}
+			// Said by what is wrong with it, never by the value (validMCPEnvValue).
+			if err := validMCPEnvValue(value); err != nil {
+				_, _ = fmt.Fprintf(mcpOut, "%s: %v. Type it again, or press Enter to skip.\n", variable, err)
+				continue
+			}
+			if req.EnvValues == nil {
+				req.EnvValues = map[string]string{}
+			}
+			req.EnvValues[variable] = value
+			break
+		}
+	}
 }
 
 // runMCPNamed is `mcp remove|enable|disable <name>`: one server, by name. The
