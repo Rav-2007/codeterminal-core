@@ -493,7 +493,7 @@ func mcpAdminServer(configPath string, logger *log.Logger) (*Server, error) {
 		cfg: cfg, workspace: root, logger: logger,
 		serverExtras: serverExtras{
 			configPath: absoluteOrAsGiven(configPath), userServersPath: path, mcpRunDir: mcpRunDirOrNone(logger),
-			mcpSecrets: mcpSecretStoreOrNone(logger),
+			mcpSecrets: mcpSecretStoreOrNone(logger), mcpFromCLI: true,
 		},
 	}, nil
 }
