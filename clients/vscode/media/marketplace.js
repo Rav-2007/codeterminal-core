@@ -43,7 +43,7 @@
    * @typedef {{ id: string, name: string, description: string, publisher: string, namespace?: string,
    *   tier: 'verified' | 'community', categories: string[], pkg: string, runtime: string, commandLine: string,
    *   env: EnvView[], hasHomepage: boolean, hasPackageUrl: boolean, icon?: string,
-   *   installed: '' | 'added' | 'disabled' | 'taken', tools?: string }} Card
+   *   installed: '' | 'added' | 'disabled' | 'taken', tools?: string, needs?: string }} Card
    */
 
   const state = {
@@ -239,7 +239,16 @@
     title.append(el('h2', '', c.name), el('div', 'pub', c.publisher));
     const who = el('div', 'who');
     who.append(logo(c), title);
-    head.append(who, el('span', c.tier === 'verified' ? 'tier verified' : 'tier', c.tier === 'verified' ? 'Verified' : 'Community'));
+    const badges = el('div', 'badges');
+    badges.append(el('span', c.tier === 'verified' ? 'tier verified' : 'tier', c.tier === 'verified' ? 'Verified' : 'Community'));
+    // The host sets it from the package registry only (cardFor): what the launch
+    // line runs that a user may not have. It is not a check of this machine.
+    if (c.needs) {
+      const needs = el('span', 'needs', c.needs);
+      needs.title = `It launches with ${c.runtime}; install that first.`;
+      badges.append(needs);
+    }
+    head.append(who, badges);
     node.append(head, el('p', 'desc', c.description));
 
     if (c.categories.length > 0) {

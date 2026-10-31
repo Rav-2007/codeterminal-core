@@ -72,6 +72,15 @@ export interface CardView {
    * otherwise, never estimated. The catalog itself carries no count.
    */
   tools?: string;
+  /**
+   * "Needs uv", "Needs Docker": the program the launch line runs that a user may
+   * not have, from the package registry alone (pypi runs with uvx, oci with
+   * docker). Absent for npm, by decision: npx comes with Node, which the npm
+   * install of Mochiii needs -- though this extension and install.sh do not, so
+   * the meta line's "needs Node.js (npx)" is all an npm card says. Whether a
+   * program is installed here is not checked.
+   */
+  needs?: string;
 }
 
 /** Where the bundled logos live, under media/: one <slug>.svg each. */
@@ -99,6 +108,13 @@ const RUNTIME: Record<CatalogServer['package']['registry'], string> = {
   oci: 'Docker',
 };
 
+/** NEEDS is the card's label per registry: what testing found missing (2026-10-30). */
+const NEEDS: Record<CatalogServer['package']['registry'], string | undefined> = {
+  npm: undefined,
+  pypi: 'Needs uv',
+  oci: 'Needs Docker',
+};
+
 function quote(a: string): string {
   return /^[A-Za-z0-9@%+=:,./_-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`;
 }
@@ -116,6 +132,7 @@ export function cardFor(s: CatalogServer, state: McpServersState, bundledIcons: 
     categories: s.categories,
     pkg: `${s.package.registry} · ${s.package.identifier} ${s.package.version}`,
     runtime: RUNTIME[s.package.registry],
+    ...(NEEDS[s.package.registry] ? { needs: NEEDS[s.package.registry] } : {}),
     commandLine: [s.launch.command, ...s.launch.args].map(quote).join(' '),
     env: s.env,
     hasHomepage: !!s.homepage,
@@ -653,6 +670,8 @@ export function mcpMarketplaceStyles(scope = ''): string {
   ${s('.pub')} { color: var(--mk-muted); font-size: 0.88em; }
   ${s('.tier')} { flex: none; font-size: 0.78em; padding: 1px 7px; border-radius: 10px; background: var(--mk-badge-bg); color: var(--mk-badge-fg); }
   ${s('.tier.verified')} { background: transparent; color: var(--mk-ok); border: 1px solid var(--mk-ok); }
+  ${s('.badges')} { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; flex: none; }
+  ${s('.needs')} { font-size: 0.78em; padding: 1px 7px; border-radius: 10px; color: var(--mk-warn); border: 1px solid var(--mk-warn); }
   ${s('.desc')} { margin: 0; line-height: 1.45; }
   ${s('.meta')} { color: var(--mk-muted); font-size: 0.85em; overflow-wrap: anywhere; }
   ${s('.env')} { display: flex; flex-wrap: wrap; gap: 4px; }
