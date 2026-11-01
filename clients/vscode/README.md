@@ -1,11 +1,10 @@
 # Mochiii
 
-**A local-first AI coding assistant.** Mochiii indexes, embeds, and retrieves
-your codebase entirely on your own machine — a background daemon does the
-work, and this extension puts a full chat panel in your editor for it.
-Nothing on your machine listens on the network, and the only thing that ever
-leaves it is the minimal prompt for a single turn, sent to the model
-provider *you* choose.
+Mochiii indexes and searches your code on your machine. Each turn sends a
+prompt to the model you choose. With a local model it stays on your computer;
+with an API key it goes to that provider. A background daemon does the work,
+and this extension puts a full chat panel in your editor for it. Nothing on
+your machine listens on the network.
 
 **The extension manages the daemon for you.** Open a workspace, run
 **Mochiii: Open Chat**, and it starts one automatically. A second window on the
@@ -13,8 +12,8 @@ same folder shares it.
 
 ## Why Mochiii
 
-- **Your code stays yours.** Indexing, embedding, and retrieval all happen
-  on-device. No telemetry, no silent uploads.
+- **No telemetry.** Mochiii collects nothing about you. What reaches a model
+  provider depends on the model you pick.
 - **Review every edit.** A proposed change renders as a red/green diff. Apply
   or Skip, one block at a time; nothing touches your files until you do. One
   click (**Undo this apply**) reverts a whole batch from its backup.

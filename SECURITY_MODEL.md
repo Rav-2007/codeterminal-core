@@ -12,9 +12,9 @@ point of this half: **a `service_role` check proves nothing.**
 
 **[The inference hop](#the-inference-hop--zdr-retention-finding)** — the last section. What happens
 to a user's prompt after it leaves the proxy. The database half protects key material and row
-ownership; **the product's actual privacy promise lives in the inference half**, and it currently
-carries an open, corroborated finding: a ZDR-labeled provider retained our prompt content across
-requests.
+ownership; **what happens to a prompt after it leaves the machine lives in the inference half**
+(with an API key, that is the provider's own data policy), and it currently carries an open,
+corroborated finding: a ZDR-labeled provider retained our prompt content across requests.
 
 ## The model in one paragraph
 
@@ -1198,7 +1198,7 @@ chunks, at a single choke point, **truncating before scrubbing** — scrubbing f
 changes the length and could slice a redaction placeholder in half.
 
 Two of the four per-turn ceilings exist for this specifically: per-result bytes
-and cumulative tool bytes per turn. A privacy-positioned product should be able
+and cumulative tool bytes per turn. Mochiii should be able
 to bound and report how much extra left the machine because of tools, and the
 activity stream reports the post-scrub figure per call.
 

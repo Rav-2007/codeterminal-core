@@ -3,6 +3,15 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [Unreleased]
+
+- **The licence is proprietary, all rights reserved.** Versions already published
+  (extension 0.1.1 and earlier) were released under Apache-2.0, and that licence
+  still applies to those copies.
+- The Marketplace description, README and keywords no longer describe Mochiii
+  as local-first or private. What reaches a model provider depends on the model
+  you pick.
+
 ## [1.5.1] - 2026-10-27
 
 No change to the extension. The release fixes the macOS and Linux installer,

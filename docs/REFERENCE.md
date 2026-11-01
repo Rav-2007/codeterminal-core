@@ -234,9 +234,9 @@ The full list, by the name each is known by:
   in seconds. So when the best candidate does not answer, up to 40 are tried,
   several at a time. Models the provider says are not there are left out of
   `/model`; ones that sent nothing back stay, marked as such.
-- **Zero-data-retention routing is something OpenRouter does.** With any other
-  provider, prompts go straight to it under its own data policy, and the client
-  says so.
+- **Prompts go straight to your provider, under its own data policy,** and the
+  client says so. The routing flags in the `zdr` block of `models.json` are acted
+  on by OpenRouter only.
 
 `connect` refuses a key the provider rejects rather than storing it, and says
 plainly when it could **not** verify one instead of implying it did. Use
@@ -296,34 +296,6 @@ first.
 
 </details>
 
-<details>
-<summary><b>Managed proxy mode</b> — the pilot path; this machine holds one Mochiii key</summary>
-
-Inference runs through the [managed proxy](#managed-proxy), which holds the
-provider key server-side, meters usage per user, and enforces zero-data-retention
-routing before anything reaches the provider.
-
-[`run-proxy.sh`](../run-proxy.sh) is the whole path: it sources `.env`, points
-`MOCHIII_API_BASE` at the production proxy, sets `MOCHIII_USE_PROXY=true`,
-**unsets `MOCHIII_API_KEY`** so a provider key can never reach the proxy by
-accident, refuses to start without a Mochiii key, and then `exec`s the daemon — so
-every daemon flag passes straight through.
-
-```bash
-cp .env.example .env && $EDITOR .env    # set MOCHIII_PROXY_KEY=mochi_...
-
-./run-proxy.sh --workspace ~/some/repo               # terminal 1
-./clients/tui/mochiii-tui --workspace ~/some/repo   # terminal 2
-```
-
-Startup logs `proxy mode: forwarding inference through …` — that line is how you
-confirm the pilot path is in use. Point at a different proxy with
-`MOCHIII_PROXY_BASE=http://localhost:8080/v1`; `MOCHIII_API_BASE`
-deliberately cannot do this, because the script sets it authoritatively so that
-`source .env` stays safe to combine with proxy mode.
-
-</details>
-
 **VS Code users skip terminal 1.** The extension manages the daemon itself —
 it probes the per-workspace lockfile, adopts a daemon that answers a handshake,
 and starts one only when nothing does.
@@ -380,11 +352,9 @@ The daemon reads plain environment variables and never parses `.env` itself.
 
 | Variable | Meaning |
 |---|---|
-| `MOCHIII_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:142`). A malformed value is still fatal. *Required in proxy mode*, where the address cannot be guessed. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
+| `MOCHIII_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:142`). A malformed value is still fatal. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
 | `MOCHIII_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key, or when a key has been stored by `mochiii-daemon connect` — this variable **takes precedence** over the stored one, and over a key handed over on stdin (`--credentials-from-stdin`). A variable the daemon starts with is readable in `/proc/<pid>/environ` for its whole life; a launcher that can should use stdin, as VS Code does |
 | `MOCHIII_MODEL` | One model, named the way the server at `MOCHIII_API_BASE` names it (e.g. `qwen2.5-coder:7b` for Ollama). **Replaces every tier in `models.json`** — for a local server, which knows none of those names. VS Code: the `mochiii.model` setting |
-| `MOCHIII_USE_PROXY` | `true` selects proxy mode |
-| `MOCHIII_PROXY_KEY` | Per-user Mochiii key; required in proxy mode — or `proxy_key` on stdin, which this variable outranks |
 
 **A model server on your own machine** (Ollama, LM Studio, llama.cpp, vLLM) needs
 no key. In the terminal app, pick **On this computer** from `/provider`, or run
@@ -469,17 +439,7 @@ VS Code extension asks for none of this and is served as before.
 
 A stored credential (`mochiii-daemon connect`) fills in only what the
 environment did not say, **and only for the address it was saved for** — a
-stored OpenRouter key is never sent to a local server. It is deliberately
-**ignored in proxy mode**: what
-`connect` stores is a *provider* key, and proxy mode authenticates with a
-*Mochiii* key, so filling one in from the other would send a credential to a host
-it was not issued for.
-
-`MOCHIII_USE_PROXY` is load-bearing, not cosmetic: it is what makes the
-daemon authenticate with the Mochiii key instead of the provider key, and startup
-fails if the Mochiii key is empty. **In proxy mode, leave `MOCHIII_API_KEY`
-unset** — with both set the daemon warns, because it would otherwise send a
-provider key to a proxy that neither wants nor can use it.
+stored OpenRouter key is never sent to a local server.
 
 ### `models.json` — model tiers
 
@@ -524,14 +484,13 @@ An unsupported effort is dropped with a warning.
 
 Every request carries `max_tokens`, 32768 by default, so no single call can run away. At
 that cap an answer ends as "cut off", and you can ask the model to continue. A tier can
-lower it with `max_output_tokens`. Values above 32768 are clamped with a warning, because
-the managed proxy refuses them. The managed proxy refuses any
-`provider.sort`, so `provider_sort` is for your-own-key mode. Which settings actually help
+lower it with `max_output_tokens`. Values above 32768 are clamped with a warning. Which settings actually help
 is measured, not assumed: see [`docs/AGENT_WORKFLOW_EVAL.md`](AGENT_WORKFLOW_EVAL.md).
 
-The `zdr` block resolves to the provider-routing object sent on every request and
-is **secure by default**: an absent or legacy block resolves to `zdr: true`,
-`data_collection: "deny"`. Also configurable here: `retrieval.disabled`,
+The `zdr` block resolves to the provider-routing object sent on every request: an
+absent or legacy block resolves to `zdr: true`, `data_collection: "deny"`. Only
+OpenRouter acts on these flags; any other provider keeps prompts under its own data
+policy. Also configurable here: `retrieval.disabled`,
 `retrieval.rerank_disabled`, `retrieval.context_budget_chars`, `no_scrub`, and
 the whole `mcp` block ([agent mode](#agent-mode)). Unknown keys are warned about,
 never silently ignored.
@@ -939,10 +898,6 @@ live in the daemon.
   └──────────────────────────────────────────────┘
         │  ⑦ one inference turn (agent mode: one per step)
         ▼
-  ┌──────────────────────────────────────────────┐
-  │ PROXY (managed mode only)                    │
-  │  auth · ZDR gate · model allow-list · quota  │
-  └──────────────────────────────────────────────┘
         ▼
    Model provider ──⑧ SSE tokens, streamed back unbuffered──▶ client
 ```
@@ -1521,22 +1476,6 @@ helper a bounded number of times, and on shutdown escalates `SIGTERM` → `SIGKI
 and does not return until the process is reaped. Smoke-test the whole path with
 `helper-smoketest`.
 
-### Managed proxy
-
-[`proxy/`](../proxy/) exists so the provider key never ships to end users. **It never
-reads message content** — every gate inspects only the request envelope, and
-`messages` stays an opaque byte slice forwarded byte-for-byte.
-
-| Concern | Control |
-|---|---|
-| Identity | Per-user Mochiii key validated against Supabase |
-| Privacy | Rejects any request whose ZDR routing flags are missing or weakened |
-| Cost | Model allow-list; refuses `models`, `plugins`, `transforms`, provider cost-steering |
-| Spend | Atomic quota reservation + a per-request token ceiling enforced mid-stream |
-| Abuse | Request-rate, token-rate and in-flight caps, pre- and post-auth |
-
-All fail closed. Error codes and configuration: [`proxy/README.md`](../proxy/README.md).
-
 ---
 
 ## Security posture
@@ -1547,8 +1486,7 @@ accepted residuals — is [`SECURITY_MODEL.md`](../SECURITY_MODEL.md). The summa
 **What holds.** No network listener on your machine. Peer-authenticated local
 socket at `0600`. Confinement to the workspace root through symlinks, with
 atomic symlink-refusing writes on both the forward and undo paths. Five edit
-gates with no auto-apply. ZDR routing enforced server-side by the proxy, which
-returns `403 zdr_required` rather than trusting the client to ask nicely.
+gates with no auto-apply.
 
 **What is explicitly *not* claimed:**
 
@@ -1558,7 +1496,7 @@ returns `403 zdr_required` rather than trusting the client to ask nicely.
   why `acknowledged_unconfined: true` must be typed by hand.
 - **Secret scrubbing is heuristic and client-side only.** It matches a fixed set
   of *prefixed* patterns, so novel, obfuscated or unprefixed secrets are missed;
-  it can be disabled; and the proxy cannot scrub, because it never reads content.
+  it can be disabled.
   Defence in depth, not a guarantee.
 - **This daemon's OWN credentials are scrubbed literally, and that cannot be
   disabled.** Separately from the heuristic, the daemon knows the exact key it
