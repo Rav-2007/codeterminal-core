@@ -1,6 +1,6 @@
 # Documentation index
 
-**90 documents: 80 in `docs/`, 1 in `docs/ARCHIVE/`, and 9 at the repository root.**
+**90 documents: 79 in `docs/`, 3 in `docs/ARCHIVE/`, and 8 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -118,9 +118,7 @@ a refactor or fails loudly; a line number silently points at something else.
 | [`DECISION_PACK.md`](DECISION_PACK.md) | D1–D8 founder rulings, one page each. |
 | [`../BACKLOG.md`](../BACKLOG.md) | Forward-looking capability work only. |
 | [`../SECURITY_MODEL.md`](../SECURITY_MODEL.md) | The threat model and what each gate actually promises. |
-| [`../PRODUCT_OVERVIEW.md`](../PRODUCT_OVERVIEW.md) | What the product is, for a reader who has never seen it. |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Contributions are made under Apache-2.0, and each commit carries a DCO 1.1 sign-off (text included). The check is advisory until an owner makes it required. |
-| [`PROJECT_INTELLIGENCE_BLUEPRINT.md`](PROJECT_INTELLIGENCE_BLUEPRINT.md) | A capability map and a landing-page spec, written for positioning rather than for engineering. **It overlaps `../PRODUCT_OVERVIEW.md` and is the weaker of the two** — when they disagree, the overview owns the answer. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | The project is proprietary (see `../LICENSE`); each commit carries a DCO 1.1 sign-off (text included). The check is advisory until an owner makes it required. |
 | [`MCP_MASTER.md`](MCP_MASTER.md) | Front door for agent mode / MCP; links to its own evidence. |
 | [`MCP_DEBUG_PLAYBOOK.md`](MCP_DEBUG_PLAYBOOK.md) | Operational: diagnosing a misbehaving MCP server. |
 | [`MCP_LANE_B_THREAT_MODEL.md`](MCP_LANE_B_THREAT_MODEL.md) | Why Lane B is **unconfined**, stated plainly. Read before touching agent mode. |
@@ -292,6 +290,8 @@ evidence trail; the ones that are plans carry a `⛔ SUPERSEDED` banner.
 | [`MCP_ROBUSTNESS_REPORT_2026-08-03.md`](MCP_ROBUSTNESS_REPORT_2026-08-03.md) | The MCP numbers `MCP_MASTER.md` cites. |
 | [`ENTERPRISE_QA_REPORT_2026-08-03.md`](ENTERPRISE_QA_REPORT_2026-08-03.md) · [`-04`](ENTERPRISE_QA_REPORT_2026-08-04.md) · [`-05`](ENTERPRISE_QA_REPORT_2026-08-05.md) | Three consecutive QA passes on SHA `8979530`. |
 | [`ARCHIVE/BACKLOG_2026-07.md`](ARCHIVE/BACKLOG_2026-07.md) | 3,839 lines of verbatim July record: SHAs, transcripts, measured numbers. Moved, never summarised. |
+| [`ARCHIVE/PRODUCT_OVERVIEW.md`](ARCHIVE/PRODUCT_OVERVIEW.md) | Archived 2026-11-01. The old product overview. It describes a managed-proxy plan (key held on a server, zero data retention enforced there) that is not offered. Not current. |
+| [`ARCHIVE/PROJECT_INTELLIGENCE_BLUEPRINT.md`](ARCHIVE/PROJECT_INTELLIGENCE_BLUEPRINT.md) | Archived 2026-11-01. The old capability map and landing-page spec, written around the same managed-proxy plan. Not current. |
 
 ---
 

@@ -143,7 +143,7 @@ function customizePage(): string {
 
 function accountPage(): string {
   return `<section id="pageAccount" class="page" hidden role="region" aria-labelledby="pageAccountTitle">
-    ${pageHead('pageAccount', 'Account', 'Who Mochiii talks to on your behalf. Nothing here leaves this machine.')}
+    ${pageHead('pageAccount', 'Account', 'Who Mochiii talks to on your behalf. Your key is kept on this machine and sent to its provider.')}
     <div class="conn-card">
       <div id="acctBadge" class="conn-badge" aria-hidden="true">?</div>
       <div class="conn-main">

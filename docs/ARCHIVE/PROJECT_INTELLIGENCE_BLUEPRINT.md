@@ -1,3 +1,5 @@
+Archived 2026-11-01: describes a managed-proxy plan that is not offered.
+
 # PROJECT INTELLIGENCE REPORT
 
 ## 1. Executive Summary

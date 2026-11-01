@@ -7,12 +7,11 @@ For how the code is laid out and how to work on it, start with
 [`docs/HANDOFF.md`](docs/HANDOFF.md). Before you open a pull request, run
 `make check`, the local gate suite.
 
-## Your contribution is licensed under Apache-2.0
+## Licence
 
-Mochiii is licensed under the [Apache License, Version 2.0](LICENSE). By
-submitting a contribution, you agree that it is licensed under the same terms,
-as section 5 of the licence describes. There is no separate contributor licence
-agreement. The sign-off below is the only other thing you are asked for.
+Mochiii is proprietary software; see [LICENSE](LICENSE). The terms for outside
+contributions are still to be set by the owner. The sign-off below is the only
+other thing you are asked for.
 
 Third-party code keeps its own licence. If your change adds a dependency, or
 copies code from another project, add its licence text to

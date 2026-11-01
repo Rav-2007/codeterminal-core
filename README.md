@@ -255,7 +255,6 @@ The [security model](SECURITY_MODEL.md) explains what Mochiii protects and what 
 | Read | For |
 |---|---|
 | [Reference](docs/REFERENCE.md) | Every command, setting and environment variable, and how each part works |
-| [Product overview](PRODUCT_OVERVIEW.md) | What Mochiii is, in more depth |
 | [Spec workflow](docs/SPEC_WORKFLOW.md) | Building to a spec with `/spec` |
 | [Security model](SECURITY_MODEL.md) | The threat model |
 | [VS Code extension](clients/vscode/README.md) | The extension's own guide |
@@ -284,7 +283,7 @@ To run the terminal app from a checkout instead of an install, you need
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE). Contributions are made under the
-same licence, with a DCO sign-off on each commit: see
-[CONTRIBUTING.md](CONTRIBUTING.md). Third-party licences are listed in
-[THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).
+Proprietary. All rights reserved. See [LICENSE](LICENSE). Contribution rules,
+including the DCO sign-off on each commit, are in
+[CONTRIBUTING.md](CONTRIBUTING.md). Third-party code keeps its own licences,
+which are listed in [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).

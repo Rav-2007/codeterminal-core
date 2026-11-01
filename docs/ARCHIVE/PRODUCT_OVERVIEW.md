@@ -1,3 +1,5 @@
+Archived 2026-11-01: describes a managed-proxy plan that is not offered.
+
 # Mochiii — Product Overview
 
 > **Your codebase never leaves your machine unless *you* decide it should.**
@@ -536,6 +538,6 @@ intelligence with local-first privacy** — instead of forcing you to pick one a
 ---
 
 *This document is a product overview. For deep technical and security detail, see
-[`README.md`](README.md), [`SECURITY_MODEL.md`](SECURITY_MODEL.md), and the living
-[`BACKLOG.md`](BACKLOG.md) where the engineering and hardening work is tracked in
+[`README.md`](../../README.md), [`SECURITY_MODEL.md`](../../SECURITY_MODEL.md), and the living
+[`BACKLOG.md`](../../BACKLOG.md) where the engineering and hardening work is tracked in
 the open.*
