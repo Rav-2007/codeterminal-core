@@ -586,7 +586,7 @@ func TestEnterOnItsOwnSkipsAnAddsKey(t *testing.T) {
 		t.Errorf("%d requests, want only the add and its acknowledgement", n)
 	}
 	if !strings.Contains(lastTurn(t, m), "Skipped GITHUB_TOKEN: gh stays added without it, marked as needing it. "+
-		"Set it later with /mcp-server key gh GITHUB_TOKEN.") {
+		"Set it later with /mcp-server key gh GITHUB_TOKEN, or in /mcp.") {
 		t.Errorf("the skip does not say what the server needs:\n%s", lastTurn(t, m))
 	}
 	if turnsContaining(m, "NOTE: Mochiii has no value for GITHUB_TOKEN") != 1 {

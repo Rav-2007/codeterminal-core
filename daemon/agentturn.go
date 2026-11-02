@@ -110,7 +110,7 @@ func (s *Server) runAgentTurn(
 		for _, err := range connectErrs {
 			degraded = append(degraded, protocol.Degradation{
 				Component: protocol.DegradedMCPServer,
-				Detail:    s.unavailableServerDetail(err),
+				Detail:    s.unavailableServerDetail(ctx, err),
 			})
 		}
 		if err := enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Degraded: degraded}); err != nil {

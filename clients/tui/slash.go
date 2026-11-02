@@ -74,6 +74,7 @@ var slashCatalog = []slashDef{
 	{Name: "model", Kind: slashLocal, Summary: "choose the model from a list (/model list prints)"},
 	{Name: "provider", Kind: slashLocal, Summary: "choose a provider, add its key, choose a model"},
 	{Name: "account", Kind: slashLocal, Summary: "provider, key and model in use, and the spend"},
+	{Name: "mcp", Kind: slashLocal, Summary: "MCP servers in a panel: see each one's state, add (paste JSON), give keys, sign in, pause, remove"},
 	{Name: "mcp-server", Kind: slashLocal, Summary: "the tools this daemon offers; add or remove an MCP server (/mcp-server add <name> <command>)"},
 	{Name: "clear", Kind: slashLocal, Summary: "start a new chat (same as ctrl+n)"},
 	{Name: "compact", Kind: slashLocal, Summary: "summarise the earlier part of this chat to save context (the full chat stays in History)"},

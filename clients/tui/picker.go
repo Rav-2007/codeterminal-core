@@ -54,6 +54,9 @@ type listPicker struct {
 	// airy leaves a blank line under the title. The caller grants it when the
 	// terminal has rows to spare, and takes it back before taking list rows.
 	airy bool
+	// bare draws no search field: a short list whose caller gives letter keys
+	// to actions instead (the MCP panel, mcppanel.go).
+	bare bool
 }
 
 // pickerFilterMax bounds the search text. No provider or model is found faster
@@ -242,7 +245,9 @@ func (p listPicker) view(width, maxRows int) string {
 			lines = append(lines, "")
 		}
 	}
-	lines = append(lines, p.searchField(width))
+	if !p.bare {
+		lines = append(lines, p.searchField(width))
+	}
 
 	if len(vis) == 0 {
 		lines = append(lines, "", pickerHintStyle.Render(ansi.Truncate("nothing matches — backspace to widen the search", width, "…")))

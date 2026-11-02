@@ -145,7 +145,9 @@ Read issues and pull requests, and see why CI failed, without leaving the chat:
 
 ### MCP servers
 
-Add any MCP server with one command. Its tools are ready on your next question.
+`/mcp` opens a panel of your MCP servers, with what each one needs. Press `a` and
+paste the JSON from a server's setup page (one server, or a whole `mcpServers`
+block), or give a command or a URL. Its tools are ready on your next question.
 
 ```text
 /mcp-server add files npx -y @modelcontextprotocol/server-filesystem ~/notes
@@ -215,7 +217,7 @@ Type `/` in the chat to see them all.
 | `/review` · `/test` · `/explain` · `/doc` | Quick one-off jobs |
 | `/remember` · `/rules` · `/forget` | Rules for this project |
 | `/github` · `/issue` · `/pr` | Your project's GitHub repository |
-| `/mcp-server` | List, add or remove MCP servers |
+| `/mcp` · `/mcp-server` | Add, fix, pause or remove MCP servers in a panel, or by command |
 | `/save` · `/resume` · `/history` | Keep and reopen chats |
 | `/usage` · `/budget` | Tokens, cost and spending limits |
 | `/compact` · `/clear` | Shrink the chat, or start a new one |

@@ -198,6 +198,9 @@ type chatModel struct {
 	// server could do, waiting for the user to type the server's name. Nil
 	// except between that answer and the next line entered (mcpserver.go).
 	pendingMCPAdd *protocol.MCPRequest
+	// mcpPanel is the MCP Servers panel (/mcp), drawn where the transcript is;
+	// nil when it is closed (mcppanel.go).
+	mcpPanel *mcpPanel
 	// setup is the provider → key → model screens, when they are showing
 	// (setup.go). Its key step is stateConnect; its other steps are stateSetup.
 	setup setupFlow
@@ -577,6 +580,12 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mcpResultMsg:
 		return m.handleMCPResult(msg)
 
+	case mcpPasteMsg:
+		return m.handleMCPPaste(msg)
+
+	case mcpHotkeyMsg:
+		return m.handleMCPHotkey(msg)
+
 	case toolApprovalMsg:
 		return m.handleToolApproval(msg)
 
@@ -719,6 +728,13 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.state == stateSetup {
 		return m.handleSetupKey(msg)
+	}
+	// The panel takes its keys, except while the box below it is answering
+	// one of its questions: a hidden value, or a server's name to agree to.
+	if m.mcpPanel != nil && m.pendingMCPAdd == nil {
+		if next, cmd, done := m.handleMCPPanelKey(msg); done {
+			return next, cmd
+		}
 	}
 	switch msg.String() {
 	case "esc":
@@ -1652,6 +1668,12 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		// (FOUND 2026-10-11), and how a repository once got its own program run
 		// by a slash command (2026-08-08). See mcpserver.go.
 		return m.handleMCPServerCommand(args)
+	case "mcp":
+		// The panel; with words after it, the same as /mcp-server with them.
+		if strings.TrimSpace(args) != "" {
+			return m.handleMCPServerCommand(args)
+		}
+		return m.openMCPPanel()
 	case "search":
 		reply = runSearch(m.clientName, m.workspaceRoot, args)
 	case "save":
@@ -2949,7 +2971,11 @@ func (m chatModel) View() string {
 		bottomLine, help = m.promptBox(accentStyle.Render(newChatQuestion)), helpStyle.Render(newChatConfirmHelpText)
 	}
 
-	return header + "\n" + m.viewport.View() + "\n" + bottomLine + "\n" + m.withStatusLine(help)
+	transcript := m.viewport.View()
+	if m.mcpPanel != nil {
+		transcript = m.renderMCPPanel(m.viewport.Width, m.viewport.Height)
+	}
+	return header + "\n" + transcript + "\n" + bottomLine + "\n" + m.withStatusLine(help)
 }
 
 func (m chatModel) slashMatches() []slashDef {
@@ -3366,6 +3392,16 @@ func (m *chatModel) boundPaste(msg tea.KeyMsg) tea.KeyMsg {
 	limit := m.input.CharLimit
 	if limit <= 0 {
 		limit = 4000 // an input with no limit of its own still gets one here
+	}
+	// A paste into the MCP panel is servers' JSON, read whole rather than put
+	// in the box: a whole config is longer than the box holds (mcppaste.go).
+	if m.mcpPanel != nil && msg.Paste {
+		if len(msg.Runes) <= mcpPasteMax {
+			return msg
+		}
+		m.mcpPanel.pasteCut = true
+		msg.Runes = msg.Runes[:mcpPasteMax]
+		return msg
 	}
 	if len(msg.Runes) <= limit {
 		return msg

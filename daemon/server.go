@@ -936,7 +936,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		// from the client AFTER its request: an approval answer comes back on
 		// this same connection, needs this same decoder, and needs lc to widen
 		// the idle deadline to human scale for the duration of the ask.
-		s.runAgentTurn(withClientCaps(ctx, hsReq), enc, dec, lc, promptReq, decision.Slug, messages, routing, &full, spec, task)
+		s.runAgentTurn(withClientName(withClientCaps(ctx, hsReq), hsReq), enc, dec, lc, promptReq, decision.Slug, messages, routing, &full, spec, task)
 		return
 	}
 
