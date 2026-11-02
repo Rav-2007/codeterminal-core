@@ -26,7 +26,22 @@ while read -r name spec; do
   case "${name:-}" in ""|\#*|GOTOOLCHAIN) continue ;; esac
   [ -z "${spec:-}" ] && continue
   echo "install-tools: $name <- $spec (GOTOOLCHAIN=$toolchain)"
-  if GOTOOLCHAIN="$toolchain" go install "$spec"; then
+  # proxy.golang.org and sum.golang.org occasionally drop the connection mid
+  # fetch (HTTP/2 "stream error ... INTERNAL_ERROR") -- seen 2026-11-02 on
+  # bodyclose's go.mod lookup, nothing to do with this repo's code or pins.
+  # Three tries with a short backoff absorbs that without masking a real
+  # failure: a bad version or an unreachable module still exhausts the
+  # retries and fails the job.
+  ok=0
+  for attempt in 1 2 3; do
+    if GOTOOLCHAIN="$toolchain" go install "$spec"; then
+      ok=1
+      break
+    fi
+    echo "install-tools: $name attempt $attempt/3 failed" >&2
+    [ "$attempt" -lt 3 ] && sleep $((attempt * 5))
+  done
+  if [ "$ok" -eq 1 ]; then
     installed=$((installed + 1))
   else
     echo "install-tools: FAILED to install $name from $spec" >&2
