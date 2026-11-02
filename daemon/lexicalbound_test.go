@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,7 +22,8 @@ import (
 // Durations here are WALL-CLOCK. Every bound compares against a figure an order
 // of magnitude away (12.5 s against 1 s, 3.6 s against 1 s), so machine speed
 // cannot decide an outcome. The DETERMINISTIC facts -- which error is returned,
-// whether the tier ran, what the client is told -- are asserted exactly.
+// whether the tier ran, what the client is told -- are asserted exactly. The
+// prompt-path test has no duration at all; see its comment.
 
 // DERIVED FROM THE BOUND ITSELF, not tuned on this machine.
 //
@@ -34,9 +37,6 @@ const (
 	// cannot fail it; far enough below the 12.47 s an unbounded 400k query cost
 	// that a regression cannot hide under it.
 	lexicalRefusalCeiling = 10 * lexicalBoundBudget
-	// gatherContext runs the semantic tier as well as the lexical one, so it is
-	// allowed twice the room for work that is not what this test is about.
-	lexicalGatherCeiling = 2 * lexicalRefusalCeiling
 )
 
 func boundTestChunks(n int) []Chunk {
@@ -120,20 +120,50 @@ func TestLexicalBound_OverTheBoundTheTierDeclinesImmediately(t *testing.T) {
 	}
 }
 
+// recordingLexical is the real lexical store with every Search recorded: how
+// long the query was, and whether the store declined it.
+type recordingLexical struct {
+	LexicalStore
+	mu       sync.Mutex
+	searches []recordedSearch
+}
+
+type recordedSearch struct {
+	queryLen int
+	declined bool
+}
+
+func (r *recordingLexical) Search(ctx context.Context, query string, k int) ([]Chunk, error) {
+	hits, err := r.LexicalStore.Search(ctx, query, k)
+	r.mu.Lock()
+	r.searches = append(r.searches, recordedSearch{queryLen: len(query), declined: errors.Is(err, errLexicalQueryTooLong)})
+	r.mu.Unlock()
+	return hits, err
+}
+
 // THE ONE I PREDICTED WOULD FAIL FIRST TIME. A bound applied at handleSearch
 // while gatherContext has already paid the cost is not a fix, it is a
-// relocation. So the PROMPT path is measured, not just the search handler.
+// relocation. So the PROMPT path is checked, not just the search handler.
+//
+// CHECKED BY WHAT RAN, NOT BY HOW LONG IT TOOK. The 12.47 s was one FTS5 MATCH
+// built from the whole prompt. The test asserts that no MATCH over the bound ran
+// on this path: every Search it made on an over-bound query came back declined,
+// before the phrase is built (FTSChunkStore.searchWith). The wall-clock ceiling
+// this replaced timed everything else gatherContext does with a 400k prompt --
+// the prompt classifiers and the rerank each scan all of it -- and failed on a
+// loaded runner with the bound in place.
 func TestLexicalBound_ThePromptPathDoesNotPayTheCostEither(t *testing.T) {
 	dir := t.TempDir()
-	lexical, err := NewFTSChunkStore(dir)
+	fts, err := NewFTSChunkStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lexical.Close()
+	defer fts.Close()
 	chunks := boundTestChunks(200)
-	if err := lexical.Upsert(t.Context(), chunks); err != nil {
+	if err := fts.Upsert(t.Context(), chunks); err != nil {
 		t.Fatal(err)
 	}
+	lexical := &recordingLexical{LexicalStore: fts}
 
 	var logbuf bytes.Buffer
 	// No workspace: these chunks exist only in the stores, and a daemon WITH a
@@ -147,15 +177,14 @@ func TestLexicalBound_ThePromptPathDoesNotPayTheCostEither(t *testing.T) {
 		retrievalTopK: 5,
 	}
 
-	start := time.Now()
 	outcome := srv.gatherContext(t.Context(), strings.Repeat("x", 400000))
-	elapsed := time.Since(start)
 
-	// Measured 12.47 s in the lexical tier alone before the bound. Twice the
-	// refusal ceiling because gatherContext also runs the semantic tier.
-	if elapsed > lexicalGatherCeiling {
-		t.Errorf("gatherContext on a 400k prompt took %s; the bound is not on this path and the cost "+
-			"has only moved", elapsed)
+	// Before the bound, the lexical tier ran a MATCH on all 400,000 characters.
+	for _, s := range lexical.searches {
+		if s.queryLen > maxLexicalQueryChars && !s.declined {
+			t.Errorf("gatherContext ran the lexical tier on a %d-char query, over the %d-char bound; "+
+				"the bound is not on this path and the cost has only moved", s.queryLen, maxLexicalQueryChars)
+		}
 	}
 	// NOT A REFUSAL. The turn still gets grounded, by the semantic tier.
 	if outcome.Skipped {
