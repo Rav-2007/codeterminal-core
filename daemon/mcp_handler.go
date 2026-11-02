@@ -418,6 +418,7 @@ func (s *Server) mcpStoreBlockWith(ctx context.Context, name string, srv MCPServ
 		}
 		return protocol.MCPResponse{
 			Ok: false, AgentMode: s.cfg.MCP.Enabled, NeedsAcknowledgement: true, Detail: warning,
+			Preview: s.previewInfo(name, srv, req.EnvValues, headerValues),
 		}
 	}
 
@@ -462,6 +463,43 @@ func (s *Server) mcpStoreBlockWith(ctx context.Context, name string, srv MCPServ
 		resp.Notes = append(resp.Notes, agentModeOffNote(s.configPathOrDefault()))
 	}
 	return resp
+}
+
+// previewInfo is srv as the acknowledged add would store it, in parts, for a
+// client to show before the user agrees -- several servers side by side, when
+// they were pasted together. Names only: a given value is said to be given
+// (EnvStored), never repeated.
+func (s *Server) previewInfo(name string, srv MCPServerConfig, envValues, headerValues map[string]string) *protocol.MCPServerInfo {
+	info := &protocol.MCPServerInfo{
+		Name: name, Command: commandLine(srv), Source: protocol.MCPSourceUser, Transport: strings.ToLower(srv.Type),
+		Program: srv.Command, Args: srv.Args, Env: maskedEnvNames(srv.Env), Cwd: srv.Cwd,
+		EnvOptional: maskedEnvNames(srv.EnvOptional),
+	}
+	if srv.remote() {
+		info.URL = shownURL(srv.URL)
+		info.Headers = sortedStringKeys(srv.Headers)
+		for _, h := range info.Headers {
+			if _, given := headerValues[h]; given || srv.Headers[h] != "" {
+				continue
+			}
+			if _, stored := s.mcpSecrets.header(name, h); !stored {
+				info.HeadersMissing = append(info.HeadersMissing, h)
+			}
+		}
+	}
+	for _, n := range srv.Env {
+		if _, given := envValues[n]; given {
+			info.EnvStored = append(info.EnvStored, n)
+		}
+	}
+	for _, n := range s.keysMissing(name, srv) {
+		if _, given := envValues[n]; !given {
+			info.EnvMissing = append(info.EnvMissing, n)
+		}
+	}
+	info.EnvStored, info.EnvMissing = maskedEnvNames(info.EnvStored), maskedEnvNames(info.EnvMissing)
+	info.StatusLine = mcpStatusLine(*info)
+	return info
 }
 
 // agentModeOffNote says that a stored server will not run yet, and why.
@@ -565,6 +603,14 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 					"fine: Mochiii has no value for %s, which it reads. %s", done, name, err,
 					strings.Join(missing, ", "), s.setKeyAdvice(name, missing)), notes
 			}
+			// A SERVER THAT SIGNS ITS USERS IN answered, and asked for a
+			// sign-in: it is added and right, and waiting on the user. FOUND
+			// 2026-11-01, adding Figma's from its setup page: "fix the command"
+			// was said about an address that was correct.
+			if strings.Contains(err.Error(), errNeedsSignIn.Error()) {
+				return fmt.Sprintf("%s %s. It answered, and needs you to sign in before its tools work: %s", done, name,
+					s.signInAdvice(name)), notes
+			}
 			return fmt.Sprintf("%s %s, but it did NOT start when tried: %v. It is saved; fix the command "+
 				"(`/mcp-server remove %s`, then add it again) or see the daemon log.", done, name, err, name), notes
 		}
@@ -609,6 +655,15 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 // setKeyAdvice is the command that gives server a value for each of keys, in
 // the words of the client asking: the CLI's `mcp set-key`, or the chat's
 // /mcp-server key, which a VS Code user also has as Set key.
+// signInAdvice is setKeyAdvice for a server waiting on a sign-in.
+func (s *Server) signInAdvice(server string) string {
+	if s.mcpFromCLI {
+		return fmt.Sprintf("`mochiii mcp auth %s`, which opens the server's own sign-in page in your browser.", server)
+	}
+	return fmt.Sprintf("in the terminal, open /mcp and press s on %s (or `/mcp-server sign-in %s`); in VS Code, "+
+		"Sign in on the server. Either opens the server's own sign-in page in your browser.", server, server)
+}
+
 func (s *Server) setKeyAdvice(server string, keys []string) string {
 	cmds := make([]string, len(keys))
 	for i, k := range keys {

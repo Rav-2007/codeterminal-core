@@ -329,23 +329,23 @@ func TestProjectHintsStateOnlyValidConfiguredRefs(t *testing.T) {
 	ws := t.TempDir()
 
 	got := strings.Join(projectHints(ws, []protocol.MCPServerInfo{
-		server("-y", "@supabase/mcp-server-supabase", "--project-ref", testRef, "--access-token", "sbp_secret123")}), "\n")
+		server("-y", "@supabase/mcp-server-supabase", "--project-ref", testRef, "--access-token", "sbp_secret123")}, mcpPlaces{}), "\n")
 	if !strings.Contains(got, "--project-ref "+testRef) || !strings.Contains(got, "cannot list the account's other projects") {
 		t.Errorf("a scoped server was not described as scoped: %q", got)
 	}
 	if strings.Contains(got, "sbp_secret") {
 		t.Errorf("the hint repeated the access token: %q", got)
 	}
-	if got := strings.Join(projectHints(ws, []protocol.MCPServerInfo{server("--project-ref=" + testRef)}), ""); !strings.Contains(got, testRef) {
+	if got := strings.Join(projectHints(ws, []protocol.MCPServerInfo{server("--project-ref=" + testRef)}, mcpPlaces{}), ""); !strings.Contains(got, testRef) {
 		t.Errorf("--project-ref=<ref> was not read: %q", got)
 	}
 	for _, bad := range []string{"ABCDEFGHIJKLMNOPQRST", "short", "abcdefghijklmnopqrst; rm -rf /", "sbp_0123456789abcdef0123"} {
-		got := strings.Join(projectHints(ws, []protocol.MCPServerInfo{server("--project-ref", bad)}), "")
+		got := strings.Join(projectHints(ws, []protocol.MCPServerInfo{server("--project-ref", bad)}, mcpPlaces{}), "")
 		if strings.Contains(got, bad) || !strings.Contains(got, "not a valid project reference") {
 			t.Errorf("invalid ref %q: %q", bad, got)
 		}
 	}
-	if got := projectHints(ws, []protocol.MCPServerInfo{server("-y", "@supabase/mcp-server-supabase")}); len(got) != 0 {
+	if got := projectHints(ws, []protocol.MCPServerInfo{server("-y", "@supabase/mcp-server-supabase")}, mcpPlaces{}); len(got) != 0 {
 		t.Errorf("an unscoped server with no linked folder produced hints: %v", got)
 	}
 
@@ -358,11 +358,11 @@ func TestProjectHintsStateOnlyValidConfiguredRefs(t *testing.T) {
 	if err := os.WriteFile(refFile, []byte(testRef+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(projectHints(ws, []protocol.MCPServerInfo{server()}), ""); !strings.Contains(got, "linked to Supabase project "+testRef) {
+	if got := strings.Join(projectHints(ws, []protocol.MCPServerInfo{server()}, mcpPlaces{}), ""); !strings.Contains(got, "linked to Supabase project "+testRef) {
 		t.Errorf("the linked project was not stated: %q", got)
 	}
 	// No Supabase server configured: the linked folder is not mentioned.
-	if got := projectHints(ws, []protocol.MCPServerInfo{{Name: "github", Program: "docker"}}); len(got) != 0 {
+	if got := projectHints(ws, []protocol.MCPServerInfo{{Name: "github", Program: "docker"}}, mcpPlaces{}); len(got) != 0 {
 		t.Errorf("a linked ref was stated with no Supabase server: %v", got)
 	}
 	// An invalid or oversized file, or a link, is ignored.
@@ -370,7 +370,7 @@ func TestProjectHintsStateOnlyValidConfiguredRefs(t *testing.T) {
 		if err := os.WriteFile(refFile, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got := projectHints(ws, []protocol.MCPServerInfo{server()}); len(got) != 0 {
+		if got := projectHints(ws, []protocol.MCPServerInfo{server()}, mcpPlaces{}); len(got) != 0 {
 			t.Errorf("file %q produced %v", content, got)
 		}
 	}
@@ -382,7 +382,7 @@ func TestProjectHintsStateOnlyValidConfiguredRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, refFile); err == nil {
-		if got := projectHints(ws, []protocol.MCPServerInfo{server()}); len(got) != 0 {
+		if got := projectHints(ws, []protocol.MCPServerInfo{server()}, mcpPlaces{}); len(got) != 0 {
 			t.Errorf("a symlinked project-ref was followed: %v", got)
 		}
 	}

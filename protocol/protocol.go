@@ -1857,6 +1857,12 @@ type MCPRequest struct {
 	// Digest is approve's echo of the definition the warning described
 	// (MCPResponse.Digest): a definition changed in between is not approved.
 	Digest string `json:"digest,omitempty"`
+
+	// Replace makes add_json replace a server the user added under the same
+	// name, as update does for add. Without it a name already added is
+	// refused, so a pasted entry never overwrites one unasked. A daemon that
+	// predates the field ignores it, and refuses the name as before.
+	Replace bool `json:"replace,omitempty"`
 }
 
 // MCPCwdWorkspace is the one value MCPRequest.Cwd takes besides empty.
@@ -2020,6 +2026,13 @@ type MCPResponse struct {
 	// request carried no acknowledgement. Detail then says what the server
 	// would be able to do.
 	NeedsAcknowledgement bool `json:"needs_acknowledgement,omitempty"`
+
+	// Preview, with NeedsAcknowledgement, is the server that would be stored,
+	// in parts: Command (the exact program and arguments) or URL, Env and
+	// Headers by name. EnvStored names the values the request gave, which the
+	// acknowledged add keeps in the key file; EnvMissing and HeadersMissing,
+	// what it would have no value for. Names only, never a value.
+	Preview *MCPServerInfo `json:"preview,omitempty"`
 
 	// Detail is what happened, in a sentence or two. Notes are consequences
 	// worth saying separately. Both are safe to print.

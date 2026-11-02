@@ -32,8 +32,10 @@ import (
 // the reason each gave, the ones paused. Like the reach section, it ends with
 // the instruction to answer from it.
 
-const agentSetupHeader = "ABOUT THIS MOCHIII -- the setup the user sees in Mochiii's own pages " +
-	"(Account, Customize, Settings), as it is for this turn. When the user asks about Mochiii, its " +
+// agentSetupHeader is the section's opening; %s is where the user sees the
+// setup (mcpPlaces.pages).
+const agentSetupHeader = "ABOUT THIS MOCHIII -- the setup the user sees %s, as it is for this turn. When the " +
+	"user asks about Mochiii, its " +
 	"version or model, or which MCP servers or tools you have, answer from this list. Never call " +
 	"your tools \"builtin\" or a \"lane\", and never show their internal names (builtin__read_file): " +
 	"say what they do."
@@ -70,11 +72,13 @@ type setupTools struct {
 // agentSetup is the section. servers are this turn's configured servers
 // (serverInfos, read after the registry was built, so State is this turn's);
 // tools are the third-party tools offered and findable; withheld is set in a
-// mode that connects no third-party server; hints are project facts read from
-// configuration (projectHints).
-func agentSetup(version, model, base, workspace string, servers []protocol.MCPServerInfo, tools setupTools, withheld bool, hints ...string) string {
+// mode that connects no third-party server; places is where the user's client
+// manages servers; hints are project facts read from configuration
+// (projectHints).
+func agentSetup(version, model, base, workspace string, servers []protocol.MCPServerInfo, tools setupTools, withheld bool,
+	places mcpPlaces, hints ...string) string {
 	var b strings.Builder
-	b.WriteString(agentSetupHeader)
+	fmt.Fprintf(&b, agentSetupHeader, places.pages())
 
 	fmt.Fprintf(&b, "\n- Mochiii version %s.", version)
 	if model != "" {
@@ -89,17 +93,17 @@ func agentSetup(version, model, base, workspace string, servers []protocol.MCPSe
 	}
 
 	if len(servers) == 0 {
-		b.WriteString("\n- MCP servers: none added. The user adds them in Customize > MCP (its Marketplace, " +
-			"or Add Server).")
+		b.WriteString("\n- MCP servers: none added. The user adds them " + places.add() + ".")
+		b.WriteString(places.pasteRule())
 		return b.String()
 	}
-	b.WriteString("\n- MCP servers the user added (Customize > MCP):")
+	b.WriteString("\n- MCP servers the user added (" + places.list() + "):")
 	for _, s := range servers {
 		fmt.Fprintf(&b, "\n  - %s: ", s.Name)
 		switch {
 		case s.Approval == protocol.MCPApprovalPending:
 			b.WriteString("PROPOSED by this project's .mcp.json and not approved, so it is not started. Only the " +
-				"user can approve it (Approve on it in Customize > MCP, or `mcp approve`); you cannot.")
+				"user can approve it (" + places.approve(s.Name) + "); you cannot.")
 		case s.Approval == protocol.MCPApprovalRejected:
 			b.WriteString("proposed by this project and rejected by the user, so it is not started.")
 		case s.Disabled:
@@ -108,16 +112,16 @@ func agentSetup(version, model, base, workspace string, servers []protocol.MCPSe
 			b.WriteString("not started in this mode, so its tools are not offered this turn.")
 		case s.State == protocol.MCPStateNeedsAuth:
 			b.WriteString("NEEDS THE USER TO SIGN IN, so none of its tools are available. Only the user can: with " +
-				"Sign in on the server in Customize > MCP, which opens their browser. Tell them so.")
+				places.signIn(s.Name) + ". Tell them so.")
 		case s.State == protocol.MCPStateFailed:
 			fmt.Fprintf(&b, "FAILED TO START this turn, so none of its tools are available. It said: %q.", s.StateDetail)
 			if len(s.EnvMissing) > 0 {
-				fmt.Fprintf(&b, " It has no value for %s: the user sets it with Set key on the server in "+
-					"Customize > MCP.", strings.Join(s.EnvMissing, ", "))
+				fmt.Fprintf(&b, " It has no value for %s: the user sets it with %s.", strings.Join(s.EnvMissing, ", "),
+					places.setKey(s.Name, s.EnvMissing))
 			}
 		case len(s.HeadersMissing) > 0 && s.State != protocol.MCPStateRunning:
 			fmt.Fprintf(&b, "has no value for its %s header, so it will likely refuse every call; the user sets it "+
-				"with Set key on the server in Customize > MCP.", strings.Join(s.HeadersMissing, ", "))
+				"with %s.", strings.Join(s.HeadersMissing, ", "), places.setHeader(s.Name, s.HeadersMissing))
 		case len(tools.offered[s.Name])+len(tools.findable[s.Name]) > 0:
 			if s.URL != "" {
 				fmt.Fprintf(&b, "a remote server at %s (a call SENDS its arguments there); ", remoteHost(s.URL))
@@ -142,6 +146,7 @@ func agentSetup(version, model, base, workspace string, servers []protocol.MCPSe
 	for _, h := range hints {
 		b.WriteString("\n- " + h)
 	}
+	b.WriteString(places.pasteRule())
 	b.WriteString(evidenceRule)
 	return b.String()
 }
@@ -176,7 +181,7 @@ const maxProjectRefFileBytes = 64
 //
 // Only a valid ref is repeated. Nothing else from a server's arguments is: they
 // can hold an --access-token.
-func projectHints(workspace string, servers []protocol.MCPServerInfo) []string {
+func projectHints(workspace string, servers []protocol.MCPServerInfo, places mcpPlaces) []string {
 	var hints []string
 	supabase := false
 	for _, s := range servers {
@@ -195,7 +200,7 @@ func projectHints(workspace string, servers []protocol.MCPServerInfo) []string {
 		default:
 			hints = append(hints, fmt.Sprintf("%s is started with a --project-ref that is not a valid project "+
 				"reference (twenty lower-case letters and digits), so do not use it; the user can fix it with "+
-				"Change on the server in Customize > MCP.", s.Name))
+				"%s.", s.Name, places.change(s.Name)))
 		}
 	}
 	if supabase && workspace != "" {
@@ -266,14 +271,15 @@ func (s *Server) withAgentSetup(ctx context.Context, registry *mcp.Registry, mod
 	}
 	servers := s.serverInfos(cfg)
 	_, base := s.credentials()
+	places := mcpPlacesFor(ctx)
 	return withSystemNote(messages, agentSetup(daemonVersion, model, base, s.workspace,
-		servers, tools, modeWithholdsLaneB(mode), projectHints(s.workspace, servers)...))
+		servers, tools, modeWithholdsLaneB(mode), places, projectHints(s.workspace, servers, places)...))
 }
 
 // unavailableServerDetail is the notice for one server that would not start:
 // which one, the reason it gave, and -- when it is missing a key -- where the
 // key goes. It used to be the same sentence for every server, naming none.
-func (s *Server) unavailableServerDetail(err error) string {
+func (s *Server) unavailableServerDetail(ctx context.Context, err error) string {
 	cfg, _ := s.agentConfig()
 	for _, info := range s.serverInfos(cfg) {
 		if info.State != protocol.MCPStateFailed || !strings.HasPrefix(err.Error(), "server "+info.Name+":") {
@@ -281,7 +287,8 @@ func (s *Server) unavailableServerDetail(err error) string {
 		}
 		detail := fmt.Sprintf("MCP server %s did not start (%s), so its tools are missing from this turn.", info.Name, info.StateDetail)
 		if len(info.EnvMissing) > 0 {
-			detail += fmt.Sprintf(" It needs %s: set it with Set key on %s in Customize > MCP.", strings.Join(info.EnvMissing, ", "), info.Name)
+			detail += fmt.Sprintf(" It needs %s: set it with %s.", strings.Join(info.EnvMissing, ", "),
+				mcpPlacesFor(ctx).setKey(info.Name, info.EnvMissing))
 		}
 		return detail
 	}

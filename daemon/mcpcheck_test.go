@@ -195,12 +195,15 @@ func TestAnotherClientsEntryBecomesABlockAndKeys(t *testing.T) {
 	entry, name, notes, err := parseClientServerJSON([]byte(`{"mcpServers":{"perplexity":{"command":"npx",` +
 		`"args":["-y","@perplexity-ai/mcp-server"],"env":{"PERPLEXITY_API_KEY":"pplx-abc","PASS":"${PASS}",` +
 		`"MAPPED":"Bearer ${TOKEN}"},"disabled":false}}}`))
-	if err != nil || name != "perplexity" || len(notes) != 1 {
+	if err != nil || name != "perplexity" || len(notes) != 0 {
 		t.Fatalf("parse: name %q notes %v err %v", name, notes, err)
 	}
-	srv, values, _, _, err := blockFromClientEntry(entry)
+	srv, values, _, notes, err := blockFromClientEntry(entry)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], `"disabled": false is left out`) {
+		t.Errorf("notes %v: want one saying disabled:false was left out, and why", notes)
 	}
 	if !slices.Equal(srv.Env, []string{"PASS", "PERPLEXITY_API_KEY"}) || srv.EnvMap["MAPPED"] != "Bearer ${TOKEN}" ||
 		values["PERPLEXITY_API_KEY"] != "pplx-abc" || len(values) != 1 {
@@ -208,9 +211,34 @@ func TestAnotherClientsEntryBecomesABlockAndKeys(t *testing.T) {
 	}
 }
 
+// FOUND 2026-11-01: Figma's setup page gives a url and nothing else, as
+// Cursor's config does, and it was refused for want of a "type".
+func TestAnEntryWithOnlyAURLIsARemoteHTTPServer(t *testing.T) {
+	entry, name, _, err := parseClientServerJSON([]byte(`{"mcpServers":{"figma":{"url":"https://mcp.figma.com/mcp",` +
+		`"headers":{"Authorization":"Bearer ` + secretSentinel + `"}}}}`))
+	if err != nil || name != "figma" {
+		t.Fatalf("parse: name %q err %v", name, err)
+	}
+	srv, _, headerValues, notes, err := blockFromClientEntry(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.Type != "http" || srv.URL != "https://mcp.figma.com/mcp" || srv.Command != "" {
+		t.Errorf("block %+v", srv)
+	}
+	if headerValues["Authorization"] != "Bearer "+secretSentinel {
+		t.Errorf("the header's value was not kept for the key file: %v", headerValues)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], `"sse"`) {
+		t.Errorf("notes %v: want one saying it was taken as http, and what to do if not", notes)
+	}
+}
+
 func TestAnEntryThatCannotBeAddedSaysWhyWithoutQuotingIt(t *testing.T) {
 	for _, c := range []struct{ json, want string }{
-		{`{"url":"https://x.example/mcp","headers":{"Authorization":"Bearer ` + secretSentinel + `"}}`, `has a "url" but no "type"`},
+		{`{"url":"https://x.example/mcp","command":"npx","headers":{"Authorization":"Bearer ` + secretSentinel + `"}}`,
+			`not typed as a remote server`},
+		{`{"type":"stdio","url":"https://x.example/mcp"}`, `not typed as a remote server`},
 		{`{"type":"ws","url":"wss://x.example/mcp"}`, "WebSocket"},
 		{`{"args":["x"]}`, `no "command"`},
 		{`not json ` + secretSentinel, "not a JSON object"},

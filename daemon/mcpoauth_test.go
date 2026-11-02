@@ -139,6 +139,24 @@ func waitSignedIn(t *testing.T, s *Server, id string) protocol.MCPResponse {
 	return protocol.MCPResponse{}
 }
 
+// FOUND 2026-11-01, adding Figma's server from its setup page: the add said
+// "fix the command" about an address that was right. A server that asks for a
+// sign-in is added and waiting on the user, and the answer says how to sign in.
+func TestAddingAServerThatSignsYouInSaysToSignIn(t *testing.T) {
+	f := newFakeOAuth(t)
+	s := mcpAdminTestServer(t)
+	withKeyFile(t, s)
+	resp := addRemote(t, s, "signed", f.ts.URL+"/mcp", nil)
+	if !resp.Ok || !strings.Contains(resp.Detail, "needs you to sign in") || !strings.Contains(resp.Detail, "press s on signed") ||
+		strings.Contains(resp.Detail, "fix the command") {
+		t.Errorf("the add's answer: %+v", resp)
+	}
+	s.mcpFromCLI = true
+	if got := s.signInAdvice("signed"); !strings.Contains(got, "`mochiii mcp auth signed`") || strings.Contains(got, "/mcp") {
+		t.Errorf("the CLI's advice: %q", got)
+	}
+}
+
 func TestSigningInToARemoteServer(t *testing.T) {
 	f := newFakeOAuth(t)
 	s := mcpAdminTestServer(t)
