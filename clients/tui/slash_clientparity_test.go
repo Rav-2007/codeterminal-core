@@ -242,6 +242,8 @@ func parseVSCodeCatalog(t *testing.T) map[string]tsSlashDef {
 // summaryMayDiffer lists commands whose one-line summary is ALLOWED to differ,
 // with the reason. Anything not listed here must match exactly.
 var summaryMayDiffer = map[string]string{
+	"mcp": "the terminal's /mcp panel also adds (pasted JSON, a command or a URL), changes, pauses and removes " +
+		"servers (2026-11-01); VS Code's /mcp dialog fixes them, and adds and removes them on its Customize page",
 	"connect": "the TUI's /connect also takes `local` (or a server's name) to find a model " +
 		"server on this computer, a terminal-only feature by the owner's decision " +
 		"(2026-10-23); the extension's /connect takes a provider and a key only",
@@ -322,8 +324,6 @@ var notYetPortedToTUI = map[string]string{
 	"cost":   "the last turn's bill on its own. The TUI's /usage reports the session, which covers the same figures over a wider window",
 	"status": "workspace, model, tools, key and daemon in one answer; the terminal spreads these across /context, /account and /mcp-server",
 	"doctor": "checks the things that commonly stop a first run working; written for the install the extension has and the terminal does not",
-	"mcp": "opens a dialog of every MCP server by source, with its state and Authenticate, Set key and Check connection " +
-		"(2026-10-15); the terminal manages its servers with /mcp-server and has no such dialog yet",
 }
 
 // notYetPorted are commands the VS Code client WILL have and does not yet --

@@ -605,6 +605,7 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /connect show          # which key is in force (masked — never the key itself)
 /connect forget        # remove the stored key
 
+/mcp                   # (TUI) a panel of your MCP servers: paste JSON to add, fix, pause, remove
 /mcp-server            # the tools the running daemon offers, and its MCP servers
 /mcp-server add files npx -y @modelcontextprotocol/server-filesystem ~/notes
 /mcp-server remove files   # (TUI) add or remove an MCP server of your own
@@ -1051,11 +1052,71 @@ Two trust lanes, and **which map a server sits in *is* its lane** — there is n
 - **`mcp.builtin`** — tools compiled into the daemon, confined by the same
   resolver that gates model-proposed edits. **None of them writes:**
   `propose_edit` files a change into the normal five-gate review.
-- **`mcp.servers`** — MCP servers you configure, spawned as stdio subprocesses.
-  Ordinary programs with your full access. **Not sandboxed**, and each needs
+- **`mcp.servers`** — MCP servers you configure: programs spawned as stdio
+  subprocesses — ordinary programs with your full access, **not sandboxed** —
+  or remote servers reached over `http` (streamable HTTP) or `sse`, at an
+  `https` address (plain `http` only for this machine). Each needs
   `acknowledged_unconfined: true` before it resolves to anything runnable.
 
-**Adding an MCP server of your own.** In the TUI, with any stdio MCP server:
+**The `/mcp` panel (TUI).** `/mcp` opens a panel over the chat listing every
+server with its state, those that need you first (a key, a sign-in, an
+approval). Enter opens a server's page, which says what to press next: `k` a
+key or `h` a header (typed hidden), `s` sign in, `c` check, space pause or
+resume, `e` change, `x` twice to remove.
+
+**Pasting servers into it.** Paste a server's JSON straight into the open panel
+— no key first; `a` opens a box for a command or a URL instead. The panel reads
+these shapes, and lists the servers in the order they were written:
+
+| Paste | From |
+|---|---|
+| `{"mcpServers": {"a": {...}, "b": {...}}}` | Claude Desktop, Cursor, Cline, Claude Code; a whole config file is fine — its other settings are left alone, and the review says so |
+| `{"servers": {"a": {...}}}` | VS Code's `mcp.json` |
+| `{"a": {...}, "b": {...}}` | the block on its own, when every value is a server |
+| `{"command": ..., "args": [...], "env": {...}}` | one program with no name: the panel asks for one |
+| `{"url": ..., "type": "http"\|"sse"\|"streamable-http", "headers": {...}}` | one remote server with no name: likewise |
+
+A server is a program (`command`, `args`, `env`, and `cwd` only as the
+project's folder) or a remote server (`url`, `type`, `headers`; a `url` with no
+`type` is taken as `http`, and the review says so). Cline's `transportType` and
+Windsurf's `serverUrl` are read as `type` and `url`. Cline's `autoApprove`,
+`alwaysAllow` and `timeout`, and `"disabled": false`, are left out with a note
+saying why — every tool still asks before it runs. **Any other field refuses
+the paste, naming the field**, as does JSON that does not parse, a list, an
+object with no servers, a name given twice, a value that is not a server,
+`"disabled": true`, a remote entry that also names a program, or a server the
+daemon refuses (a name with capitals, say). A refused paste is put back in the
+box to fix; nothing from it is added.
+
+Then, for every server in the paste:
+
+1. **One review page** shows them all: the exact command and arguments a
+   program will run as you, or the exact address a remote server is sent to;
+   which keys the paste gave (kept in `~/.mochiii/mcp-secrets.json`) and
+   which are missing. A name you already added is a **conflict**: that server
+   can replace yours, or be skipped. A name set up elsewhere (the daemon's
+   config, the project) can only be skipped.
+2. **One server at a time**: its full warning, and its name typed to add it
+   (or to replace yours). Enter on an empty line skips it; esc cancels them
+   all. There is no "all of them". **Nothing is added until the last answer.**
+3. **Then each agreed server is added and started**, in turn. A key it has no
+   value for — left empty, or a placeholder such as `YOUR_API_KEY`, `<token>`
+   or `Bearer YOUR_TOKEN` — is asked for then, hidden, and the server started
+   again with it. One server failing does not stop the rest.
+4. **A line per server** says how it went: connected (N tools), needs a
+   sign-in (and how), needs a key (which), failed to start (why), or skipped.
+   The same lines go into the transcript.
+
+A key in the paste is moved into `~/.mochiii/mcp-secrets.json` by the daemon and
+is never shown — not on the panel, in the transcript, in the daemon's log or in
+the up-arrow recall; the panel names it, given. **A paste never presses a
+panel key.** A terminal with bracketed paste (most) sends it as one paste. One
+without sends it as typing, cut at every space and newline; the panel holds
+each key for 25 ms before it acts, so keys arriving together — a paste — are
+taken as text, and a newline inside it is a space. A paste is read whole up to
+64 KiB.
+
+**Adding an MCP server by command.** In the TUI, with any MCP server:
 
 ```text
 /mcp-server add files npx -y @modelcontextprotocol/server-filesystem ~/notes
@@ -1612,7 +1673,7 @@ VS Code downloads would be quarantined unsigned
 |---|---|
 | **Retrieval** | No *full* index build on start or per request — the running daemon's watcher does keep it current per file; no query rewriting; no multi-hop. Re-running `index` rebuilds chunk-by-chunk keyed by a deterministic ID rather than diffing |
 | **Editing** | No *scored or approximate* `SEARCH` matching — the matcher normalizes (line endings, trailing space, indentation, unicode) and then matches exactly, and **ambiguous is always a refusal**, never a guess ([`match.go`](../editapply/match.go)). The replacement is then written back in the file's own line-ending convention, so an LF patch never leaves a CRLF file mixed ([`lineendings.go`](../editapply/lineendings.go)). No mid-stream parsing: edits are read from the completed response. A unified diff **is** read — each hunk becomes one SEARCH/REPLACE block and goes through the same gates — but it is never what the model is instructed to produce. File *creation* **is** supported — see [Editing](#editing) |
-| **Agent mode** | No OS sandboxing of third-party servers — consent and audit are the protection, and the docs say so; stdio only, so no remote MCP and no new egress; tools only, no resources or prompts; no hot-reload of `models.json` (a server added with `/mcp-server add` is picked up at the next question); `/mcp-server add` in the TUI and CLI only; tool results never persist into history |
+| **Agent mode** | No OS sandboxing of third-party servers — consent and audit are the protection, and the docs say so; a remote server is reached only at the address you agreed to, over https (plain http for this machine only), and no WebSocket; tools only, no resources or prompts; no hot-reload of `models.json` (a server added with `/mcp-server add` or the `/mcp` panel is picked up at the next question); tool results never persist into history |
 | **Skills** | **Removed.** `daemon/skills.go` and its CLI were deleted by `5453ba8` under decision D8 — the store had no callers. This row described the surviving plumbing until 2026-09-21; there is none |
 | **Routing** | `ghost_text` and `reasoning` stay inactive; VS Code has no model picker UI yet |
 

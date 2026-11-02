@@ -397,6 +397,13 @@ func (m chatModel) handleMCPServerCommand(args string) (tea.Model, tea.Cmd) {
 // handleMCPResult shows the daemon's answer, and opens the confirmation when an
 // add is waiting for one.
 func (m chatModel) handleMCPResult(msg mcpResultMsg) (tea.Model, tea.Cmd) {
+	// The list the panel asked for is the panel's, and only the panel's.
+	if msg.req.Action == protocol.MCPActionServers {
+		return m.handleMCPPanelServers(msg)
+	}
+	// A question already open in the box -- a name to agree to, a hidden key --
+	// keeps its words in the panel over an answer that arrives meanwhile.
+	asking := m.pendingMCPAdd != nil
 	// A SIGN-IN: the address to open, then the wait, repeated until it ends.
 	// Each wait is one short request; the daemon holds the browser's return.
 	if msg.err == nil && msg.resp.Error == "" && msg.resp.AuthState == protocol.MCPAuthPending {
@@ -415,33 +422,89 @@ func (m chatModel) handleMCPResult(msg mcpResultMsg) (tea.Model, tea.Cmd) {
 		lastAuthID = ""
 	}
 	text := formatMCPResult(msg)
-	if msg.err == nil && msg.resp.Error == "" && msg.resp.NeedsAcknowledgement &&
-		(msg.req.Action == protocol.MCPActionAdd || msg.req.Action == protocol.MCPActionApprove) {
+	verb, confirms := mcpConfirmVerbs[msg.req.Action]
+	if msg.err == nil && msg.resp.Error == "" && msg.resp.NeedsAcknowledgement && confirms {
 		pending := msg.req
 		// An approval is of the definition the warning described, and no other.
 		pending.Digest = msg.resp.Digest
 		m.pendingMCPAdd = &pending
-		verb := map[bool]string{true: "approve", false: "add"}[pending.Action == protocol.MCPActionApprove]
-		m.input.Placeholder = "type " + sanitizeText(pending.Name) + " to " + verb + " it — anything else cancels"
-		text += "\n\nType the server's name (" + sanitizeText(pending.Name) + ") and press enter to " + verb + " it. " +
-			"Anything else, or esc, cancels and nothing is " + map[bool]string{true: "approved", false: "added"}[verb == "approve"] + "."
+		m.input.Placeholder = "type " + sanitizeText(pending.Name) + " to " + verb[0] + " it — anything else cancels"
+		text += "\n\nType the server's name (" + sanitizeText(pending.Name) + ") and press enter to " + verb[0] + " it. " +
+			"Anything else, or esc, cancels and nothing is " + verb[1] + "."
+		m.sayMCP(text, true)
+		return m, nil
 	}
-	m.appendTurn(turn{role: roleAssistant, local: true, verbatim: true, text: text})
-	m.resizeViewport()
-	m.refreshViewport()
-	if msg.err == nil && msg.resp.Ok && msg.req.Action == protocol.MCPActionAdd && msg.req.AcknowledgedUnconfined {
+	m.sayMCPUnless(asking, text, true)
+	refresh := m.refreshMCPPanel()
+	stored := msg.req.Action == protocol.MCPActionAdd || msg.req.Action == protocol.MCPActionAddJSON ||
+		msg.req.Action == protocol.MCPActionUpdate
+	if msg.err == nil && msg.resp.Ok && stored && msg.req.AcknowledgedUnconfined {
+		if m.mcpPanel != nil {
+			m.mcpPanel.focus = msg.req.Name
+		}
 		for _, info := range msg.resp.Servers {
-			if info.Name == msg.req.Name && len(info.EnvMissing) > 0 {
-				addKeys.server, addKeys.pending, addKeys.stored = info.Name, append([]string(nil), info.EnvMissing...), false
+			if info.Name == msg.req.Name {
+				addKeys.server, addKeys.pending, addKeys.stored = info.Name, missingAddKeys(info), false
 			}
 		}
-		return m.askNextAddKey()
+		next, cmd := m.askNextAddKey()
+		return next, tea.Batch(cmd, refresh)
 	}
 	if msg.req.Action == protocol.MCPActionSetEnv && addKeys.server != "" && msg.req.Name == addKeys.server {
 		addKeys.stored = addKeys.stored || (msg.err == nil && msg.resp.Ok)
-		return m.askNextAddKey()
+		next, cmd := m.askNextAddKey()
+		return next, tea.Batch(cmd, refresh)
 	}
-	return m, nil
+	// The start after a key was given: once it has answered, a pasted block
+	// goes on to its next server (mcppaste.go).
+	if msg.req.Action == protocol.MCPActionCheck && addKeys.checking != "" && msg.req.Name == addKeys.checking {
+		addKeys.checking = ""
+		return m, tea.Batch(refresh, m.addNext())
+	}
+	return m, refresh
+}
+
+// missingAddKeys is what a just-added server has no value for: its variables,
+// then its headers.
+func missingAddKeys(info protocol.MCPServerInfo) []addKey {
+	var out []addKey
+	for _, n := range info.EnvMissing {
+		out = append(out, addKey{name: n})
+	}
+	for _, h := range info.HeadersMissing {
+		out = append(out, addKey{name: h, header: true})
+	}
+	return out
+}
+
+// mcpConfirmVerbs are the requests the daemon answers with a warning to agree
+// to, with the words for agreeing and for what did not happen. An add from the
+// panel may be from JSON, or a change to one already added: each is agreed to
+// by name, exactly as an add is.
+var mcpConfirmVerbs = map[string][2]string{
+	protocol.MCPActionAdd:     {"add", "added"},
+	protocol.MCPActionAddJSON: {"add", "added"},
+	protocol.MCPActionUpdate:  {"change", "changed"},
+	protocol.MCPActionApprove: {"approve", "approved"},
+}
+
+// sayMCP puts an MCP answer in the transcript and, while the panel is open,
+// under its list: the transcript is behind the panel.
+func (m *chatModel) sayMCP(text string, verbatim bool) {
+	m.sayMCPUnless(false, text, verbatim)
+}
+
+// sayMCPUnless is sayMCP that leaves the panel's words alone when keep is set.
+func (m *chatModel) sayMCPUnless(keep bool, text string, verbatim bool) {
+	m.appendTurn(turn{role: roleAssistant, local: true, verbatim: verbatim, text: text})
+	m.resizeViewport()
+	m.refreshViewport()
+	if p := m.mcpPanel; p != nil {
+		p.loading = false
+		if !keep {
+			p.notice = text
+		}
+	}
 }
 
 // addKeys is what a just-added server reads that Mochiii has no value for,
@@ -450,14 +513,36 @@ func (m chatModel) handleMCPResult(msg mcpResultMsg) (tea.Model, tea.Cmd) {
 // every call failed. Package state, like lastAuthID: one add is open at a time.
 var addKeys struct {
 	server  string
-	pending []string // still to ask; the first is the one being asked
+	pending []addKey // still to ask; the first is the one being asked
 	stored  bool     // a value was kept: start the server again once all are answered
+	// checking is the server started again with its keys, until it answers.
+	checking string
+}
+
+// addKey is one value a just-added server has none for: a variable, or -- for
+// a remote server -- a header (a pasted "Bearer YOUR_TOKEN", 2026-11-02).
+type addKey struct {
+	name   string
+	header bool
+}
+
+func (k addKey) String() string {
+	if k.header {
+		return "its " + k.name + " header"
+	}
+	return k.name
 }
 
 // askingAddKey says whether req is the hidden prompt askNextAddKey opened.
 func askingAddKey(req protocol.MCPRequest) bool {
-	return req.Action == protocol.MCPActionSetEnv && req.HeaderName == "" && addKeys.server != "" &&
-		req.Name == addKeys.server && len(addKeys.pending) > 0 && req.EnvName == addKeys.pending[0]
+	if req.Action != protocol.MCPActionSetEnv || addKeys.server == "" || req.Name != addKeys.server || len(addKeys.pending) == 0 {
+		return false
+	}
+	k := addKeys.pending[0]
+	if k.header {
+		return req.HeaderName == k.name
+	}
+	return req.HeaderName == "" && req.EnvName == k.name
 }
 
 // askNextAddKey opens the hidden prompt for the next key, or -- when none is
@@ -467,24 +552,30 @@ func (m chatModel) askNextAddKey() (tea.Model, tea.Cmd) {
 	if len(addKeys.pending) == 0 {
 		stored := addKeys.stored
 		addKeys.server, addKeys.stored = "", false
-		if !stored {
-			return m, nil
+		// The keys of this server are answered. With none given there is
+		// nothing to try again, and a pasted block goes on at once; with one,
+		// it goes on once the server has been started with it.
+		if !stored || server == "" {
+			return m, m.addNext()
 		}
-		m.appendTurn(turn{role: roleAssistant, local: true, text: "starting " + sanitizeText(server) + " again with its key…"})
-		m.resizeViewport()
-		m.refreshViewport()
+		addKeys.checking = server
+		m.sayMCP("starting "+sanitizeText(server)+" again with its key…", false)
 		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionCheck, Name: server})
 	}
-	variable := addKeys.pending[0]
-	pending := protocol.MCPRequest{Action: protocol.MCPActionSetEnv, Name: server, EnvName: variable}
+	k := addKeys.pending[0]
+	pending := protocol.MCPRequest{Action: protocol.MCPActionSetEnv, Name: server, EnvName: k.name}
+	what, reads, example := "the value of "+sanitizeText(k.name), " reads "+sanitizeText(k.name), ""
+	if k.header {
+		pending = protocol.MCPRequest{Action: protocol.MCPActionSetEnv, Name: server, HeaderName: k.name}
+		what = "the value of the " + sanitizeText(k.name) + " header"
+		reads, example = " sends the "+sanitizeText(k.name)+" header", " (for example Bearer <token>)"
+	}
 	m.pendingMCPAdd = &pending
 	m.input.EchoMode = textinput.EchoPassword
-	m.input.Placeholder = "the value of " + sanitizeText(variable) + " — hidden; enter skips"
-	m.appendTurn(turn{role: roleAssistant, local: true, verbatim: true, text: sanitizeText(server) + " reads " +
-		sanitizeText(variable) + ", which Mochiii has no value for. Type it and press enter: it is not shown, and Mochiii " +
-		"keeps it in ~/.mochiii/mcp-secrets.json, readable only by you. Enter on its own skips it; esc skips the rest."})
-	m.resizeViewport()
-	m.refreshViewport()
+	m.input.Placeholder = what + " — hidden; enter skips"
+	m.sayMCP(sanitizeText(server)+reads+", which Mochiii has no value for. Type it"+example+" and press "+
+		"enter: it is not shown, and Mochiii keeps it in ~/.mochiii/mcp-secrets.json, readable only by you. Enter on its "+
+		"own skips it; esc skips the rest.", true)
 	return m, nil
 }
 
@@ -497,12 +588,16 @@ func (m chatModel) skipAddKeys(n int) (tea.Model, tea.Cmd) {
 	skipped := addKeys.pending[:n]
 	addKeys.pending = addKeys.pending[n:]
 	if len(skipped) > 0 {
-		names := sanitizeText(strings.Join(skipped, ", "))
-		m.appendTurn(turn{role: roleAssistant, local: true, text: "Skipped " + names + ": " + sanitizeText(addKeys.server) +
-			" stays added without it, marked as needing it. Set it later with /mcp-server key " +
-			sanitizeText(addKeys.server) + " " + sanitizeText(skipped[0]) + "."})
-		m.resizeViewport()
-		m.refreshViewport()
+		names := make([]string, len(skipped))
+		for i, k := range skipped {
+			names[i] = k.String()
+		}
+		how := "/mcp-server key " + sanitizeText(addKeys.server) + " " + sanitizeText(skipped[0].name)
+		if skipped[0].header {
+			how = "/mcp-server header " + sanitizeText(addKeys.server) + " " + sanitizeText(skipped[0].name)
+		}
+		m.sayMCP("Skipped "+sanitizeText(strings.Join(names, ", "))+": "+sanitizeText(addKeys.server)+" stays added "+
+			"without it, marked as needing it. Set it later with "+how+", or in /mcp.", false)
 	}
 	return m.askNextAddKey()
 }
@@ -581,26 +676,22 @@ func (m chatModel) answerMCPAdd(raw string) (tea.Model, tea.Cmd) {
 		if req.HeaderName != "" {
 			what = "the " + req.HeaderName + " header"
 		}
-		m.appendTurn(turn{role: roleAssistant, local: true, text: "saving the value of " + sanitizeText(what) + "…"})
-		m.resizeViewport()
-		m.refreshViewport()
+		m.sayMCP("saving the value of "+sanitizeText(what)+"…", false)
 		return m, submitMCP(m.clientName, req)
 	}
 	if raw != req.Name {
 		m.input.SetValue(raw)
 		m.input.SetCursor(len(raw))
-		m.appendTurn(turn{role: roleAssistant, local: true, text: "Not added: the server's name was not typed, so nothing was " +
-			"stored. What you typed is back in the box."})
-		m.resizeViewport()
-		m.refreshViewport()
+		m.sayMCP("Not added: the server's name was not typed, so nothing was stored. What you typed is back in the "+
+			"box.", false)
 		return m, nil
 	}
 	m.input.SetValue("")
 	req.AcknowledgedUnconfined = true
-	m.appendTurn(turn{role: roleAssistant, local: true, text: "adding " + sanitizeText(req.Name) +
-		" and starting it once to see what it offers…"})
-	m.resizeViewport()
-	m.refreshViewport()
+	m.sayMCP("adding "+sanitizeText(req.Name)+" and starting it once to see what it offers…", false)
+	if m.mcpPanel != nil {
+		m.mcpPanel.loading = true
+	}
 	return m, submitMCP(m.clientName, req)
 }
 
@@ -617,9 +708,7 @@ func (m chatModel) cancelMCPAdd() (tea.Model, tea.Cmd) {
 	}
 	m.endMCPConfirm()
 	m.input.SetValue("")
-	m.appendTurn(turn{role: roleAssistant, local: true, text: what})
-	m.resizeViewport()
-	m.refreshViewport()
+	m.sayMCP(what, false)
 	return m, nil
 }
 
