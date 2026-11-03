@@ -14,6 +14,7 @@ func forgetLocalModels(t *testing.T) {
 	clear := func() {
 		localKnown.kinds.Range(func(k, _ any) bool { localKnown.kinds.Delete(k); return true })
 		localKnown.windows.Range(func(k, _ any) bool { localKnown.windows.Delete(k); return true })
+		localKnown.noTools.Range(func(k, _ any) bool { localKnown.noTools.Delete(k); return true })
 	}
 	clear()
 	t.Cleanup(clear)
