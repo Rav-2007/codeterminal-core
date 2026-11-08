@@ -81,11 +81,18 @@ async function main(): Promise<void> {
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-vscode-user-'));
 
     try {
+      // THE TESTS CAN LOOK AT THE CHAT AS A USER DOES. A DevTools endpoint on
+      // a port the OS picks (0), loopback only, for this throwaway host: the
+      // credential-focus test (credentialFocus.test.ts) presses real keys and
+      // clicks real points in the chat webview, which nothing in the
+      // extension host can otherwise reach. The browser writes the port it
+      // chose to <user-data-dir>/DevToolsActivePort; the test reads it there.
       await runTests({
         version,
         extensionDevelopmentPath,
         extensionTestsPath,
-        launchArgs: [workspace, '--user-data-dir', userDataDir, '--disable-gpu'],
+        launchArgs: [workspace, '--user-data-dir', userDataDir, '--disable-gpu', '--remote-debugging-port=0'],
+        extensionTestsEnv: { MOCHIII_TEST_DEVTOOLS_DIR: userDataDir },
       });
     } finally {
       // THE HOST DOES NOT CLEAN UP AFTER ITSELF, and these are not small: a
