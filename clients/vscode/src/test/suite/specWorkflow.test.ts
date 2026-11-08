@@ -144,6 +144,11 @@ suite('spec workflow', () => {
     for (const want of ['1 of 3 criteria met', '✓ C1: -v prints files', '✗ C2', '? C3: documented', '    not checked']) {
       assert.ok(rep.includes(want), `report lacks ${want}:\n${rep}`);
     }
+    // A spec with no "- [ ] C1:" lines comes back with criteria: null (Go's nil
+    // slice), not []. This used to throw inside the stream handler.
+    const none = specReportText({ spec: 'specs/nocrit.md', criteria: null });
+    assert.ok(none.includes('spec check -- specs/nocrit.md: 0 of 0 criteria met'), none);
+    assert.ok(none.includes('no "- [ ] C1: ..." success criteria'), none);
     assert.strictEqual(
       taskListText([
         { id: '1', title: 'write the test', status: 'done' },

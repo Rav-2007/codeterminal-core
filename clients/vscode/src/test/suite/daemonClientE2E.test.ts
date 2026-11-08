@@ -599,7 +599,7 @@ suite('E2E daemonClient — the spec workflow on the wire', () => {
         {
           onTasks: (t) => order.push(`tasks:${t[0].status}`),
           onWorkingCopy: (w) => order.push(`working_copy:${w.checked}`),
-          onSpecReport: (r) => order.push(`spec_report:${r.criteria[0].status}`),
+          onSpecReport: (r) => order.push(`spec_report:${r.criteria?.[0]?.status}`),
           onEditProposals: () => order.push('edit_proposals'),
         },
         { spec: 'specs/v.md', mode: 'check' },

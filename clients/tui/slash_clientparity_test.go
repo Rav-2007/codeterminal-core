@@ -658,6 +658,53 @@ func TestNeutralisedGitConfigAgreesAcrossClients(t *testing.T) {
 	}
 }
 
+// THE UNKNOWN-COMMAND RULE. The VS Code client sent any "/word" it did not know
+// to the model as a billed question (/save, /resume and /history among them);
+// it now answers the way this client does, with a mirror of unknownCommandNote
+// in slashCommands.ts. The pattern decides what is a question and what is a
+// typo, and the words are what the user reads, so both are compared here.
+func TestUnknownCommandRuleAgreesAcrossClients(t *testing.T) {
+	raw, err := os.ReadFile(vscodeSlashCommands)
+	if err != nil {
+		t.Fatalf("reading the VS Code slash catalog: %v", err)
+	}
+	src := string(raw)
+
+	const marker = "export const BARE_COMMAND_WORD = /"
+	start := strings.Index(src, marker)
+	if start < 0 {
+		t.Fatal("BARE_COMMAND_WORD not found in slashCommands.ts; the VS Code client may have " +
+			"dropped the unknown-command rule this test exists to compare")
+	}
+	rest := src[start+len(marker):]
+	end := strings.Index(rest, "/;")
+	if end <= 0 {
+		t.Fatal("could not delimit the BARE_COMMAND_WORD regex literal")
+	}
+	tsPattern := strings.ReplaceAll(rest[:end], `\/`, "/")
+	if tsPattern != bareCommandWord.String() {
+		t.Errorf("the clients disagree on what a bare command word is:\n  Go:      %s\n  VS Code: %s",
+			bareCommandWord.String(), tsPattern)
+	}
+
+	// The two sentences, rendered by this client and turned into the VS Code
+	// template literals they must match.
+	plain := strings.Replace(unknownCommandNote("/zzzzzzzz"), "/zzzzzzzz", "${raw}", 1)
+	near := unknownCommandNote("/hlep")
+	if !strings.Contains(near, "did you mean /help?") {
+		t.Fatalf("unknownCommandNote(/hlep) = %q; expected a suggestion of /help", near)
+	}
+	near = strings.Replace(strings.Replace(near, "/hlep", "${raw}", 1), "/help?", "/${near}?", 1)
+	for _, want := range []string{plain, near} {
+		if !strings.Contains(src, "`"+want+"`") {
+			t.Errorf("slashCommands.ts does not say %q the way this client does", want)
+		}
+	}
+	if !strings.Contains(src, "let bestDist = 3;") {
+		t.Error("slashCommands.ts nearestCommand no longer suggests within two edits, as nearestCommand here does")
+	}
+}
+
 // The TUI half of the /init assertion. Its VS Code mirror is
 // clients/vscode/src/test/suite/localCommandsHostile.test.ts, and both exist
 // because this exact line drifted between the clients: the TUI's was corrected
