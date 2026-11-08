@@ -16,7 +16,8 @@
   /**
    * @param {any} vscode the webview API main.js acquired (it may be acquired once)
    * @param {{ openModelMenu: () => void, sendText: (t: string) => void, prefill: (t: string) => void,
-   *   focusComposer: () => void, setEffort: (e: string) => void, getEffort: () => string, closePopups: () => void }} hooks
+   *   focusComposer: () => void, setEffort: (e: string) => void, getEffort: () => string, closePopups: () => void,
+   *   credentialOpen?: () => boolean }} hooks
    */
   function init(vscode, hooks) {
     /** @type {Record<string, HTMLElement | null>} */
@@ -410,7 +411,13 @@
       if (!dlg || dlg.hidden) return;
       dlg.hidden = true;
       dlgServer = '';
-      if (dlgReturnFocus && document.body.contains(dlgReturnFocus)) dlgReturnFocus.focus();
+      // Not while a key or server form is open over it: that form has the
+      // keyboard, and handing it to the composer (where /mcp was typed) is how
+      // a key went into the chat (UI audit, 2026-11-08).
+      const keep = hooks.credentialOpen && hooks.credentialOpen();
+      if (keep) {
+        // the form keeps the keyboard
+      } else if (dlgReturnFocus && document.body.contains(dlgReturnFocus)) dlgReturnFocus.focus();
       else hooks.focusComposer();
       dlgReturnFocus = null;
     }

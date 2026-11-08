@@ -3196,8 +3196,13 @@ export function chatPanelStyles(): string {
     overflow: hidden;
   }
   /* THE MCP POP-UP (media/mcpPopup.js): the connect pop-up's look, fixed over
-     the chat and its pages rather than over the composer. */
-  .mcp-popup { position: fixed; left: 12px; right: 12px; top: 56px; bottom: auto; max-height: calc(100vh - 80px); z-index: 60; overflow-y: auto; }
+     the chat and its pages rather than over the composer. ABOVE THE /mcp
+     DIALOG (z-index 70), which opens it from "Set key…" and "Edit…": at 60 it
+     opened underneath, the dialog covered its fields, and a click on the part
+     of the key field that showed hit the dialog's backdrop -- which closed the
+     dialog and put the caret in the composer, so the key typed next went into
+     the chat (UI audit, 2026-11-08). */
+  .mcp-popup { position: fixed; left: 12px; right: 12px; top: 56px; bottom: auto; max-height: calc(100vh - 80px); z-index: 80; overflow-y: auto; }
   .mcp-pop-tabs { display: flex; gap: 4px; background: var(--ct-control-bg); border-radius: 10px; padding: 3px; }
   .mcp-pop-tab { flex: 1; border: 0; border-radius: 8px; padding: 5px 8px; background: transparent; color: var(--ct-muted); font: inherit; font-size: 12.5px; cursor: pointer; }
   .mcp-pop-tab[aria-selected="true"] { background: var(--ct-surface); color: var(--ct-ink); }

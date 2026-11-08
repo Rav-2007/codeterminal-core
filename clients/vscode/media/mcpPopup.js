@@ -14,6 +14,18 @@
 // a message back. The JSON pane can hold a key the user pasted: it is emptied
 // on close too.
 //
+// NOTHING ELSE TAKES THE KEYBOARD WHILE IT IS OPEN. Every step of it can hold
+// a key (a variable's value, a header, the key step, pasted JSON), so while it
+// is open the rest of the chat is inert: no click, no focus, no keystroke
+// reaches the composer, the /mcp dialog or anything else behind it. FOUND
+// 2026-11-08 (UI audit): opened from the /mcp dialog, the pop-up sat under it;
+// a click on the part of the key field that showed hit the dialog's backdrop,
+// which closed the dialog and handed the caret to the composer, and the key
+// typed next went into the chat -- one Enter from the model provider. The
+// pop-up is now drawn above the dialog too (.mcp-popup in chatPanel.ts).
+// main.js adds a second guard on the composer itself: while this is open it
+// refuses keys, input, pastes and drops, and refocusComposer leaves it alone.
+//
 // The host side is src/mcpPopup.ts.
 
 (function () {
@@ -21,7 +33,7 @@
 
   /**
    * @param {any} vscode the webview API main.js acquired
-   * @param {{ closePopups: () => void }} hooks
+   * @param {{ closePopups: () => void, focusComposer?: () => void }} hooks
    */
   function init(vscode, hooks) {
     /** @param {string} id */
@@ -64,9 +76,68 @@
     /** @type {{ name: string, stored: boolean, missing: boolean, header?: boolean }[]} */
     let keyVars = [];
     let busy = false;
+    /** What isolate() made inert, so release() undoes only that. @type {Element[]} */
+    let madeInert = [];
+    /** Where the keyboard was before the pop-up took it. @type {HTMLElement | null} */
+    let returnFocus = null;
 
     function isOpen() {
       return !!popup && !popup.hidden;
+    }
+
+    /**
+     * Everything outside the pop-up goes inert: the composer, the /mcp dialog
+     * behind it, the pages, the header. An inert element takes no click and no
+     * focus -- inputEl.focus() from a turn ending does nothing -- so the only
+     * place a keystroke can land is here.
+     */
+    function isolate() {
+      release();
+      for (let node = popup; node && node.parentElement && node !== document.body; node = node.parentElement) {
+        for (const sib of Array.from(node.parentElement.children)) {
+          if (sib === node || sib.hasAttribute('inert') || sib.tagName === 'SCRIPT') continue;
+          sib.setAttribute('inert', '');
+          madeInert.push(sib);
+        }
+      }
+    }
+
+    function release() {
+      for (const e of madeInert) e.removeAttribute('inert');
+      madeInert = [];
+    }
+
+    /** The field the keyboard belongs in for the step on screen. */
+    function firstField() {
+      if (!popup) return null;
+      if (keyEl && !keyEl.hidden) return keyValueEl;
+      if (confirmEl && !confirmEl.hidden) return typedEl;
+      const own = Array.from(popup.querySelectorAll('input, textarea, select')).find(
+        (e) => !(/** @type {HTMLInputElement} */ (e).disabled) && e.getClientRects().length > 0,
+      );
+      return /** @type {HTMLElement | null} */ (own || null);
+    }
+
+    /** Puts the keyboard back in the pop-up, when something outside it had it. */
+    function focusField() {
+      if (!isOpen() || !popup) return;
+      if (document.activeElement && popup.contains(document.activeElement)) return;
+      const f = firstField();
+      if (f) f.focus();
+      else popup.focus();
+    }
+
+    /** @param {HTMLElement | null | undefined} field */
+    function take(field) {
+      if (!popup) return;
+      if (popup.hidden) {
+        const a = document.activeElement;
+        returnFocus = a instanceof HTMLElement && a !== document.body ? a : null;
+      }
+      popup.hidden = false;
+      isolate();
+      if (field) field.focus();
+      focusField();
     }
 
     /** @param {string} text */
@@ -153,10 +224,22 @@
 
     function close() {
       if (!popup) return;
+      const wasOpen = !popup.hidden;
       popup.hidden = true;
+      release();
       clearFields();
       notice('');
       setBusy(false);
+      if (!wasOpen) return;
+      // Back where it came from -- the "Set key…" button in the /mcp dialog --
+      // or, when that has been redrawn, the dialog itself; the composer only
+      // when nothing else is open, and only now that every field is empty.
+      const back = returnFocus;
+      returnFocus = null;
+      const dlgTitle = document.getElementById('mcpDlgTitle');
+      if (back && back.isConnected && back.getClientRects().length > 0) back.focus();
+      else if (dlgTitle && dlgTitle.getClientRects().length > 0) dlgTitle.focus();
+      else if (hooks.focusComposer) hooks.focusComposer();
     }
 
     function cancel() {
@@ -197,8 +280,7 @@
       selectTab(remote ? 'url' : 'command');
       show('form');
       setBusy(false);
-      popup.hidden = false;
-      (mode === 'update' ? commandEl : nameEl)?.focus();
+      take(mode === 'update' ? commandEl : nameEl);
     }
 
     /** @param {any} msg */
@@ -225,8 +307,7 @@
       syncForget();
       show('key');
       setBusy(false);
-      popup.hidden = false;
-      keyValueEl?.focus();
+      take(keyValueEl);
     }
 
     function syncForget() {
@@ -318,8 +399,49 @@
       if (e.key === 'Escape') {
         e.stopPropagation();
         cancel();
+        return;
+      }
+      // Tab goes round the pop-up's own controls, as in any modal dialog,
+      // rather than out of it to the composer or out of the chat.
+      if (e.key === 'Tab' && popup) {
+        const all = Array.from(popup.querySelectorAll('button, input, select, textarea, [tabindex="0"]')).filter(
+          (x) => !(/** @type {HTMLButtonElement} */ (x).disabled) && x.getClientRects().length > 0,
+        );
+        if (all.length === 0) return;
+        const first = /** @type {HTMLElement} */ (all[0]);
+        const last = /** @type {HTMLElement} */ (all[all.length - 1]);
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     });
+    // The keyboard stays in the pop-up. Inert already refuses focus outside
+    // it; this catches whatever gets there anyway (a node added after
+    // isolate(), the frame regaining focus) and sends it back.
+    document.addEventListener(
+      'focusin',
+      (e) => {
+        if (isOpen() && popup && e.target instanceof Node && !popup.contains(e.target)) focusField();
+      },
+      true,
+    );
+    // A click outside it lands on the page body (inert content is skipped),
+    // whose default would move the keyboard there -- out of the field, so the
+    // next keystroke would go nowhere. Kept in the field instead.
+    document.addEventListener(
+      'mousedown',
+      (e) => {
+        if (isOpen() && popup && e.target instanceof Node && !popup.contains(e.target)) {
+          e.preventDefault();
+          focusField();
+        }
+      },
+      true,
+    );
 
     /** @param {any} msg */
     function handle(msg) {
@@ -355,7 +477,7 @@
       return true;
     }
 
-    return { handle, isOpen };
+    return { handle, isOpen, focusField };
   }
 
   window.MochiiiMcpPopup = { init };
