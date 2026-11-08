@@ -252,7 +252,11 @@ export interface SpecCriterionResult {
 
 export interface SpecReport {
   spec: string;
-  criteria: SpecCriterionResult[];
+  // NULL ON THE WIRE when the spec has no "- [ ] C1: ..." lines: protocol.SpecReport
+  // has no omitempty and Go encodes a nil slice as null (daemon/spec.go builds the
+  // report without a slice). Typed so the compiler makes every reader say what
+  // it does with that, rather than finding out from a TypeError mid-stream.
+  criteria: SpecCriterionResult[] | null;
 }
 
 // TaskItem mirrors protocol.TaskItem: one step of a /spec build's plan. The

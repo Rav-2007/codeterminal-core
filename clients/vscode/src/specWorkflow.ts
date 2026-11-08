@@ -302,12 +302,17 @@ export function workingCopyText(info: WorkingCopyInfo): string {
 }
 
 export function specReportText(rep: SpecReport): string {
-  const met = rep.criteria.filter((c) => c.status === 'met').length;
-  const lines = [`spec check -- ${rep.spec}: ${met} of ${rep.criteria.length} criteria met`];
-  if (rep.criteria.length === 0) {
+  // `criteria` is null, not [], when the spec has none (see SpecReport). This
+  // runs inside the stream handler, so a throw here never reached `done`: the
+  // panel stayed "in flight" and silently dropped every later prompt until the
+  // window was reloaded.
+  const criteria = rep.criteria ?? [];
+  const met = criteria.filter((c) => c.status === 'met').length;
+  const lines = [`spec check -- ${rep.spec}: ${met} of ${criteria.length} criteria met`];
+  if (criteria.length === 0) {
     lines.push('  (the spec has no "- [ ] C1: ..." success criteria to check)');
   }
-  for (const c of rep.criteria) {
+  for (const c of criteria) {
     const mark = c.status === 'met' ? '✓' : c.status === 'unmet' ? '✗' : '?';
     lines.push(`${mark} ${c.id}: ${c.text}`);
     const detail = (c.note || c.evidence || '').trim();
