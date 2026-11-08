@@ -11,6 +11,15 @@ interface Window {
   };
   /** media/connect.js: the connect popup -- a provider, then its key. */
   MochiiiConnect?: { init(vscode: any, hooks: any): { handle(msg: any): boolean; isOpen(): boolean } };
+  /** media/credentialGuard.js: while a key form is on screen, nothing else in the chat takes the keyboard. */
+  MochiiiCredentialGuard?: {
+    create(
+      container: HTMLElement,
+      opts: { firstField: () => HTMLElement | null },
+    ): { take(field?: HTMLElement | null): void; release(restore?: boolean | (() => void)): void; isOn(): boolean; focusField(): void };
+    isOn(): boolean;
+    focusField(): void;
+  };
   /** media/mcpPopup.js: add or change an MCP server, or set its key. */
   MochiiiMcpPopup?: { init(vscode: any, hooks: any): { handle(msg: any): boolean; isOpen(): boolean; focusField(): void } };
   MochiiiPages?: { init(vscode: any, hooks: any): { handle(msg: any): boolean; open(page: string, opts?: any): void; openMcp(): void; close(): void; isOpen(): boolean } };

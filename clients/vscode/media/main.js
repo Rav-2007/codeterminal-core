@@ -2656,12 +2656,25 @@
     if (document.hasFocus() && !credentialFormOpen()) inputEl.focus();
   }
 
-  // A form that can hold a key is open: the MCP pop-up, in any of its steps
-  // (a variable's value, a header, the key step, pasted JSON). Read from the
-  // DOM so it can be asked before mcpPopup.js has been wired up.
+  // A form that can hold a key is on screen: the MCP pop-up, in any of its
+  // steps (a variable's value, a header, the key step, pasted JSON), or the
+  // connect popup's key step. Read from the DOM, not from credentialGuard.js:
+  // this is the second wall, and it stands if the first one does not.
   function credentialFormOpen() {
     const p = document.getElementById('mcpPopup');
-    return !!p && !p.hidden;
+    const k = document.getElementById('connectKey');
+    return (!!p && !p.hidden) || (!!k && k.getClientRects().length > 0);
+  }
+
+  // Back to the key form that is on screen, from wherever the keyboard strayed.
+  function focusCredentialForm() {
+    if (window.MochiiiCredentialGuard && window.MochiiiCredentialGuard.isOn()) {
+      window.MochiiiCredentialGuard.focusField();
+      return;
+    }
+    const k = /** @type {HTMLInputElement | null} */ (document.getElementById('connectKey'));
+    if (k && !k.disabled && k.getClientRects().length > 0) k.focus();
+    else if (mcpPopup) mcpPopup.focusField();
   }
 
   function answerToolApproval(req, decision, label) {
@@ -3470,9 +3483,10 @@
       })
     : null;
 
-  // THE COMPOSER TAKES NOTHING WHILE A KEY CAN BE TYPED ELSEWHERE. mcpPopup.js
-  // makes the rest of the chat inert while its form is open, so the composer
-  // cannot be clicked or focused; this is the second wall, on the composer
+  // THE COMPOSER TAKES NOTHING WHILE A KEY CAN BE TYPED ELSEWHERE. The MCP
+  // pop-up and the connect popup's key step make the rest of the chat inert
+  // (credentialGuard.js), so the composer cannot be clicked or focused; this
+  // is the second wall, on the composer
   // itself, for any way in that is not a click or a focus() (a keystroke
   // already in flight, a paste, a drop, a dictation). Whatever arrives is
   // refused and the keyboard is sent back to the form. A key once landed here
@@ -3485,7 +3499,7 @@
         e.preventDefault();
         e.stopImmediatePropagation();
         inputEl.blur();
-        if (mcpPopup) mcpPopup.focusField();
+        focusCredentialForm();
       },
       true,
     );
