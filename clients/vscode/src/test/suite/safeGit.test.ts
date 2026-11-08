@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { runGitStatus, safeGitArgs } from '../../safeGit';
+import { runGitDiff, runGitStatus, safeGitArgs } from '../../safeGit';
 
 // `git status` EXECUTES REPOSITORY-CONTROLLED CONFIG.
 //
@@ -76,6 +76,95 @@ suite('git in an untrusted repository', () => {
     const out = await runGitStatus(dir);
     assert.ok(!/failed/i.test(out), `expected a status report, got: ${out}`);
     assert.ok(/a\.txt|##/.test(out), `expected the untracked file or a branch line, got: ${out}`);
+  });
+
+  // /diff WITH SOMETHING TO SHOW. The hostile-workspace guard drives /diff on a
+  // clean tree only, where `git diff --stat` prints nothing and the patch call
+  // never runs -- so it stayed green while every /diff of a real change failed
+  // with "external diff died" (the empty `-c diff.external=` makes git run a
+  // program named ""). NEUTER CHECK: drop --no-ext-diff from runGitDiff and
+  // both of these fail on git 2.43 with that message.
+  function repoWithAChange(): string | undefined {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-git-diff-'));
+    const g = (...a: string[]) =>
+      cp.spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-C', dir, ...a], { encoding: 'utf8' });
+    if (cp.spawnSync('git', ['init', '-q', dir]).status !== 0) {
+      return undefined;
+    }
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n');
+    g('add', 'a.txt');
+    if (g('commit', '-qm', 'first').status !== 0) {
+      return undefined;
+    }
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'one\ntwo-added-line\n');
+    return dir;
+  }
+
+  test('diffShowsAnUncommittedChange', async function () {
+    const dir = repoWithAChange();
+    if (!dir) {
+      this.skip();
+      return;
+    }
+    const out = await runGitDiff(dir, '');
+    assert.ok(!/failed|external diff died/i.test(out), `expected a diff, got: ${out}`);
+    assert.ok(out.includes('+two-added-line'), `the patch is missing the added line: ${out}`);
+    assert.ok(/a\.txt\s+\|\s+1 \+/.test(out), `the --stat block is missing: ${out}`);
+
+    cp.spawnSync('git', ['-C', dir, 'add', 'a.txt']);
+    const staged = await runGitDiff(dir, '--staged');
+    assert.ok(staged.includes('+two-added-line'), `/diff --staged did not show the staged change: ${staged}`);
+  });
+
+  // And the reason the -c override exists still holds on the path that now
+  // actually runs: a repository naming its own external diff program must not
+  // get it run, and the diff must still be shown.
+  test('diffWithAChangeDoesNotRunTheRepositorysExternalDiff', async function () {
+    if (process.platform === 'win32') {
+      this.skip();
+      return;
+    }
+    const dir = repoWithAChange();
+    if (!dir) {
+      this.skip();
+      return;
+    }
+    const sentinel = path.join(os.tmpdir(), `ct-extdiff-${process.pid}-${Date.now()}`);
+    const prog = path.join(dir, '.git', 'extdiff.sh');
+    fs.writeFileSync(prog, `#!/bin/sh\necho pwned > "${sentinel}"\nexit 0\n`);
+    fs.chmodSync(prog, 0o755);
+    cp.spawnSync('git', ['-C', dir, 'config', 'diff.external', prog]);
+
+    const out = await runGitDiff(dir, '');
+    assert.ok(!fs.existsSync(sentinel), 'the repository\'s diff.external program ran');
+    assert.ok(out.includes('+two-added-line'), `expected git's own diff, got: ${out}`);
+  });
+
+  // The other program a repository can name for a diff: a textconv driver,
+  // chosen by .gitattributes and defined in the repository's own .git/config.
+  // Unreachable while /diff died on the empty diff.external; reachable the
+  // moment it works. NEUTER CHECK: drop --no-textconv from runGitDiff and the
+  // sentinel is written.
+  test('diffWithAChangeDoesNotRunTheRepositorysTextconv', async function () {
+    if (process.platform === 'win32') {
+      this.skip();
+      return;
+    }
+    const dir = repoWithAChange();
+    if (!dir) {
+      this.skip();
+      return;
+    }
+    const sentinel = path.join(os.tmpdir(), `ct-textconv-${process.pid}-${Date.now()}`);
+    const prog = path.join(dir, '.git', 'textconv.sh');
+    fs.writeFileSync(prog, `#!/bin/sh\necho pwned > "${sentinel}"\ncat "$1"\n`);
+    fs.chmodSync(prog, 0o755);
+    fs.writeFileSync(path.join(dir, '.gitattributes'), '*.txt diff=hostile\n');
+    cp.spawnSync('git', ['-C', dir, 'config', 'diff.hostile.textconv', prog]);
+
+    const out = await runGitDiff(dir, '');
+    assert.ok(!fs.existsSync(sentinel), "the repository's textconv program ran");
+    assert.ok(out.includes('+two-added-line'), `expected git's own diff, got: ${out}`);
   });
 
   // '.' is the extension host's working directory -- whatever folder VS Code

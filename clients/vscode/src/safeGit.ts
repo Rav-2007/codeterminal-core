@@ -156,12 +156,29 @@ export async function runGitDiff(workspace: string, args: string): Promise<strin
     return (stdout + stderr).trim();
   };
 
+  // --no-ext-diff AND --no-textconv ON BOTH CALLS, as the daemon's own git tool
+  // passes them (githistory.go).
+  //
+  // --no-ext-diff: `-c diff.external=` (NEUTRALISED_CONFIG) stops a repository
+  // naming the program, but git does not read the empty value as "unset": git
+  // 2.43 tries to run a program called "" and fails with `error: cannot run : No
+  // such file or directory / fatal: external diff died` on every file that
+  // differs. /diff therefore failed whenever it had anything to show, and the
+  // hostile-workspace guard only ever drove it on a clean tree. The -c override
+  // stays as well.
+  //
+  // --no-textconv: once the patch actually runs, a repository can name a
+  // program through .gitattributes (`*.txt diff=x`) plus its own .git/config
+  // (`diff.x.textconv`), and git runs it on every matching file. The driver name
+  // is the repository's choice, so no fixed -c key can neutralise it; the flag
+  // does. CONFIRMED BY EXECUTION 2026-11-08: with --no-ext-diff alone, a planted
+  // textconv script ran on /diff.
   try {
-    const stat = await run(['diff', ...extra, '--stat']);
+    const stat = await run(['diff', '--no-ext-diff', '--no-textconv', ...extra, '--stat']);
     if (stat === '') {
       return extra.length > 0 ? 'nothing is staged' : 'no uncommitted changes';
     }
-    const patch = await run(['diff', ...extra, '--unified=3']);
+    const patch = await run(['diff', '--no-ext-diff', '--no-textconv', ...extra, '--unified=3']);
     // A patch at the ceiling was almost certainly cut. Say so: a truncated diff
     // that looks complete is how someone concludes a change is smaller than it
     // is and approves it.
