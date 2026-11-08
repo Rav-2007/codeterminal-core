@@ -2653,7 +2653,15 @@
   // input box opened from the Customize page ("Change perplexity (2/4)") stopped
   // taking Enter the moment an answer finished (FOUND 2026-10-14).
   function refocusComposer() {
-    if (document.hasFocus()) inputEl.focus();
+    if (document.hasFocus() && !credentialFormOpen()) inputEl.focus();
+  }
+
+  // A form that can hold a key is open: the MCP pop-up, in any of its steps
+  // (a variable's value, a header, the key step, pasted JSON). Read from the
+  // DOM so it can be asked before mcpPopup.js has been wired up.
+  function credentialFormOpen() {
+    const p = document.getElementById('mcpPopup');
+    return !!p && !p.hidden;
   }
 
   function answerToolApproval(req, decision, label) {
@@ -3401,6 +3409,7 @@
           setContextPopupOpen(false);
           if (controls) controls.closeMenus();
         },
+        credentialOpen: () => credentialFormOpen(),
       })
     : null;
 
@@ -3457,8 +3466,30 @@
           setModesPopupOpen(false);
           setContextPopupOpen(false);
         },
+        focusComposer: () => inputEl.focus(),
       })
     : null;
+
+  // THE COMPOSER TAKES NOTHING WHILE A KEY CAN BE TYPED ELSEWHERE. mcpPopup.js
+  // makes the rest of the chat inert while its form is open, so the composer
+  // cannot be clicked or focused; this is the second wall, on the composer
+  // itself, for any way in that is not a click or a focus() (a keystroke
+  // already in flight, a paste, a drop, a dictation). Whatever arrives is
+  // refused and the keyboard is sent back to the form. A key once landed here
+  // and was one Enter from the model provider (UI audit, 2026-11-08).
+  for (const type of ['keydown', 'keypress', 'beforeinput', 'paste', 'drop']) {
+    inputEl.addEventListener(
+      type,
+      (e) => {
+        if (!credentialFormOpen()) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        inputEl.blur();
+        if (mcpPopup) mcpPopup.focusField();
+      },
+      true,
+    );
+  }
 
   window.addEventListener('message', (event) => {
     const msg = event.data;
