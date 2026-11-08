@@ -53,7 +53,7 @@ import { McpPopupHost, mcpPopupHost, setMcpPopupHost } from './mcpPopup';
 import { chatLookStyles } from './chatLook';
 import { mcpMarketplaceStyles } from './mcpMarketplace';
 import { editorContextForPrompt, withoutEditorState } from './editorContext';
-import { SLASH_CATALOG, parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
+import { SLASH_CATALOG, parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt, unknownCommandNote } from './slashCommands';
 import {
   SpecGrants,
   activatedText,
@@ -1038,6 +1038,15 @@ export class ChatPanel {
         this.startModelTurn(text, wirePrompt, slash.def.promptKind, autoApply, slash.def.mode ?? mode);
         return;
       }
+    }
+
+    // A bare "/word" that is no command here is answered, not sent: /save,
+    // /resume and /history (the terminal client's) used to become billed model
+    // turns. Same rule and words as the terminal client (slashCommands.ts).
+    const unknown = unknownCommandNote(text.trim());
+    if (unknown) {
+      this.replyLocal(unknown);
+      return;
     }
 
     this.startModelTurn(text, text, undefined, autoApply, mode);

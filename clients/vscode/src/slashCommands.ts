@@ -417,3 +417,57 @@ export function formatInitChecklist(workspace: string): string {
   4. /model to pick a model; /mcp-server to add tools for the agent
   5. /help for all slash commands`;
 }
+
+// A BARE "/word" THAT IS NOT A COMMAND is answered here, not sent to the model.
+//
+// MIRRORED FROM clients/tui/usage.go (unknownCommandNote, nearestCommand,
+// editDistance), and held there by TestUnknownCommandRuleAgreesAcrossClients.
+// Before this, onPrompt sent anything parseSlash did not know to the model as
+// an ordinary question: /save, /resume and /history -- the terminal client's
+// names for saved chats -- each became a billed model call answered by a model
+// guessing at a command that does not exist here. Only the bare form is caught:
+// "/etc/hosts is broken" or "/tmp is full" carry more than one word (or another
+// slash) and still go to the model as the questions they are.
+export const BARE_COMMAND_WORD = /^\/[a-z][a-z0-9-]*$/;
+
+/** What to say about raw, or '' when it is not a bare unknown command. */
+export function unknownCommandNote(raw: string): string {
+  if (!BARE_COMMAND_WORD.test(raw)) {
+    return '';
+  }
+  const name = raw.slice(1);
+  if (lookupSlash(name) || name === 'model') {
+    return '';
+  }
+  const near = nearestCommand(name);
+  return near
+    ? `unknown command ${raw} -- did you mean /${near}? (/help lists them all)`
+    : `unknown command ${raw} -- /help lists the commands`;
+}
+
+/** The catalog command within two edits of name, if any (the first, on a tie). */
+export function nearestCommand(name: string): string {
+  let best = '';
+  let bestDist = 3;
+  for (const d of SLASH_CATALOG) {
+    const dist = editDistance(name, d.name);
+    if (dist < bestDist) {
+      best = d.name;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+export function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
