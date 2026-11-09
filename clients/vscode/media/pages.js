@@ -87,6 +87,9 @@
       if (page) page.hidden = true;
       const opener = openers[name];
       if (opener) opener.setAttribute('aria-expanded', 'false');
+      // The host watches a daemon that is down while Account is open; it stops
+      // when it is told the page is gone.
+      vscode.postMessage({ type: 'page:hidden', page: name });
     }
 
     function close() {
@@ -620,9 +623,13 @@
       setText('acctBase', v.base);
       const dot = document.getElementById('acctDot');
       if (dot) {
-        dot.className = 'dot ' + (v.reachable ? 'ok' : 'bad');
-        dot.setAttribute('aria-label', v.reachable ? 'connected' : 'not connected');
+        dot.className = 'dot ' + (v.waiting ? 'wait' : v.reachable ? 'ok' : 'bad');
+        dot.setAttribute('aria-label', v.waiting ? 'waiting for the daemon' : v.reachable ? 'connected' : 'not connected');
       }
+      // A short line and Retry, only when a wait for the daemon ran out.
+      setText('acctNoteText', v.note || '');
+      const note = document.getElementById('acctNote');
+      if (note) note.hidden = !v.note;
       setText('acctKey', v.key);
       setText('acctKeyMore', v.keyMore);
       setText('acctModel', v.model);

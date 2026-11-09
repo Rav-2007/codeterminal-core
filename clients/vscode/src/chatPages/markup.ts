@@ -146,11 +146,12 @@ function accountPage(): string {
     ${pageHead('pageAccount', 'Account', 'Who Mochiii talks to on your behalf. Your key is kept on this machine and sent to its provider.')}
     <div class="conn-card">
       <div id="acctBadge" class="conn-badge" aria-hidden="true">?</div>
-      <div class="conn-main">
+      <div class="conn-main" aria-live="polite">
         <div class="conn-provider"><span id="acctProvider">Checking…</span> <span id="acctDot" class="dot" role="img" aria-label="status unknown"></span></div>
         <div id="acctBase" class="conn-base"></div>
       </div>
     </div>
+    <p id="acctNote" class="page-note acct-note" hidden><span id="acctNoteText"></span> <button type="button" id="acctRetry" class="pg-btn" data-page-refresh>Retry</button></p>
     <dl class="kv">
       <dt>Key</dt><dd><span id="acctKey"></span><span id="acctKeyMore" class="kv-more"></span></dd>
       <dt>Model</dt><dd><span id="acctModel"></span><span id="acctModelMore" class="kv-more"></span></dd>
@@ -561,6 +562,11 @@ export function chatPagesStyles(): string {
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ct-muted); display: inline-block; }
   .dot.ok { background: var(--ct-ok); }
   .dot.bad { background: var(--ct-danger); }
+  .dot.wait { background: var(--ct-warn); animation: dotWait 1.2s ease-in-out infinite; }
+  @keyframes dotWait { 50% { opacity: 0.25; } }
+  @media (prefers-reduced-motion: reduce) { .dot.wait { animation: none; } }
+  .acct-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .acct-note[hidden] { display: none; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 14px 0; }
   .kv dt { color: var(--ct-muted); }
   .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }

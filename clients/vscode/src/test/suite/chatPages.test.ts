@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-import { accountView } from '../../chatPages/accountView';
+import { accountView, accountWaiting, gaveUpNote } from '../../chatPages/accountView';
 import { ICONS, chatPagesMarkup, headerPageButtons } from '../../chatPages/markup';
 import { ChatPagesHost } from '../../chatPages/pagesHost';
 import {
@@ -154,6 +154,19 @@ suite('chat pages: markup', () => {
     }
   });
 
+  test('the Account page has a note and a Retry that asks the way Refresh does', () => {
+    assert.match(html, /<p id="acctNote" class="page-note acct-note" hidden>/, 'the note starts hidden');
+    assert.match(html, /<button type="button" id="acctRetry" class="pg-btn" data-page-refresh>Retry<\/button>/);
+    const js = code('pages.js');
+    assert.match(js, /dot\.className = 'dot ' \+ \(v\.waiting \? 'wait'/, 'the waiting state has its own dot');
+    assert.match(js, /note\.hidden = !v\.note/, 'the note shows only when there is one');
+  });
+
+  test('a page tells the host when it is hidden, so the host stops watching the daemon', () => {
+    const js = code('pages.js');
+    assert.match(js, /function hide\(name\) \{[\s\S]*?vscode\.postMessage\(\{ type: 'page:hidden', page: name \}\);/);
+  });
+
   test('pages.js builds no markup and uses no HTML sink, like main.js', () => {
     const js = code('pages.js');
     for (const sink of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'eval(', 'new Function']) {
@@ -227,6 +240,30 @@ suite('chat pages: the Account page', () => {
     const v = accountView({ show: undefined, showError: 'connect ENOENT', daemonVersion: '', spend: undefined, currentModel: '', providerNotes: [] });
     assert.strictEqual(v.reachable, false);
     assert.match(v.base, /ENOENT/);
+  });
+
+  test('the waiting state is not a verdict, and carries no raw error', () => {
+    const w = accountWaiting({ currentModel: 'm/x', providerNotes: ['a note'], waitMs: 20000 });
+    assert.strictEqual(w.waiting, true);
+    assert.strictEqual(w.reachable, false);
+    assert.strictEqual(w.provider, 'Waiting for the daemon…');
+    assert.match(w.base, /20 seconds/);
+    assert.ok(!/lockfile|ENOENT|ECONNREFUSED/.test(JSON.stringify(w)));
+    assert.strictEqual(w.model, 'm/x');
+    assert.deepStrictEqual(w.privacy, ['a note']);
+  });
+
+  test('a wait that gave up adds a note and leaves the raw error as it was', () => {
+    const down = { show: undefined, showError: 'daemon not found (expected a lockfile at /x/y.lock): ENOENT', daemonVersion: '', spend: undefined, currentModel: '', providerNotes: [] };
+    const plain = accountView(down);
+    const gaveUp = accountView({ ...down, gaveUpAfterMs: 20000 });
+    assert.strictEqual(plain.note, undefined, 'a plain failure has no note');
+    assert.strictEqual(gaveUp.base, plain.base, 'the raw error was reworded');
+    assert.strictEqual(gaveUp.note, gaveUpNote(20000));
+    assert.match(gaveUp.note!, /20 seconds/);
+    // A daemon that did answer never carries the note, whatever was asked.
+    const up = accountView({ show: show({ active_api_base: 'https://api.groq.com/openai/v1' }), daemonVersion: '', spend: undefined, currentModel: '', providerNotes: [], gaveUpAfterMs: 20000 });
+    assert.strictEqual(up.note, undefined);
   });
 
   test('spend is shown against a limit when there is one', () => {
