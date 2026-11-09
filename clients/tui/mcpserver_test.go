@@ -209,6 +209,44 @@ func TestASecretOnTheAddLineGoesNowhere(t *testing.T) {
 	}
 }
 
+// A KEY IN THE SERVER'S ARGUMENTS goes nowhere either: --api-key VALUE,
+// --token=VALUE and NAME=value after the command are refused here (the daemon
+// refuses them too), and the refusal points at /mcp-server key. A ${NAME}
+// template after the flag is the way to do it, and is sent.
+//
+// Neuter check: drop the protocol.FindArgKeys test at the end of parseMCPAdd.
+func TestAKeyInTheArgumentsGoesNowhere(t *testing.T) {
+	const secret = "DUMMY-ARGKEY-7731"
+	for name, line := range map[string]string{
+		"--api-key VALUE":          "/mcp-server add gh npx -y server-github --api-key " + secret,
+		"--token=VALUE":            "/mcp-server add gh npx -y server-github --token=" + secret,
+		"NAME=value after command": "/mcp-server add gh docker run -i -e GITHUB_TOKEN=" + secret + " ghcr.io/x/y",
+	} {
+		daemon := mcpDaemon(t)
+		m := runSlash(t, newTestModel(), line)
+		if n := len(daemon.requests()); n != 0 {
+			t.Errorf("%s: %d request(s) were sent", name, n)
+		}
+		for _, p := range m.promptHistory {
+			if strings.Contains(p, secret) {
+				t.Errorf("%s: the key waits in the up-arrow recall", name)
+			}
+		}
+		if strings.Contains(m.View(), secret) {
+			t.Errorf("%s: the key is on screen", name)
+		}
+		if last := lastTurn(t, m); !strings.Contains(last, "Nothing was sent") || !strings.Contains(last, "/mcp-server key gh ") {
+			t.Errorf("%s: the refusal does not point at /mcp-server key:\n%s", name, last)
+		}
+	}
+
+	daemon := mcpDaemon(t)
+	runSlash(t, newTestModel(), "/mcp-server add gh npx -y server-github --api-key ${GITHUB_TOKEN}")
+	if got := mcpRequests(t, daemon); len(got) != 1 || !reflect.DeepEqual(got[0].Args, []string{"-y", "server-github", "--api-key", "${GITHUB_TOKEN}"}) {
+		t.Fatalf("a template after --api-key was refused or mangled: %+v", got)
+	}
+}
+
 // Remove and the bare list reach the daemon as what they are; anything else is
 // answered here with the usage.
 func TestMCPServerSubcommands(t *testing.T) {
