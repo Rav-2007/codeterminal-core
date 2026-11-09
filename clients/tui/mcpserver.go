@@ -242,6 +242,12 @@ func parseMCPAdd(words []string) (protocol.MCPRequest, error) {
 		return protocol.MCPRequest{}, errMCPSecret
 	}
 	req.Command, req.Args = rest[0], rest[1:]
+	// --api-key VALUE, NAME=value: the daemon refuses these too, but refusing
+	// here means the line is not sent and not kept in the up-arrow recall
+	// (mcpAddIsRefused). The rule is shared (protocol.FindArgKeys).
+	if keys := protocol.FindArgKeys(req.Args); len(keys) > 0 {
+		return protocol.MCPRequest{}, errors.New(protocol.ArgKeyRefusal(req.Name, keys[0]) + ". Nothing was sent")
+	}
 	return req, nil
 }
 
