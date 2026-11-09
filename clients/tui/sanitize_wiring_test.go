@@ -364,7 +364,7 @@ func TestApprovalOutcomeLineIsFiltered(t *testing.T) {
 	})
 	m = updated.(chatModel)
 	// "n" denies, which is what writes the outcome line into the transcript.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	updated, _ = settled(m).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(chatModel)
 
 	for _, tn := range m.turns {

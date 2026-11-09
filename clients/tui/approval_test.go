@@ -30,7 +30,7 @@ func pendingApprovalModel(t *testing.T, req protocol.ToolApprovalRequest) (chatM
 	if updated.state != stateToolApproval {
 		t.Fatalf("an approval request did not pause the turn; state = %v", updated.state)
 	}
-	return updated, reply
+	return settled(updated), reply
 }
 
 func laneBRequest() protocol.ToolApprovalRequest {
