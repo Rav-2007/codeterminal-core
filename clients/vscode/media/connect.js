@@ -13,6 +13,15 @@
 // at "Select Provider" is likely holding the key, and a search box would show
 // it in clear.
 //
+// THE KEY STEP TAKES THE KEYBOARD (media/credentialGuard.js, shared with the
+// MCP pop-up). While it is on screen the rest of the chat is inert: no click,
+// Tab, paste or drop reaches the composer, and neither does the caret when an
+// answer finishes. FOUND 2026-11-08 (PR #91's report): the composer under the
+// popup stayed clickable, Tab went from the key field to it in three presses,
+// and refocusComposer moved the caret there when a turn ended -- the key typed
+// next went into the chat. The provider list and the model list are not key
+// fields and leave the composer as it was: free, by design (ChatPanel.onPrompt).
+//
 // One function scope, as pages.js: the webview scripts are type-checked as one
 // project (media/jsconfig.json).
 
@@ -69,6 +78,19 @@
       return !!popup && !popup.hidden;
     }
 
+    /** Where the keyboard belongs while the key step is on screen. */
+    function keyStepField() {
+      if (keyEl && !keyEl.disabled && keyEl.getClientRects().length > 0) return keyEl;
+      const other = popup
+        ? Array.from(popup.querySelectorAll('button, input')).find(
+            (e) => !(/** @type {HTMLButtonElement} */ (e).disabled) && e.getClientRects().length > 0,
+          )
+        : null;
+      return /** @type {HTMLElement | null} */ (other || null);
+    }
+
+    const guard = popup && window.MochiiiCredentialGuard ? window.MochiiiCredentialGuard.create(popup, { firstField: keyStepField }) : null;
+
     /** @param {string} text */
     function notice(text) {
       if (!noticeEl) {
@@ -93,6 +115,11 @@
       if (keyStep) keyStep.hidden = which !== 'key';
       if (modelStep) modelStep.hidden = which !== 'model';
       if (backBtn) backBtn.hidden = which !== 'key';
+      // Guarded exactly while the key field is on screen.
+      if (guard) {
+        if (which === 'key') guard.take(keyEl);
+        else guard.release(false);
+      }
     }
 
     /** @param {boolean} on */
@@ -301,6 +328,7 @@
         return;
       }
       popup.hidden = true;
+      if (guard) guard.release(false);
       if (keyEl) keyEl.value = '';
       chosen = null;
       models = [];

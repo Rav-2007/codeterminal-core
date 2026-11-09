@@ -14,6 +14,11 @@ const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
 // composer; the key typed next went into the chat prompt, one Enter from the
 // model provider, while the key field stayed empty.
 //
+// FOUND AGAIN the same day, in separate code: the connect popup's key step
+// (/connect, /account's "Switch provider or key") sits right above the
+// composer, which stayed clickable; a click there, Tab from the key field (in
+// three presses), or an answer finishing put the caret in the composer.
+//
 // This tests the invariant, not that click. Each way a key form can be open
 // (the key step and the Edit and Add forms; over the /mcp dialog, over a page,
 // over nothing) is met with every way the keyboard could be taken from it: a
@@ -52,20 +57,49 @@ const EDIT_OPEN = {
   headers: [],
 };
 const ADD_OPEN = { type: 'mcpPopupOpen', mode: 'add' };
+// The connect popup straight at its key step, as the host opens it for a
+// provider card or a question waiting for a key (ChatPanel.openConnect).
+const CONNECT_OPEN = {
+  type: 'connectOpen',
+  providers: [{ id: 'openrouter', name: 'OpenRouter', apiBase: 'https://openrouter.ai/api/v1', hint: 'sk-or-…' }],
+  base: 'https://openrouter.ai/api/v1',
+  currentBase: '',
+  maskedKey: '',
+  keyInForce: false,
+  firstRun: false,
+};
+
+type Form = 'mcp' | 'connect';
 
 interface State {
   name: string;
+  form: Form;
   /** What is open behind the form: a command typed into the composer, or nothing. */
-  behind: '' | '/mcp' | '/config';
+  behind: '' | '/mcp' | '/config' | '/account';
   msg: Record<string, unknown>;
 }
 
 const STATES: State[] = [
-  { name: 'the key form over the /mcp dialog', behind: '/mcp', msg: KEY_OPEN },
-  { name: 'the Edit form over the /mcp dialog', behind: '/mcp', msg: EDIT_OPEN },
-  { name: 'the Add form over the Settings page', behind: '/config', msg: ADD_OPEN },
-  { name: 'the key form over the chat alone', behind: '', msg: KEY_OPEN },
+  { name: 'the key form over the /mcp dialog', form: 'mcp', behind: '/mcp', msg: KEY_OPEN },
+  { name: 'the Edit form over the /mcp dialog', form: 'mcp', behind: '/mcp', msg: EDIT_OPEN },
+  { name: 'the Add form over the Settings page', form: 'mcp', behind: '/config', msg: ADD_OPEN },
+  { name: 'the key form over the chat alone', form: 'mcp', behind: '', msg: KEY_OPEN },
+  { name: "the connect popup's key step over the /mcp dialog", form: 'connect', behind: '/mcp', msg: CONNECT_OPEN },
+  { name: "the connect popup's key step from the Account page", form: 'connect', behind: '/account', msg: CONNECT_OPEN },
+  { name: "the connect popup's key step over the chat alone", form: 'connect', behind: '', msg: CONNECT_OPEN },
 ];
+
+/** The form's element in the chat. */
+const FORM_EL: Record<Form, string> = { mcp: '#mcpPopup', connect: '#connectPopup' };
+/** JS, in the chat: whether the form's key input is on screen. */
+const FORM_UP: Record<Form, string> = {
+  mcp: "!d.getElementById('mcpPopup').hidden",
+  connect: "(() => { const k = d.getElementById('connectKey'); return !!k && k.getClientRects().length > 0; })()",
+};
+/** JS, in the chat: whether ANY key input is on screen -- what the probe watches. */
+const ANY_UP = `(${FORM_UP.mcp} || ${FORM_UP.connect})`;
+/** What opens behind the form, by the command typed. */
+const BEHIND_EL: Record<string, string> = { '/mcp': '#mcpDlg', '/config': '#pageSettings', '/account': '#pageAccount' };
 
 const WIDTHS: [string, number][] = [
   ['a normal editor width', 1200],
@@ -92,7 +126,7 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
     post = (msg) => panel.host.webview.postMessage(msg);
     dt = await ChatDevTools.connect();
     const deadline = Date.now() + 30000;
-    while (!(await dt.chatEval<boolean>("!!d.getElementById('promptInput') && !!d.getElementById('mcpPopup')"))) {
+    while (!(await dt.chatEval<boolean>("!!d.getElementById('promptInput') && !!d.getElementById('mcpPopup') && !!d.getElementById('connectPopup')"))) {
       if (Date.now() > deadline) {
         throw new Error('the chat never loaded');
       }
@@ -104,7 +138,7 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
     await dt.chatEval(`(() => { if (w.__credProbe) return true; w.__credProbe = [];
       const c = d.getElementById('promptInput');
       for (const t of ['focus', 'keydown', 'keypress', 'beforeinput', 'input', 'paste', 'drop']) {
-        w.addEventListener(t, (e) => { if (e.target === c && !d.getElementById('mcpPopup').hidden) w.__credProbe.push(t); }, true);
+        w.addEventListener(t, (e) => { if (e.target === c && ${ANY_UP}) w.__credProbe.push(t); }, true);
       }
       return true; })()`);
   });
@@ -112,6 +146,7 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
   suiteTeardown(async () => {
     if (dt) {
       await post({ type: 'mcpPopupClose' });
+      await post({ type: 'connectClose' });
       await dt.clearViewport().catch(() => undefined);
       dt.close();
     }
@@ -127,7 +162,7 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
     while (!(await cond())) {
       if (Date.now() > deadline) {
         const why = await dt.chatEval(`({ composer: d.getElementById('promptInput').value, active: d.activeElement && (d.activeElement.id || d.activeElement.tagName),
-          focused: d.hasFocus(), form: !d.getElementById('mcpPopup').hidden, dialog: !d.getElementById('mcpDlg').hidden })`);
+          focused: d.hasFocus(), form: ${ANY_UP}, dialog: !d.getElementById('mcpDlg').hidden })`);
         assert.fail(`${what}: chat ${JSON.stringify(why)}`);
       }
       await sleep(80);
@@ -137,7 +172,10 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
   /** Nothing open: no form, no dialog, no page; the composer empty. */
   async function closeEverything(): Promise<void> {
     await post({ type: 'mcpPopupClose' });
-    await waitFor('the form did not close', () => dt.chatEval<boolean>("d.getElementById('mcpPopup').hidden"));
+    await post({ type: 'connectClose' });
+    await waitFor('the form did not close', () =>
+      dt.chatEval<boolean>("d.getElementById('mcpPopup').hidden && d.getElementById('connectPopup').hidden"),
+    );
     await dt.chatEval(`(() => {
       const x = d.getElementById('mcpDlgClose'); if (x && x.getClientRects().length) x.click();
       for (const b of Array.from(d.querySelectorAll('[data-close-page]'))) if (b.getClientRects().length) { b.click(); break; }
@@ -171,7 +209,7 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
       }
       if (Date.now() > deadline) {
         const why = await dt.chatEval(`({ active: d.activeElement && (d.activeElement.id || d.activeElement.tagName), focused: d.hasFocus(),
-          form: !d.getElementById('mcpPopup').hidden, inert: d.querySelectorAll('[inert]').length, composer: [${x}, ${y}] })`);
+          form: ${ANY_UP}, inert: d.querySelectorAll('[inert]').length, composer: [${x}, ${y}] })`);
         const over = { workbenchFocus: await dt.pageEval('(document.activeElement && document.activeElement.className) || ""'), chatAtComposer: await dt.chatIsAt(x, y) };
         assert.fail('a click on the composer never gave it the keyboard: ' + JSON.stringify(why) + ' ' + JSON.stringify(over));
       }
@@ -184,31 +222,44 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
     await closeEverything();
     await focusComposer();
     if (state.behind) {
-      const sel = state.behind === '/mcp' ? '#mcpDlg' : '#pageSettings';
+      const sel = BEHIND_EL[state.behind];
       const shown = () => dt.chatEval<boolean>(`!d.querySelector(${JSON.stringify(sel)}).hidden`);
-      await dt.type(state.behind);
-      await waitFor(`${state.behind} was not typed`, () => dt.chatEval<boolean>(`d.getElementById('promptInput').value === ${JSON.stringify(state.behind)}`));
-      // The first Enter completes the command in the slash menu, the second runs it.
-      for (let i = 0; i < 4 && !(await shown()); i++) {
-        if ((await dt.chatEval<string>("d.getElementById('promptInput').value")) === '') {
+      // Setup, not the thing tested: typed as a user would, and tried again
+      // if the screen did not come up (seen once in a full-suite run).
+      for (let attempt = 1; ; attempt++) {
+        await dt.type(state.behind);
+        await waitFor(`${state.behind} was not typed`, () => dt.chatEval<boolean>(`d.getElementById('promptInput').value === ${JSON.stringify(state.behind)}`));
+        // The first Enter completes the command in the slash menu, the second runs it.
+        for (let i = 0; i < 4 && !(await shown()); i++) {
+          if ((await dt.chatEval<string>("d.getElementById('promptInput').value")) === '') {
+            break;
+          }
+          await dt.press('Enter');
+          await sleep(300);
+        }
+        const deadline = Date.now() + 3000;
+        while (!(await shown()) && Date.now() < deadline) {
+          await sleep(100);
+        }
+        if ((await shown()) || attempt === 3) {
           break;
         }
-        await dt.press('Enter');
-        await sleep(300);
+        await closeEverything();
+        await focusComposer();
       }
       await waitFor(`${state.behind} did not open ${sel}`, shown);
     }
     await dt.chatEval(`(d.getElementById('promptInput').value = ${JSON.stringify(DRAFT)}, true)`);
     await post(state.msg);
-    await waitFor('the form did not open', () => dt.chatEval<boolean>("!d.getElementById('mcpPopup').hidden"));
+    await waitFor('the form did not open', () => dt.chatEval<boolean>(FORM_UP[state.form]));
     await sleep(200);
     await dt.chatEval('(w.__credProbe.length = 0, true)');
   }
 
   /** What the composer took, and where the keyboard is. */
-  async function look(): Promise<{ composer: string; probe: string[]; inForm: boolean; formOpen: boolean; active: string }> {
-    return dt.chatEval(`(() => { const p = d.getElementById('mcpPopup'); const a = d.activeElement;
-      return { composer: d.getElementById('promptInput').value, probe: w.__credProbe.slice(), formOpen: !p.hidden,
+  async function look(state: State): Promise<{ composer: string; probe: string[]; inForm: boolean; formOpen: boolean; active: string }> {
+    return dt.chatEval(`(() => { const p = d.querySelector(${JSON.stringify(FORM_EL[state.form])}); const a = d.activeElement;
+      return { composer: d.getElementById('promptInput').value, probe: w.__credProbe.slice(), formOpen: ${FORM_UP[state.form]},
         inForm: d.hasFocus() && !!a && p.contains(a), active: a ? (a.id ? '#' + a.id : a.tagName.toLowerCase()) : '' }; })()`);
   }
 
@@ -225,7 +276,7 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
           await act();
           await dt.type('k');
           await dt.insertText(DUMMY);
-          const s = await look();
+          const s = await look(state);
           if (!s.formOpen) {
             leaks.push(`${what}: the form closed`);
           }
@@ -240,7 +291,7 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
         // each followed by a key: a grid, so a route nobody thought of is hit.
         await open(state);
         const view = await dt.chatEval<[number, number]>('[d.documentElement.clientWidth, d.documentElement.clientHeight]');
-        const form = await rect('#mcpPopup');
+        const form = await rect(FORM_EL[state.form]);
         assert.ok(form, 'the form is not on screen');
         for (let gx = 0; gx < 6; gx++) {
           for (let gy = 0; gy < 6; gy++) {
@@ -252,12 +303,12 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
             if (!(await dt.chatIsAt(x, y))) {
               continue; // a VS Code toast over the chat, not the chat
             }
-            if (await dt.chatEval<boolean>("d.getElementById('mcpPopup').hidden")) {
+            if (!(await dt.chatEval<boolean>(FORM_UP[state.form]))) {
               await open(state);
             }
             await dt.click(x, y);
             await dt.type('z');
-            const s = await look();
+            const s = await look(state);
             if (s.probe.length > 0 || s.composer !== DRAFT || !s.inForm) {
               leaks.push(`a click at (${x}, ${y}): composer took [${s.probe.join(',')}], its value is ${JSON.stringify(s.composer)}, the keyboard is on ${s.active}`);
               await dt.chatEval(`(d.getElementById('promptInput').value = ${JSON.stringify(DRAFT)}, w.__credProbe.length = 0, true)`);
@@ -299,14 +350,15 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
       const fieldsOf: Record<string, string[]> = {
         mcpPopupKeyOpen: ['#mcpPopKeyValue'],
         mcpPopupOpen: ['#mcpPopName', '#mcpPopCommand'],
+        connectOpen: ['#connectKey'],
       };
-      for (const state of STATES.slice(0, 3)) {
+      for (const state of STATES.filter((x) => x.behind !== '')) {
         await open(state);
         // Every control of the step on screen is the topmost thing DRAWN at its
         // own centre. Hit-testing skips inert elements, and the fix makes the
         // dialog behind inert, so inert is lifted for this one synchronous
         // measurement: what is measured is paint order, what the user sees.
-        const covered = await dt.chatEval<string[]>(`(() => { const p = d.getElementById('mcpPopup'); const out = [];
+        const covered = await dt.chatEval<string[]>(`(() => { const p = d.querySelector(${JSON.stringify(FORM_EL[state.form])}); const out = [];
           const inert = Array.from(d.querySelectorAll('[inert]')); inert.forEach((e) => e.removeAttribute('inert'));
           try {
             for (const e of Array.from(p.querySelectorAll('input, select, textarea, button'))) {
@@ -343,7 +395,7 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
             problems.push(`${state.name}: a click in ${sel} and a key did not type there (${JSON.stringify(before)} -> ${JSON.stringify(after)})`);
           }
         }
-        const s = await look();
+        const s = await look(state);
         if (s.composer !== DRAFT) {
           problems.push(`${state.name}: the composer changed to ${JSON.stringify(s.composer)}`);
         }
@@ -364,6 +416,31 @@ suite('E2E chat — while a key form is open, no keystroke reaches the composer'
     assert.strictEqual(after.inert, 0, 'something was left inert');
     assert.ok(after.dialog, 'the /mcp dialog behind the form closed with it');
     assert.notStrictEqual(after.active, 'promptInput', 'the keyboard went to the composer, not back to the dialog');
+    await closeEverything();
+  });
+
+  test("the connect popup: Cancel and Back leave nothing inert; only the key step holds the keyboard", async function () {
+    this.timeout(30000);
+    await dt.setViewport(1200, 900);
+    const connect = STATES.find((x) => x.form === 'connect' && x.behind === '')!;
+    // Back to the provider list: not a key field, so the composer is free again
+    // (the popup's design: a question can be written while it is open).
+    await open(connect);
+    await dt.chatEval("(d.getElementById('connectBack').click(), true)");
+    await sleep(150);
+    const back = await dt.chatEval<{ inert: number; list: boolean }>(`({ inert: d.querySelectorAll('[inert]').length,
+      list: d.getElementById('connectPick').getClientRects().length > 0 })`);
+    assert.ok(back.list, 'Back did not show the provider list');
+    assert.strictEqual(back.inert, 0, 'the provider list left the chat inert');
+    // Cancel from the key step: the popup closes, its field is emptied, the
+    // keyboard goes back to the composer as before, and nothing stays inert.
+    await open(connect);
+    await dt.type('DUMMY-CANCELLED');
+    await dt.chatEval("(d.getElementById('connectCancelBtn').click(), true)");
+    await sleep(150);
+    const after = await dt.chatEval<{ inert: number; active: string; open: boolean; key: string }>(`({ inert: d.querySelectorAll('[inert]').length,
+      active: d.activeElement ? d.activeElement.id : '', open: !d.getElementById('connectPopup').hidden, key: d.getElementById('connectKey').value })`);
+    assert.deepStrictEqual(after, { inert: 0, active: 'promptInput', open: false, key: '' });
     await closeEverything();
   });
 });

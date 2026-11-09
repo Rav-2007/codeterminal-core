@@ -2371,6 +2371,7 @@ export class ChatPanel {
     const marketUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'marketplace.js'));
     const connectUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'connect.js'));
     const mcpPopupUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'mcpPopup.js'));
+    const credentialGuardUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'credentialGuard.js'));
     const controlsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'controls.js'));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'logo.png'));
     const nonce = getNonce();
@@ -2389,7 +2390,8 @@ ${mcpMarketplaceStyles('.market-root')}
 </style>
 </head>
 <body>
-${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${marketUri}"></script>
+${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${credentialGuardUri}"></script>
+  <script nonce="${nonce}" src="${marketUri}"></script>
   <script nonce="${nonce}" src="${pagesUri}"></script>
   <script nonce="${nonce}" src="${connectUri}"></script>
   <script nonce="${nonce}" src="${mcpPopupUri}"></script>
