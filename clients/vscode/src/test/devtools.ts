@@ -269,8 +269,8 @@ export class ChatDevTools {
     await sleep(60);
   }
 
-  async press(key: 'Enter' | 'Tab' | 'Escape', shift = false): Promise<void> {
-    const codes = { Enter: 13, Tab: 9, Escape: 27 };
+  async press(key: 'Enter' | 'Tab' | 'Escape' | 'ArrowDown', shift = false): Promise<void> {
+    const codes = { Enter: 13, Tab: 9, Escape: 27, ArrowDown: 40 };
     const base = { key, code: key, windowsVirtualKeyCode: codes[key], modifiers: shift ? 8 : 0 };
     await this.page.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, ...(key === 'Enter' ? { text: '\r' } : {}) });
     await this.page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
