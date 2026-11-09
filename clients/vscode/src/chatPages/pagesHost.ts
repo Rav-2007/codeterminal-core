@@ -10,11 +10,12 @@ import { serverVerdict, serversOn, verdictLabel } from '../mcpVerdict';
 import * as vscode from 'vscode';
 
 import { ConnectResponse, FEATURE_MCP_TOOLS, daemonInfo, fetchAvailableTiers, sendConnect, sendMCP, spendStatus, SpendStatus } from '../daemonClient';
+import { forgetDidNothing } from '../forgetKey';
 import { MarketplaceCore, acceptNotice } from '../mcpMarketplace';
 import { McpServersProvider, serverStatus } from '../mcpServersView';
 import { getActiveSpec, listSpecs } from '../specWorkflow';
 import { activeWorkingFolder } from '../workingFolder';
-import { accountView, providerName } from './accountView';
+import { accountView, accountWaiting, providerName } from './accountView';
 import { MACHINE_SETTINGS, MCP_ROW_COMMANDS, checkSettingUpdate, isMachineSetting, pageCommand, pageLink } from './rules';
 
 /** What the pages need from the extension as a whole, set once at activation. */
@@ -78,6 +79,8 @@ export class ChatPagesHost implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.epoch++;
+    this.clearWatch();
     this.market?.dispose();
     this.disposables.forEach((d) => d.dispose());
   }
@@ -147,18 +150,17 @@ export class ChatPagesHost implements vscode.Disposable {
         }
         const cmd = pageCommand(msg.name);
         if (cmd) {
-          void Promise.resolve(vscode.commands.executeCommand(cmd)).then((said) => {
-            // Forget answers in words -- nothing was stored, nothing was
-            // forgotten, or what went -- and the Account page has no line of its
-            // own for it, so it is said where VS Code says things.
-            if (msg.name === 'forgetKey' && typeof said === 'string' && said) {
-              void vscode.window.showInformationMessage('Mochiii: ' + said.split('\n')[0]);
-            }
-            return this.reloadAfter(msg.name);
-          });
+          void Promise.resolve(vscode.commands.executeCommand(cmd)).then((said) => this.commandDone(msg.name, said));
         }
         return true;
       }
+      case 'page:hidden':
+        // The page was closed, or another one opened over it. Only Account has
+        // anything running (the wait and the watch for a daemon that is down).
+        if (msg.page === 'account') {
+          this.accountHidden();
+        }
+        return true;
       case 'page:link': {
         const url = pageLink(msg.name);
         if (url) {
@@ -198,25 +200,142 @@ export class ChatPagesHost implements vscode.Disposable {
     }
   }
 
+  /**
+   * commandDone is what follows a page command. Forget answers in words --
+   * nothing was stored, nothing was forgotten, or what went -- and the Account
+   * page has no line of its own for it, so it is said where VS Code says things.
+   * Then the page is reloaded, except when the answer says nothing changed:
+   * Cancel on the confirmation, or nothing stored, touched no key and no
+   * daemon, so there is nothing to wait for (it used to start the 20 s wait).
+   */
+  private async commandDone(name: unknown, said: unknown): Promise<void> {
+    if (name === 'forgetKey' && typeof said === 'string' && said) {
+      void vscode.window.showInformationMessage('Mochiii: ' + said.split('\n')[0]);
+    }
+    if (name === 'forgetKey' && forgetDidNothing(said)) {
+      return;
+    }
+    await this.reloadAfter(name);
+  }
+
   // AFTER A KEY CHANGES, THE DAEMON MAY BE RESTARTING. Forget restarts it, and
   // a page loaded in that moment showed "Not connected" with the raw lockfile
   // error ("daemon not found (expected a lockfile at …)") and stayed so until
   // Refresh, though the daemon was back seconds later (UI report, 2026-11-08).
   // So the page waits for the daemon to answer -- up to recoverMs -- and shows
   // what it says then; only a daemon that never comes back is reported as such.
+  //
+  // THE WAIT SAYS SO (2026-11-09). During it the page looked exactly like the
+  // failed state, so a daemon that was coming back and one that was gone could
+  // not be told apart, and when the wait ran out nothing changed at all. Now the
+  // page shows "Waiting for the daemon…" while the host waits, and if the wait
+  // runs out it keeps the raw error as it was and adds one line and a Retry.
   recoverMs = 20000;
   recoverEveryMs = 400;
+
+  // THE PAGE WATCHES A DAEMON THAT IS DOWN. A page opened plainly while the
+  // daemon was stopped stayed on "Not connected" until Refresh, though the
+  // daemon was running again. While the Account page is open and the daemon
+  // did not answer, the host asks again at this slow interval and posts the
+  // page itself when it does. It stops when the page is hidden (the page
+  // says so with page:hidden), and a daemon that answers needs no watching.
+  watchEveryMs = 5000;
+  private accountOpen = false;
+  // The last wait ran out and the daemon is still down: the note and Retry stay
+  // through later checks, so pressing Retry against a dead daemon is not
+  // answered by the page going back to looking as if nothing was said.
+  private gaveUp = false;
+  private gaveUpAfterMs = 0;
+  // A reloadAfter is waiting; the watch leaves it alone.
+  private waiting = false;
+  private watchTimer: ReturnType<typeof setTimeout> | undefined;
+  // Bumped when the page is hidden, so an answer that was still on its way for
+  // a page that has since closed is dropped instead of posted.
+  private epoch = 0;
+
+  private isDown(snap: { show?: ConnectResponse }): boolean {
+    return !snap.show || !!snap.show.error;
+  }
+
+  private clearWatch(): void {
+    if (this.watchTimer !== undefined) {
+      clearTimeout(this.watchTimer);
+      this.watchTimer = undefined;
+    }
+  }
+
+  private accountHidden(): void {
+    this.epoch++;
+    this.accountOpen = false;
+    this.gaveUp = false;
+    this.clearWatch();
+  }
+
+  private armWatch(snap: { show?: ConnectResponse }): void {
+    this.clearWatch();
+    if (!this.accountOpen || !this.isDown(snap)) {
+      return;
+    }
+    const epoch = this.epoch;
+    this.watchTimer = setTimeout(() => void this.watchTick(epoch), this.watchEveryMs);
+  }
+
+  private async watchTick(epoch: number): Promise<void> {
+    this.watchTimer = undefined;
+    if (epoch !== this.epoch || !this.accountOpen || this.waiting) {
+      return;
+    }
+    const snap = await this.snapshot();
+    if (epoch !== this.epoch || !this.accountOpen || this.waiting) {
+      return;
+    }
+    if (this.isDown(snap)) {
+      // Nothing new to say: the page already shows it. Look again later.
+      this.armWatch(snap);
+      return;
+    }
+    this.gaveUp = false;
+    this.postAccountView(snap);
+  }
+
+  private postWaiting(): void {
+    this.panel.post({
+      type: 'page:account',
+      view: accountWaiting({ currentModel: this.panel.currentModel(), providerNotes: this.panel.providerNotes(), waitMs: this.recoverMs }),
+    });
+  }
 
   private async reloadAfter(name: unknown): Promise<void> {
     if (name === 'connect' || name === 'forgetKey') {
       this.loaded.add('account');
-      const deadline = Date.now() + this.recoverMs;
-      let snap = await this.snapshot();
-      while (!snap.show && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, this.recoverEveryMs));
-        snap = await this.snapshot();
+      // NOT accountOpen = true: the connect popup hides the Account page, so
+      // this can run with the page closed. Only the page asking for itself
+      // (page:load) says it is open, and page:hidden says it is not.
+      this.clearWatch();
+      this.waiting = true;
+      const epoch = this.epoch;
+      try {
+        const deadline = Date.now() + this.recoverMs;
+        let snap = await this.snapshot();
+        let announced = false;
+        while (!snap.show && Date.now() < deadline && epoch === this.epoch) {
+          if (!announced) {
+            announced = true;
+            this.postWaiting();
+          }
+          await new Promise((r) => setTimeout(r, this.recoverEveryMs));
+          snap = await this.snapshot();
+        }
+        if (epoch !== this.epoch) {
+          return; // the page was closed during the wait
+        }
+        this.gaveUp = !snap.show;
+        this.gaveUpAfterMs = this.recoverMs;
+        this.postAccountView(snap);
+        this.armWatch(snap);
+      } finally {
+        this.waiting = false;
       }
-      this.postAccountView(snap);
     } else if (name === 'mcpAdd') {
       await pagesContext?.mcpServers?.refresh();
     }
@@ -225,6 +344,7 @@ export class ChatPagesHost implements vscode.Disposable {
   private async load(page: unknown): Promise<void> {
     if (page === 'account') {
       this.loaded.add('account');
+      this.accountOpen = true;
       await this.postAccount();
     } else if (page === 'settings') {
       this.loaded.add('settings');
@@ -261,7 +381,21 @@ export class ChatPagesHost implements vscode.Disposable {
   }
 
   private async postAccount(): Promise<void> {
-    this.postAccountView(await this.snapshot());
+    const epoch = this.epoch;
+    const snap = await this.snapshot();
+    if (epoch !== this.epoch) {
+      return; // the page was closed while the daemon was being asked
+    }
+    if (!this.isDown(snap)) {
+      this.gaveUp = false;
+    } else if (this.waiting) {
+      // The page was opened again while the host is waiting for the daemon (the
+      // connect popup closes it): say it is waiting, not that it failed.
+      this.postWaiting();
+      return;
+    }
+    this.postAccountView(snap);
+    this.armWatch(snap);
   }
 
   private postAccountView(snap: { show?: ConnectResponse; showError?: string; version: string; spend?: SpendStatus }): void {
@@ -274,6 +408,7 @@ export class ChatPagesHost implements vscode.Disposable {
         spend: snap.spend,
         currentModel: this.panel.currentModel(),
         providerNotes: this.panel.providerNotes(),
+        gaveUpAfterMs: this.gaveUp ? this.gaveUpAfterMs : undefined,
       }),
     });
   }

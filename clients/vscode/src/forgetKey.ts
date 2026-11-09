@@ -37,6 +37,15 @@ export function daemonHasStoredKey(r: ConnectResponse): boolean {
 export const NOTHING_STORED = 'No key is stored, so there is nothing to forget. Nothing was changed.';
 export const DECLINED = 'Nothing was forgotten.';
 
+/**
+ * forgetDidNothing says whether the answer forgetStoredKey gave means nothing
+ * was changed: nothing was stored, or the user said no. Neither touched the
+ * daemon, so neither has anything for the Account page to wait for.
+ */
+export function forgetDidNothing(said: unknown): boolean {
+  return said === NOTHING_STORED || said === DECLINED;
+}
+
 export async function forgetStoredKey(deps: ForgetDeps): Promise<string> {
   const what: string[] = [];
   let askDaemon = false;

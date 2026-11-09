@@ -30,6 +30,10 @@ export interface AccountView {
   meters: MeterView[];
   spendNote: string;
   privacy: string[];
+  /** The page is waiting for a daemon that is restarting: no verdict yet. */
+  waiting?: boolean;
+  /** A short line under the card, with a Retry button beside it. Only after a wait gave up. */
+  note?: string;
 }
 
 function hostOf(base: string): string {
@@ -86,6 +90,41 @@ function meter(label: string, m: SpendMeter | undefined): MeterView | undefined 
 }
 
 /**
+ * accountWaiting is the page while the host waits for a daemon that is
+ * restarting (after Forget or a new key). It is not a verdict: the failed
+ * state looked exactly like this wait, so a person could not tell a daemon
+ * that was coming back from one that was gone. The raw error is not shown
+ * here, and not reworded either: it comes back unchanged if the wait ends
+ * with no daemon.
+ */
+export function accountWaiting(input: { currentModel: string; providerNotes: string[]; waitMs: number }): AccountView {
+  return {
+    reachable: false,
+    waiting: true,
+    provider: 'Waiting for the daemon…',
+    badge: '…',
+    base: `The daemon is restarting. This page updates by itself when it answers, for up to ${seconds(input.waitMs)} seconds.`,
+    key: '',
+    keyMore: '',
+    model: input.currentModel,
+    modelMore: '',
+    daemon: 'waiting for it to answer',
+    meters: [],
+    spendNote: '',
+    privacy: input.providerNotes,
+  };
+}
+
+function seconds(ms: number): number {
+  return Math.max(1, Math.round(ms / 1000));
+}
+
+/** gaveUpNote is what the page says when a wait for the daemon ran out. */
+export function gaveUpNote(waitMs: number): string {
+  return `The daemon did not answer within ${seconds(waitMs)} seconds. This page keeps checking, and Retry asks again now.`;
+}
+
+/**
  * accountView builds the page from the daemon's answers. `show` is undefined
  * when the daemon could not be reached; `currentModel` is what this panel is
  * sending, which may differ from the daemon's own default.
@@ -97,6 +136,8 @@ export function accountView(input: {
   spend: SpendStatus | undefined;
   currentModel: string;
   providerNotes: string[];
+  /** Set when a wait for the daemon ran out: says so, and offers Retry. Only used for a daemon that did not answer. */
+  gaveUpAfterMs?: number;
 }): AccountView {
   const { show } = input;
   if (!show || show.error) {
@@ -113,6 +154,7 @@ export function accountView(input: {
       meters: [],
       spendNote: '',
       privacy: input.providerNotes,
+      ...(input.gaveUpAfterMs !== undefined ? { note: gaveUpNote(input.gaveUpAfterMs) } : {}),
     };
   }
   const base = show.active_api_base || show.api_base || '';
