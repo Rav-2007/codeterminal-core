@@ -6,6 +6,7 @@
 // the setting "toolActivity" with a value the table accepts, not for any key;
 // for the link "issues", not for a URL.
 
+import { serverVerdict, serversOn, verdictLabel } from '../mcpVerdict';
 import * as vscode from 'vscode';
 
 import { ConnectResponse, FEATURE_MCP_TOOLS, daemonInfo, fetchAvailableTiers, sendConnect, sendMCP, spendStatus, SpendStatus } from '../daemonClient';
@@ -122,7 +123,9 @@ export class ChatPagesHost implements vscode.Disposable {
     if (!st) {
       return;
     }
-    const on = st.servers.filter((s) => !s.disabled).length;
+    // On means working or about to be, by the same verdict the badges show --
+    // not merely "not paused" (a failed server is not on).
+    const on = serversOn(st.servers);
     this.panel.post({ type: 'mcpCount', on, total: st.servers.length, agentMode: st.agentMode });
   }
 
@@ -144,7 +147,15 @@ export class ChatPagesHost implements vscode.Disposable {
         }
         const cmd = pageCommand(msg.name);
         if (cmd) {
-          void Promise.resolve(vscode.commands.executeCommand(cmd)).then(() => this.reloadAfter(msg.name));
+          void Promise.resolve(vscode.commands.executeCommand(cmd)).then((said) => {
+            // Forget answers in words -- nothing was stored, nothing was
+            // forgotten, or what went -- and the Account page has no line of its
+            // own for it, so it is said where VS Code says things.
+            if (msg.name === 'forgetKey' && typeof said === 'string' && said) {
+              void vscode.window.showInformationMessage('Mochiii: ' + said.split('\n')[0]);
+            }
+            return this.reloadAfter(msg.name);
+          });
         }
         return true;
       }
@@ -187,9 +198,25 @@ export class ChatPagesHost implements vscode.Disposable {
     }
   }
 
+  // AFTER A KEY CHANGES, THE DAEMON MAY BE RESTARTING. Forget restarts it, and
+  // a page loaded in that moment showed "Not connected" with the raw lockfile
+  // error ("daemon not found (expected a lockfile at …)") and stayed so until
+  // Refresh, though the daemon was back seconds later (UI report, 2026-11-08).
+  // So the page waits for the daemon to answer -- up to recoverMs -- and shows
+  // what it says then; only a daemon that never comes back is reported as such.
+  recoverMs = 20000;
+  recoverEveryMs = 400;
+
   private async reloadAfter(name: unknown): Promise<void> {
     if (name === 'connect' || name === 'forgetKey') {
-      await this.load('account');
+      this.loaded.add('account');
+      const deadline = Date.now() + this.recoverMs;
+      let snap = await this.snapshot();
+      while (!snap.show && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, this.recoverEveryMs));
+        snap = await this.snapshot();
+      }
+      this.postAccountView(snap);
     } else if (name === 'mcpAdd') {
       await pagesContext?.mcpServers?.refresh();
     }
@@ -234,7 +261,10 @@ export class ChatPagesHost implements vscode.Disposable {
   }
 
   private async postAccount(): Promise<void> {
-    const snap = await this.snapshot();
+    this.postAccountView(await this.snapshot());
+  }
+
+  private postAccountView(snap: { show?: ConnectResponse; showError?: string; version: string; spend?: SpendStatus }): void {
     this.panel.post({
       type: 'page:account',
       view: accountView({
@@ -326,6 +356,10 @@ export class ChatPagesHost implements vscode.Disposable {
         status: serverStatus(s),
         // The daemon's own line ("✔ Connected (5 tools)"), when it says one.
         statusLine: s.status_line ?? '',
+        // THE verdict (mcpVerdict.ts): the dialog, Customize and the chip read
+        // this, and nothing else, to say how a server is.
+        look: serverVerdict(s),
+        label: verdictLabel(serverVerdict(s)),
         warnings: s.warnings ?? [],
         canSetKey: !!st.setEnv && (s.env ?? []).length + (s.headers ?? []).length > 0,
         canCheck: !!st.check && !s.disabled,

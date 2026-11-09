@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { forgetStoredKey } from './forgetKey';
 import { shutdownExtractors } from './attachmentExtract';
 import * as cp from 'child_process';
 import * as path from 'path';
@@ -644,28 +645,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // /connect forget: removes the daemon's stored key AND any key VS Code kept
   // for itself -- "forget" leaving a second key in force would be a lie.
   context.subscriptions.push(
-    vscode.commands.registerCommand('mochiii.forgetApiKey', async (): Promise<string> => {
-      const parts: string[] = [];
-      if (supervisor) {
-        try {
-          parts.push(formatConnectResult(await sendConnect(CLIENT_NAME, { forget: true })));
-        } catch (err) {
-          parts.push(`could not ask the daemon to forget its key: ${(err as Error).message}`);
-        }
-      }
-      const own = await getApiKey(context);
-      if (own) {
-        await clearApiKey(context);
-        cachedApiKey = undefined;
-        parts.push('The key VS Code kept for itself was removed as well.');
-      }
-      // The running daemon still holds a key in memory until it restarts.
-      if (supervisor && parts.length > 0) {
-        await supervisor.restart();
-        parts.push('The daemon was restarted, so it is no longer using a removed key.');
-      }
-      return parts.length > 0 ? parts.join('\n') : 'No key was stored, so there was nothing to remove.';
-    })
+    vscode.commands.registerCommand('mochiii.forgetApiKey', async (): Promise<string> =>
+      forgetStoredKey({
+        daemon: supervisor
+          ? {
+              show: () => sendConnect(CLIENT_NAME, { show: true }),
+              forget: () => sendConnect(CLIENT_NAME, { forget: true }),
+              restart: () => supervisor!.restart(),
+            }
+          : undefined,
+        ownKey: () => getApiKey(context),
+        clearOwnKey: async () => {
+          await clearApiKey(context);
+          cachedApiKey = undefined;
+        },
+        confirm: async (what) => {
+          const FORGET = 'Forget';
+          const pick = await vscode.window.showWarningMessage(
+            'Forget the stored key?',
+            {
+              modal: true,
+              detail:
+                'This removes ' + what.join(' and ') + '. Mochiii stops using it' + (supervisor ? ', and the daemon restarts. ' : '. ') +
+                'To use Mochiii again you will need to connect a key.',
+            },
+            FORGET
+          );
+          return pick === FORGET;
+        },
+      })
+    )
   );
 
   // DELIBERATELY NOT GATED ON A WORKSPACE, unlike the three commands around it.

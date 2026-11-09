@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -77,9 +78,14 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 	s.refreshMCPSecrets()
 
 	// A server changed, paused or removed: its last start no longer describes it.
+	// Forgotten BEFORE the action, not after it: an update or an enable starts
+	// the server once to say what it offers (tryStoredServer), and that start
+	// IS what describes it now. Forgetting it afterwards (a defer, until
+	// 2026-11-09) made the list say "Not started" right under a toast saying
+	// "It started and offers 3 tool(s)" (UI report, 2026-11-08).
 	switch req.Action {
 	case protocol.MCPActionUpdate, protocol.MCPActionEnable, protocol.MCPActionDisable, protocol.MCPActionRemove:
-		defer s.mcpStates.forget(strings.TrimSpace(req.Name))
+		s.mcpStates.forget(strings.TrimSpace(req.Name))
 	}
 
 	switch req.Action {
@@ -210,6 +216,12 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 			source = protocol.MCPSourceProject
 		}
 		state := s.mcpStates.get(name)
+		if state.state == "" && !srv.Disabled && srv.approval != protocol.MCPApprovalPending && srv.approval != protocol.MCPApprovalRejected {
+			// NOT STARTED, AND CANNOT BE: said now, not after a Check or a turn.
+			if why := programMissing(srv); why != "" {
+				state = mcpServerState{state: protocol.MCPStateFailed, detail: why}
+			}
+		}
 		var headerNames, headersMissing []string
 		if srv.remote() {
 			headerNames = sortedStringKeys(srv.Headers)
@@ -471,8 +483,6 @@ func (s *Server) mcpStoreBlockWith(ctx context.Context, name string, srv MCPServ
 		name, strings.ToLower(done), commandLine(srv))
 
 	resp := protocol.MCPResponse{Ok: true, AgentMode: s.cfg.MCP.Enabled}
-	cfg, _ := s.agentConfig()
-	resp.Servers = s.serverInfos(cfg)
 	if srv.Disabled {
 		// Trying it would say nothing: a turn does not start a paused server,
 		// and neither does the registry this would build.
@@ -480,6 +490,9 @@ func (s *Server) mcpStoreBlockWith(ctx context.Context, name string, srv MCPServ
 	} else {
 		resp.Detail, resp.Notes = s.tryStoredServer(ctx, done, name, srv)
 	}
+	// The list as the trial left it, so it says what the answer says.
+	cfg, _ := s.agentConfig()
+	resp.Servers = s.serverInfos(cfg)
 	if len(old.Tools) > 0 {
 		resp.Notes = append(resp.Notes, fmt.Sprintf("the per-tool policies %s had were for the program it ran before, "+
 			"so they were dropped: each of its tools asks again", name))
@@ -570,9 +583,9 @@ func (s *Server) mcpSetDisabled(ctx context.Context, req protocol.MCPRequest, di
 	if err := saveUserMCPServers(s.userServersPath, user); err != nil {
 		return protocol.MCPResponse{Error: "saving the change: " + err.Error()}
 	}
-	cfg, _ := s.agentConfig()
-	resp.Servers = s.serverInfos(cfg)
 	if disabled {
+		cfg, _ := s.agentConfig()
+		resp.Servers = s.serverInfos(cfg)
 		s.logger.Printf("mcp: server %s disabled by the user", name)
 		resp.Detail = fmt.Sprintf("Disabled %s. It is not started again until you enable it; a turn already running "+
 			"keeps the copy it started until it ends.", name)
@@ -580,6 +593,9 @@ func (s *Server) mcpSetDisabled(ctx context.Context, req protocol.MCPRequest, di
 	}
 	s.logger.Printf("mcp: server %s enabled by the user", name)
 	resp.Detail, resp.Notes = s.tryStoredServer(ctx, "Enabled", name, srv)
+	// The list as the trial left it, so it says what the answer says.
+	cfg, _ := s.agentConfig()
+	resp.Servers = s.serverInfos(cfg)
 	if !s.cfg.MCP.Enabled {
 		resp.Notes = append(resp.Notes, agentModeOffNote(s.configPathOrDefault()))
 	}
@@ -602,6 +618,7 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 		}
 	} else if !filepath.IsAbs(srv.Command) {
 		if _, err := lookPath(srv.Command); err != nil {
+			s.mcpStates.started(name, fmt.Errorf("%q was not found on this daemon's PATH", srv.Command))
 			return fmt.Sprintf("%s %s, but %q was not found on this daemon's PATH, so it cannot start yet. "+
 				"Install it, or remove the server and add it again with the program's absolute path.", done, name, srv.Command), notes
 		}
@@ -774,3 +791,29 @@ func userServersPathOrNone(logger *log.Logger) string {
 
 // lookPath is exec.LookPath, as a variable a test can replace.
 var lookPath = exec.LookPath
+
+// programMissing says why a local server's program cannot be found, or "" when
+// it can (or when that cannot be told without starting it). A server listed as
+// "Not started" whose program does not exist was shown like a healthy one --
+// and as a green "On" -- until someone pressed Check (UI report, 2026-11-08).
+// Only what is certain: an absolute path that is not there, or a bare name
+// that is not on this daemon's PATH (what tryStoredServer and a turn use). A
+// relative path ("./bin/x") depends on the folder it starts in, and is left.
+func programMissing(srv MCPServerConfig) string {
+	if srv.remote() || strings.TrimSpace(srv.Command) == "" {
+		return ""
+	}
+	if filepath.IsAbs(srv.Command) {
+		if st, err := os.Stat(srv.Command); err != nil || st.IsDir() {
+			return fmt.Sprintf("its program %s does not exist", srv.Command)
+		}
+		return ""
+	}
+	if strings.ContainsAny(srv.Command, `/\`) {
+		return ""
+	}
+	if _, err := lookPath(srv.Command); err != nil {
+		return fmt.Sprintf("%q was not found on this daemon's PATH", srv.Command)
+	}
+	return ""
+}

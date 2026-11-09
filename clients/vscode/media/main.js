@@ -400,6 +400,9 @@
 
   let slashFilter = '';
   let slashIndex = 0;
+  // Whether the highlighted row was chosen with the arrow keys since the text
+  // last changed. A row the user moved to is a choice; the first row is not.
+  let slashNavigated = false;
 
   let streaming = false;
   let currentAssistantBubble = null;
@@ -3113,6 +3116,7 @@
       return;
     }
     slashFilter = v.slice(1);
+    slashNavigated = false;
     renderSlashMenu();
   }
 
@@ -3330,6 +3334,7 @@
         e.key === 'ArrowDown'
           ? (slashIndex + 1) % items.length
           : (slashIndex - 1 + items.length) % items.length;
+      slashNavigated = true;
       renderSlashMenu();
       return;
     }
@@ -3346,13 +3351,24 @@
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey) {
+      // ONE ENTER RUNS A COMPLETE COMMAND. The menu takes Enter only to finish
+      // a name that is still partial, or to take a row the user arrowed to.
+      // It used to take every Enter while it was open, so "/mcp" + Enter only
+      // rewrote the box to "/mcp" and every bare command needed Enter twice
+      // (FOUND 2026-11-08, UI report). A command that needs arguments, sent
+      // bare, answers with its usage (parseSlash's usageOnly).
       if (menuOpen) {
         const items = filteredSlashCommands();
-        if (items[slashIndex] && !inputEl.value.includes(' ')) {
+        const typed = inputEl.value.slice(1).trim().toLowerCase();
+        const picked = items[slashIndex];
+        const exact = items.find((c) => c.name.toLowerCase() === typed);
+        const runTyped = !!exact && (!slashNavigated || picked === exact);
+        if (picked && !inputEl.value.includes(' ') && !runTyped) {
           e.preventDefault();
-          applySlash(items[slashIndex].name);
+          applySlash(picked.name);
           return;
         }
+        hideSlashMenu();
       }
       e.preventDefault();
       // ENTER DOES NOT QUEUE. Now that the input stays editable during a turn
