@@ -221,32 +221,14 @@
       return b;
     }
 
-    // A SERVER'S BADGE AND LINES, from the daemon's status line when it sends
-    // one ("✔ Connected (5 tools)", "✘ Failed to connect: …", "! Needs a key:
-    // X") -- the words `claude mcp list` uses -- and from the older fields when
-    // it does not.
-    /** @param {any} s @param {any} status @param {boolean} own */
-    function mcpLook(s, status, own) {
-      const line = String(s.statusLine || '');
-      const rest = line.replace(/^\S+\s+/, '');
-      if (s.disabled) return { badge: 'Paused', tone: 'off', title: 'Paused: its tools are not offered.' };
-      if (line.startsWith('✘')) return { badge: 'Failed', tone: 'warn', problem: rest, title: rest };
-      if (s.approval === 'pending') return { badge: 'Pending approval', tone: 'warn', problem: 'Proposed by this project’s .mcp.json. It does not run until you approve it.', title: 'Proposed by this project' };
-      if (s.approval === 'rejected') return { badge: 'Rejected', tone: 'off', title: 'You rejected it; it does not run.' };
-      if (line.startsWith('! Needs authentication')) return { badge: 'Sign in', tone: 'warn', problem: 'It needs you to sign in: use Sign in.', title: rest };
-      if (line.startsWith('!') && status.needsKey) return { badge: 'Needs key', tone: 'warn', problem: status.detail || rest, title: rest };
-      if (line.startsWith('!')) return { badge: 'Tools failed', tone: 'warn', problem: rest, title: rest };
-      if (line.startsWith('✔')) {
-        const m = /\((\d+) tools?\)/.exec(line);
-        return { badge: 'Connected', tone: 'on', sub: m ? m[1] + (m[1] === '1' ? ' tool' : ' tools') : '', title: rest };
-      }
-      if (line.startsWith('○')) {
-        return { badge: own ? 'On' : 'From config', tone: 'on', title: 'Not started yet: it starts with the next question in agent mode. Check starts it now.' };
-      }
-      // An older daemon: what serverStatus could tell.
-      const failed = /^(failed|needs) /.test(status.short + ' ');
-      const badge = status.needsKey ? 'Needs key' : status.short === 'failed to start' ? 'Failed' : status.short === 'running' ? 'Running' : own ? 'On' : 'From config';
-      return { badge, tone: failed || status.needsKey ? 'warn' : 'on', problem: failed || status.needsKey ? status.detail : '', title: status.detail };
+    // A SERVER'S BADGE AND LINES: the host's one verdict (src/mcpVerdict.ts),
+    // which the /mcp dialog and the composer's chip read too. Nothing here
+    // decides how a server is; Customize only picks its own tag colours.
+    /** @param {any} s */
+    function mcpLook(s) {
+      const v = s.look || { badge: 'Not started', tone: '', problem: '', title: '', sub: '' };
+      const tone = { on: 'on', warn: 'warn', bad: 'warn', off: 'off' }[String(v.tone)] || '';
+      return { badge: String(v.badge), tone, problem: String(v.problem || ''), title: String(v.title || ''), sub: String(v.sub || '') };
     }
 
     /** @param {any} msg */
@@ -274,8 +256,7 @@
         if (s.env && s.env.length) text.append(el('div', 'row-sub', 'Reads ' + s.env.join(', ')));
         // WHETHER IT REALLY STARTS. "Active" used to mean only "not paused", and
         // a server with no key showed it while exiting on every start.
-        const status = s.status || { short: '', detail: '', needsKey: false };
-        const look = mcpLook(s, status, own);
+        const look = mcpLook(s);
         if (look.problem) text.append(el('div', 'row-sub mcp-problem', look.problem));
         if (look.sub) text.append(el('div', 'row-sub', look.sub));
         for (const w of s.warnings || []) text.append(el('div', 'row-sub mcp-problem', w));
@@ -341,7 +322,7 @@
           acts.append(sw);
           addCheck(acts);
           if (s.canSetKey) {
-            const key = act('Set key…', () => vscode.postMessage({ type: 'mcp:row', action: 'setKey', name: s.name }), status.needsKey ? 'primary' : '');
+            const key = act('Set key…', () => vscode.postMessage({ type: 'mcp:row', action: 'setKey', name: s.name }), s.look && s.look.kind === 'needs-key' ? 'primary' : '');
             key.setAttribute('aria-label', 'Set a key for ' + s.name);
             acts.append(key);
           }
@@ -374,24 +355,14 @@
     /** @type {HTMLElement | null} */
     let dlgReturnFocus = null;
 
-    // A server's pill in the dialog: mcpLook's verdict in Claude Code's words.
+    // A server's pill in the dialog: the same verdict, with its sign.
     /** @param {any} s */
     function dlgLook(s) {
       const own = s.source !== 'config' && s.source !== 'project';
-      const look = mcpLook(s, s.status || { short: '', detail: '', needsKey: false }, own);
-      /** @type {Record<string, [string, string]>} */
-      const words = {
-        Connected: ['✓ Connected', 'on'],
-        'Sign in': ['⚠ Needs auth', 'warn'],
-        'Needs key': ['⚠ Needs key', 'warn'],
-        'Pending approval': ['⚠ Pending approval', 'warn'],
-        Failed: ['✘ Failed', 'bad'],
-        'Tools failed': ['⚠ Tools failed', 'bad'],
-        Paused: ['Disabled', ''],
-        Rejected: ['Rejected', ''],
-      };
-      const [badge, tone] = words[look.badge] || ['Not started', ''];
-      return { badge, tone, look, own };
+      const look = mcpLook(s);
+      const v = s.look || {};
+      const tone = { on: 'on', warn: 'warn', bad: 'bad' }[String(v.tone)] || '';
+      return { badge: String(s.label || look.badge), tone, look, own };
     }
 
     function openMcp() {

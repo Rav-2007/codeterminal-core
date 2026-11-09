@@ -20,6 +20,7 @@
 // which is browsing rather than managing, is the webview (mcpMarketplace.ts).
 
 import * as vscode from 'vscode';
+import { serverVerdict, verdictLabel } from './mcpVerdict';
 import {
   FEATURE_MCP_ENV,
   FEATURE_MCP_MANAGE,
@@ -179,11 +180,11 @@ export class McpServersProvider implements vscode.TreeDataProvider<McpNode> {
     const s = node.server;
     const item = new vscode.TreeItem(s.name, vscode.TreeItemCollapsibleState.None);
     const fromConfig = s.source === MCP_SOURCE_CONFIG;
-    item.description = s.disabled
-      ? 'paused'
-      : s.status_line || serverStatus(s).short || (fromConfig ? 'from models.json' : s.program ?? '');
+    // The same verdict as the /mcp dialog, Customize and the chip (mcpVerdict.ts).
+    const verdict = serverVerdict(s);
+    item.description = verdictLabel(verdict) + (verdict.sub ? ` (${verdict.sub})` : '');
     item.iconPath = new vscode.ThemeIcon(
-      s.disabled ? 'debug-pause' : s.state === MCP_STATE_FAILED ? 'error' : fromConfig ? 'settings-gear' : 'server-environment',
+      s.disabled ? 'debug-pause' : verdict.tone === 'bad' ? 'error' : fromConfig ? 'settings-gear' : 'server-environment',
     );
     item.contextValue = fromConfig
       ? 'mcpServer.config'

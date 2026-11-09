@@ -15,7 +15,10 @@ import (
 
 func TestEachServerSaysHowItFared(t *testing.T) {
 	s, _ := keyedEchoWithFile(t)
-	if got := serverInfo(t, s, "echo").StatusLine; got != "! Needs a key: "+echoKeyName {
+	// The fixture's update tried the server, and it exited for want of its key:
+	// the list says so (until 2026-11-09 a deferred forget wiped that start, and
+	// the line read "Needs a key" under an answer saying it did not start).
+	if got := serverInfo(t, s, "echo").StatusLine; !strings.HasPrefix(got, "✘ Failed to connect: ") || !strings.HasSuffix(got, " · needs a key: "+echoKeyName) {
 		t.Errorf("before a key: %q", got)
 	}
 	check := s.mcpResult(context.Background(), protocol.MCPRequest{MCP: true, Action: protocol.MCPActionCheck, Name: "echo"})
@@ -127,7 +130,7 @@ func TestTheListWaitsAsLongAsTheSlowestServerMay(t *testing.T) {
 func TestGetDescribesOneServer(t *testing.T) {
 	s, _ := keyedEchoWithFile(t)
 	resp := s.mcpResult(context.Background(), manageRequest(protocol.MCPActionGet, "echo"))
-	for _, want := range []string{"echo:", "Status: ! Needs a key", "Command: ", echoKeyName + " (no value)", "Starts in: a private folder"} {
+	for _, want := range []string{"echo:", "Status: ✘ Failed to connect", "needs a key: " + echoKeyName, "Command: ", echoKeyName + " (no value)", "Starts in: a private folder"} {
 		if !strings.Contains(resp.Detail, want) {
 			t.Errorf("get does not say %q:\n%s", want, resp.Detail)
 		}

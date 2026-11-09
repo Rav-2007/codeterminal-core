@@ -6,6 +6,7 @@
 // the setting "toolActivity" with a value the table accepts, not for any key;
 // for the link "issues", not for a URL.
 
+import { serverVerdict, serversOn, verdictLabel } from '../mcpVerdict';
 import * as vscode from 'vscode';
 
 import { ConnectResponse, FEATURE_MCP_TOOLS, daemonInfo, fetchAvailableTiers, sendConnect, sendMCP, spendStatus, SpendStatus } from '../daemonClient';
@@ -122,7 +123,9 @@ export class ChatPagesHost implements vscode.Disposable {
     if (!st) {
       return;
     }
-    const on = st.servers.filter((s) => !s.disabled).length;
+    // On means working or about to be, by the same verdict the badges show --
+    // not merely "not paused" (a failed server is not on).
+    const on = serversOn(st.servers);
     this.panel.post({ type: 'mcpCount', on, total: st.servers.length, agentMode: st.agentMode });
   }
 
@@ -353,6 +356,10 @@ export class ChatPagesHost implements vscode.Disposable {
         status: serverStatus(s),
         // The daemon's own line ("✔ Connected (5 tools)"), when it says one.
         statusLine: s.status_line ?? '',
+        // THE verdict (mcpVerdict.ts): the dialog, Customize and the chip read
+        // this, and nothing else, to say how a server is.
+        look: serverVerdict(s),
+        label: verdictLabel(serverVerdict(s)),
         warnings: s.warnings ?? [],
         canSetKey: !!st.setEnv && (s.env ?? []).length + (s.headers ?? []).length > 0,
         canCheck: !!st.check && !s.disabled,
