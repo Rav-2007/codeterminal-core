@@ -172,6 +172,24 @@ func TestFTS5InterruptBaselineHasNotBeenEmptied(t *testing.T) {
 // driver polls the interrupt inside FTS5, and serveConn's comment plus the
 // reasoning behind the retrieval bound should be revisited.
 func TestSQLiteCancellation_DoesNotReachAnFTS5PhraseMatch(t *testing.T) {
+	// SKIPPED ON WINDOWS BEFORE ANYTHING IS OPENED. This test cannot say anything
+	// there, and it can fail. fts5InterruptHonoured has no windows entry, so the
+	// body below only ever ended as a skip on that platform ("no measured
+	// baseline") -- but by then the 200,000-character MATCH is already running,
+	// and SQLite does not poll the interrupt inside it, so the query goes on
+	// holding memory.db after the context is cancelled. t.TempDir's cleanup then
+	// cannot delete the file on Windows ("The process cannot access the file
+	// because it is being used by another process") and fails a test that had
+	// skipped. Seen on build run #436, job "cross (windows-latest, daemon)".
+	//
+	// Skipping first means no database is opened and no heavy query is started.
+	// Every other platform runs exactly as before. To give Windows a baseline,
+	// measure it, add the entry to fts5InterruptHonoured, and make the query's
+	// end observable before the store is closed so the file is released.
+	if runtime.GOOS == "windows" {
+		t.Skip("windows has no measured FTS5 interrupt baseline, and the uninterruptible phrase match " +
+			"keeps memory.db open past t.TempDir's cleanup there (build run #436)")
+	}
 	mem, _ := openTestMemoryStore(t)
 	for i := range 50 {
 		if err := mem.AppendTurn(t.Context(), "/ws", "user",
