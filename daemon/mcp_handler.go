@@ -218,11 +218,12 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 		info := protocol.MCPServerInfo{
 			Transport: strings.ToLower(srv.Type), Headers: headerNames, HeadersMissing: headersMissing,
 			Name: name, Command: commandLine(srv), Source: source, Disabled: srv.Disabled,
-			Program: srv.Command, Args: srv.Args, Env: maskedEnvNames(srv.Env), Cwd: srv.Cwd,
+			Program: srv.Command, Args: maskArgKeys(srv.Args), Env: maskedEnvNames(srv.Env), Cwd: srv.Cwd,
 			EnvOptional: maskedEnvNames(srv.EnvOptional),
 			EnvMissing:  maskedEnvNames(s.keysMissing(name, srv)), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
-			Warnings: missingTemplateWarnings(s.templateMissing(name, srv)),
-			State:    state.state, StateDetail: state.detail, ToolCount: state.tools, ToolsError: state.toolsErr,
+			Warnings: append(missingTemplateWarnings(s.templateMissing(name, srv)),
+				argKeyWarning(name, s.serverFile(source, srv), srv.Args)...),
+			State: state.state, StateDetail: state.detail, ToolCount: state.tools, ToolsError: state.toolsErr,
 			ToolsListed: state.counted,
 			SignedIn:    srv.remote() && s.mcpSecrets.oauthOf(name, srv.URL) != nil,
 		}
@@ -243,7 +244,23 @@ func commandLine(srv MCPServerConfig) string {
 	if srv.remote() {
 		return strings.ToLower(srv.Type) + " " + shownURL(srv.URL)
 	}
-	return strings.TrimSpace(srv.Command + " " + strings.Join(srv.Args, " "))
+	// A key on the command line is masked: this string is shown and logged
+	// (mcpargkeys.go). The stored block keeps what was written.
+	return strings.TrimSpace(srv.Command + " " + strings.Join(maskArgKeys(srv.Args), " "))
+}
+
+// serverFile names the file a server's block is kept in, for a message.
+func (s *Server) serverFile(source string, srv MCPServerConfig) string {
+	switch source {
+	case protocol.MCPSourceConfig:
+		return s.configPathOrDefault()
+	case protocol.MCPSourceProject:
+		if srv.project != "" {
+			return srv.project
+		}
+		return "the project's .mcp.json"
+	}
+	return "~/.mochiii/mcp-servers.json"
 }
 
 // unconfinedWarning is what a user is agreeing to when they add a server. It is
@@ -364,6 +381,14 @@ func (s *Server) mcpStoreBlockWith(ctx context.Context, name string, srv MCPServ
 	if err := validateUserServer(name, srv); err != nil {
 		return protocol.MCPResponse{Error: err.Error() + nothing}
 	}
+	// Here, on a request, and not in validateUserServer: that also runs when
+	// the file is loaded, and a server already stored with a key in its
+	// arguments must go on starting (it is masked and warned about instead).
+	if !srv.remote() {
+		if err := refuseArgKeys(name, srv.Args); err != nil {
+			return protocol.MCPResponse{Error: err.Error() + nothing}
+		}
+	}
 	if err := validEnvValues(srv.Env, req.EnvValues); err != nil {
 		return protocol.MCPResponse{Error: err.Error() + nothing}
 	}
@@ -472,7 +497,7 @@ func (s *Server) mcpStoreBlockWith(ctx context.Context, name string, srv MCPServ
 func (s *Server) previewInfo(name string, srv MCPServerConfig, envValues, headerValues map[string]string) *protocol.MCPServerInfo {
 	info := &protocol.MCPServerInfo{
 		Name: name, Command: commandLine(srv), Source: protocol.MCPSourceUser, Transport: strings.ToLower(srv.Type),
-		Program: srv.Command, Args: srv.Args, Env: maskedEnvNames(srv.Env), Cwd: srv.Cwd,
+		Program: srv.Command, Args: maskArgKeys(srv.Args), Env: maskedEnvNames(srv.Env), Cwd: srv.Cwd,
 		EnvOptional: maskedEnvNames(srv.EnvOptional),
 	}
 	if srv.remote() {
