@@ -44,6 +44,7 @@ import (
 type e2eChat struct {
 	raw      string
 	messages []e2eMessage
+	auth     string // the Authorization header the daemon sent
 }
 
 type e2eMessage struct {
@@ -107,7 +108,7 @@ func newE2EModel(t *testing.T, reply func(n int, chat e2eChat) e2eReply) *e2eMod
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
-		chat := e2eChat{raw: string(body)}
+		chat := e2eChat{raw: string(body), auth: r.Header.Get("Authorization")}
 		var req struct {
 			Messages []e2eMessage `json:"messages"`
 		}
@@ -165,7 +166,11 @@ func e2eBinary(t *testing.T) string {
 		}
 		registerProcessCleanup(func() { _ = os.RemoveAll(dir) })
 		e2eBin = filepath.Join(dir, exeName("mochiii-daemon"))
-		out, err := exec.Command("go", "build", "-o", e2eBin, ".").CombinedOutput()
+		args := []string{"build", "-o", e2eBin}
+		if e2eBuildTags != "" { // the daemon is built the way this test binary was
+			args = append(args, "-tags", e2eBuildTags)
+		}
+		out, err := exec.Command("go", append(args, ".")...).CombinedOutput()
 		if err != nil {
 			e2eBinErr = fmt.Errorf("building the daemon: %v\n%s", err, out)
 		}
@@ -176,11 +181,17 @@ func e2eBinary(t *testing.T) string {
 	return e2eBin
 }
 
+// e2eExtraEnv is appended to the daemon's environment by startE2E. A test sets
+// it and restores it with t.Cleanup.
+var e2eExtraEnv []string
+
 // e2eDaemon is one running daemon and the workspace it serves.
 type e2eDaemon struct {
-	workspace string
-	lock      protocol.LockFile
-	log       *lockedBuffer
+	workspace  string
+	lock       protocol.LockFile
+	log        *lockedBuffer
+	runtimeDir string // the daemon's XDG_RUNTIME_DIR
+	pid        int
 }
 
 // startE2E starts the real daemon on a fresh workspace holding files, with the
@@ -244,6 +255,9 @@ func startE2E(t *testing.T, model *e2eModel, files map[string]string, patch func
 		"MOCHIII_API_BASE="+model.srv.URL+"/api/v1",
 		"MOCHIII_API_KEY=", "MOCHIII_PROXY_KEY=", "OPENROUTER_API_KEY=", "MOCHIII_USE_PROXY=",
 	)
+	// What a test adds to the daemon's environment, after the defaults above (the
+	// trace tests set MOCHIII_TRACE and plant a key to prove it is not recorded).
+	cmd.Env = append(cmd.Env, e2eExtraEnv...)
 	log := &lockedBuffer{}
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Start(); err != nil {
@@ -261,7 +275,7 @@ func startE2E(t *testing.T, model *e2eModel, files map[string]string, patch func
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(lockPath); err == nil {
-			return &e2eDaemon{workspace: ws, lock: readLockFileAt(t, lockPath), log: log}
+			return &e2eDaemon{workspace: ws, lock: readLockFileAt(t, lockPath), log: log, runtimeDir: runtimeDir, pid: cmd.Process.Pid}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

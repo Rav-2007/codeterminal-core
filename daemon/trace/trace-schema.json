@@ -1,0 +1,171 @@
+{
+  "v": 1,
+  "doc": "Trace format v1: one JSON object per line. This file is the source of truth, owned by codeterminal-core (daemon/trace); the viewer (mochiii_visual) reads a copy. A reader ignores fields and stages it does not know (the viewer draws an unknown stage as unmapped), refuses a different major v, and rejects a line longer than max_line_bytes. An emitter writes only the fields listed here, only the stages listed here, and only error classes from error_classes.",
+  "max_line_bytes": 512,
+  "fields": [
+    "v",
+    "t",
+    "src",
+    "turn",
+    "n",
+    "stage",
+    "status",
+    "dur_ms",
+    "tool",
+    "call",
+    "err",
+    "sid"
+  ],
+  "field_notes": {
+    "v": "schema major version, the number 1",
+    "t": "epoch milliseconds",
+    "src": "which process wrote the line",
+    "turn": "an id that joins one turn's lines across processes (lower-case letters and digits, 1-16)",
+    "n": "per-turn sequence number",
+    "stage": "one of the closed stage list",
+    "status": "start, ok, fail or skip",
+    "dur_ms": "duration of the stage, for ok and fail",
+    "tool": "the subject: a resolved tool name (builtin__read_file, github__create_issue), a catalog command name without its slash (fix), or a request kind (prompt)",
+    "call": "a daemon counter for tool calls within the turn, 0 when not a tool call",
+    "err": "an error class from a closed set, empty unless status is fail",
+    "sid": "the first 8 hex digits of the SHA-256 of the client's session name; written only on a turn's first line, and only when the client named a session. The name itself is never written"
+  },
+  "srcs": [
+    "daemon",
+    "tui",
+    "vscode",
+    "adapter"
+  ],
+  "statuses": [
+    "start",
+    "ok",
+    "fail",
+    "skip"
+  ],
+  "stages": [
+    {
+      "name": "command_parsed",
+      "subject": "command"
+    },
+    {
+      "name": "command_local_done",
+      "subject": "command"
+    },
+    {
+      "name": "dial",
+      "subject": "request kind, may be empty"
+    },
+    {
+      "name": "request_sent",
+      "subject": "request kind"
+    },
+    {
+      "name": "request",
+      "subject": "request kind"
+    },
+    {
+      "name": "request_refused",
+      "subject": "request kind"
+    },
+    {
+      "name": "retrieval",
+      "subject": ""
+    },
+    {
+      "name": "model_call",
+      "subject": ""
+    },
+    {
+      "name": "first_token",
+      "subject": ""
+    },
+    {
+      "name": "tool_requested",
+      "subject": "tool"
+    },
+    {
+      "name": "approval_wait",
+      "subject": "tool"
+    },
+    {
+      "name": "approval_result",
+      "subject": "tool"
+    },
+    {
+      "name": "tool_run",
+      "subject": "tool"
+    },
+    {
+      "name": "mcp_call",
+      "subject": "server__tool"
+    },
+    {
+      "name": "budget_stop",
+      "subject": ""
+    },
+    {
+      "name": "persist",
+      "subject": ""
+    },
+    {
+      "name": "result",
+      "subject": ""
+    },
+    {
+      "name": "approval_shown",
+      "subject": "tool"
+    },
+    {
+      "name": "result_rendered",
+      "subject": ""
+    }
+  ],
+  "request_kinds": [
+    "apply",
+    "undo",
+    "status",
+    "search",
+    "history",
+    "connect",
+    "mcp",
+    "rules",
+    "github",
+    "local",
+    "approval",
+    "prompt"
+  ],
+  "error_classes": [
+    "other",
+    "rate_limited",
+    "quota_exceeded",
+    "context_too_large",
+    "auth",
+    "upstream_unavailable",
+    "privacy_refused",
+    "invalid_request",
+    "unavailable_tier",
+    "spend_limit",
+    "unknown",
+    "denied_config",
+    "denied_user",
+    "denied_ask",
+    "denied_credential",
+    "refused_by_tool",
+    "length",
+    "content_filter",
+    "budget_exceeded",
+    "agent_budget",
+    "user_cancelled",
+    "provider_error",
+    "tool_failed",
+    "server_unavailable"
+  ],
+  "error_classes_note": "the closed set an emitter may write in err: daemon ModelErrorClass (modelerror.go), the audit* decision sources that refuse a call, protocol.Incomplete*, and the two tool failure classes; anything else is written as other",
+  "patterns": {
+    "turn": "^[a-z0-9]{1,16}$",
+    "id": "^[a-z0-9_.:-]{1,64}$",
+    "stage": "^[a-z0-9_]{1,40}$",
+    "err": "^[a-z0-9_]{1,40}$",
+    "sid": "^[0-9a-f]{8}$"
+  }
+}

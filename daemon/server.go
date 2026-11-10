@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"mochiii/daemon/trace"
 	"mochiii/editapply"
 	"mochiii/protocol"
 )
@@ -470,6 +471,17 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// TRACE D1 (daemon/trace; compiled only with -tags trace, and on only with
+	// MOCHIII_TRACE=1): this connection's turn id, carried on ctx, and one line
+	// saying what kind of request it is. The kind comes from which keys the body
+	// has; nothing else in it is read except the session name, which is recorded
+	// as a hash.
+	if trace.On() {
+		tr := trace.NewTurn(traceSessionOf(raw))
+		ctx = trace.With(ctx, tr)
+		tr.Emit(trace.Event{Stage: trace.StageRequest, Status: trace.StatusOK, Tool: traceKindOf(raw).Tool()})
+	}
+
 	if isApplyEditRequest(raw) {
 		var applyReq protocol.ApplyEditRequest
 		if err := json.Unmarshal(raw, &applyReq); err != nil {
@@ -574,6 +586,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	if modeErr != nil {
 		s.count(func(c *counters) { c.malformed.Add(1) })
 		s.logger.Printf("rejecting prompt: %v", modeErr)
+		traceRefused(ctx, ClassInvalidRequest) // TRACE D2
 		// Ignored deliberately: the turn is already being refused, and a write
 		// failure here means the client is gone -- which changes nothing about
 		// what this branch does next, which is return.
@@ -590,6 +603,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	if err := validTaskRequest(promptReq); err != nil {
 		s.count(func(c *counters) { c.malformed.Add(1) })
 		s.logger.Printf("rejecting prompt: %v", err)
+		traceRefused(ctx, ClassInvalidRequest) // TRACE D2
 		_ = enc.Encode(protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
@@ -635,6 +649,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		}
 		if specErr != nil {
 			s.logger.Printf("rejecting prompt: spec: %v", specErr)
+			traceRefused(ctx, ClassInvalidRequest) // TRACE D2
 			_ = enc.Encode(protocol.TokenResponse{
 				ProtocolVersion: protocol.ProtocolVersion,
 				Done:            true,
@@ -654,6 +669,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	if strings.TrimSpace(promptReq.Prompt) == "" {
 		s.count(func(c *counters) { c.emptyPrompts.Add(1) })
 		s.logger.Print("rejecting empty prompt without calling the model API")
+		traceRefused(ctx, ClassInvalidRequest) // TRACE D2
 		enc.Encode(protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
@@ -668,6 +684,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// question costs nothing until the person says to go on (spend.go).
 	if stop := s.spend.reached(sessionID(promptReq.Session), 0); stop != nil {
 		s.logger.Printf("refusing a prompt: %s is reached", stop.what())
+		traceRefused(ctx, ClassSpendLimit) // TRACE D2
 		_ = enc.Encode(protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
@@ -698,11 +715,13 @@ func (s *Server) serveConn(conn net.Conn) {
 	// up front -- a follow-up together with the question it follows
 	// (retrievalQueryFor).
 	var outcome retrievalOutcome
+	retrieval := trace.From(ctx).Begin(trace.StageRetrieval, trace.Tool{}, 0) // TRACE D3
 	if s.agentModeEngaged(hsReq) {
 		outcome = s.gatherDirectRefs(promptReq.Prompt)
 	} else {
 		outcome = s.gatherContext(ctx, retrievalQueryFor(promptReq.Prompt, historyOutcome.Messages))
 	}
+	retrieval.End(traceSkipStatus(outcome.Skipped), trace.ClassNone) // TRACE D3
 	s.logRetrieval(outcome)
 
 	grounding := buildGroundingInfo(outcome, s.workspace, promptReq.Workspace)
@@ -803,6 +822,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	var task *taskRun
 	if isLongTaskMode(promptReq.Mode) || promptReq.Task != "" {
 		refuse := func(msg string) {
+			traceRefused(ctx, ClassInvalidRequest) // TRACE D2
 			_ = enc.Encode(protocol.TokenResponse{
 				ProtocolVersion: protocol.ProtocolVersion,
 				Done:            true,
@@ -905,6 +925,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// to specs/, and /spec check needs record_criterion. Without agent mode
 	// neither exists, and a plain answer would look like one that worked.
 	if (isSpecMode(promptReq.Mode) || needsSpec(promptReq.Mode)) && !s.agentModeEngaged(hsReq) {
+		traceRefused(ctx, ClassInvalidRequest) // TRACE D2
 		_ = enc.Encode(protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
@@ -954,8 +975,12 @@ func (s *Server) serveConn(conn net.Conn) {
 	messages = s.withoutUnofferedWebRules(messages, false)
 	apiKey, apiBase := s.credentials()
 	ask := func() error {
+		mc := trace.From(ctx).BeginModelCall() // TRACE D4: nil when tracing is off, and the token callback below is then one nil check
 		_, err := streamWithRetry(ctx, apiBase, apiKey, decision.Slug, messages, nil, routing,
 			func(token string) error {
+				if mc != nil { // TRACE D4
+					mc.Token()
+				}
 				full.WriteString(token)
 				return tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
 			},
@@ -990,6 +1015,9 @@ func (s *Server) serveConn(conn net.Conn) {
 			},
 			s.logger,
 		)
+		if mc != nil { // TRACE D4
+			mc.End(traceModelErrClass(err))
+		}
 		return err
 	}
 	err := ask()
@@ -1029,6 +1057,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		// %v here cannot leak by accident.
 		modelErr := asModelError(err)
 		s.logger.Printf("model API error: %s", modelErr.Detail())
+		traceDone(ctx, string(modelErr.Class), nil) // TRACE D9
 		_ = s.sendDone(enc, protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
@@ -1064,7 +1093,10 @@ func (s *Server) serveConn(conn net.Conn) {
 	// /save or a question from another window, finds this exchange already in
 	// the chat rather than racing it there. After the empty-greeting check
 	// above, so what is persisted carries that incomplete reason too.
+	persist := trace.From(ctx).Begin(trace.StagePersist, trace.Tool{}, 0) // TRACE D9
 	before, after := s.persistTurn(promptReq.Prompt, full.String(), incomplete)
+	persist.End(trace.StatusOK, trace.ClassNone) // TRACE D9
+	traceDone(ctx, "", incomplete)               // TRACE D9
 	done := protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete,
 		Usage: tally.report(decision.Slug, s.contextWindowFor(decision.Slug)), Spend: tally.spendReport()}
 	markChatRevision(&done, promptReq.ChatRevision, before, after)

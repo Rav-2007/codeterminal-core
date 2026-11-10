@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks hookcheck test race fmt vet crossvet standalone targetparity lint ratchet ledger errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain builtin-config
+.PHONY: help hooks hookcheck test race trace-test fmt vet crossvet standalone targetparity lint ratchet ledger errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain builtin-config
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -16,6 +16,7 @@ help:
 	@echo "make check    everything CI runs: build, fmt, vet, race, lint, ratchet, docs"
 	@echo "make docs     every relative link in a tracked .md resolves"
 	@echo "make race     go test -race across all six modules"
+	@echo "make trace-test  the execution trace's tests, with the daemon built -tags trace"
 	@echo "make crossvet compile the windows files this machine never sees"
 	@echo "make lint     staticcheck + ineffassign + bodyclose"
 	@echo "make ratchet  per-package coverage floors"
@@ -83,7 +84,18 @@ vet:
 # above were added to fix, and would have been discovered the next time someone
 # needed the decision data rather than at the commit that broke it.
 	@(cd daemon && go vet -tags warnscan ./...) || exit 1
-	@echo "vet: clean (including -tags eval and -tags warnscan)"
+# Third tag: `trace` compiles the execution recorder (daemon/trace) and its
+# tests. A default build does not contain it, so an untagged vet never sees it.
+	@(cd daemon && go vet -tags trace ./...) || exit 1
+	@echo "vet: clean (including -tags eval, -tags warnscan and -tags trace)"
+
+# THE EXECUTION TRACE'S TESTS. The recorder exists only in a build made with
+# -tags trace, so `go test ./...` never runs its tests; this does, with the real
+# daemon built the same way (daemon/agente2e_test.go reads the tag). The leak
+# test (daemon/trace_leak_test.go) is the one that matters. ~1 minute.
+trace-test:
+	@cd daemon && go test -tags trace -count=1 ./trace/... && \
+		go test -tags trace -count=1 -timeout 15m -run 'TestTheTraceLeaks|TestWithTheSwitchOff|TestASymlinkedTraceFile|TestTheGoldenTrace|TestNoTurnIsSafe' .
 
 # Compile the windows/ and darwin/ tagged files, which a vet on this machine
 # never sees. 23 files carry `//go:build windows` and 3 carry darwin -- the
@@ -113,6 +125,7 @@ crossvet:
 		for m in $(CROSSVET_MODULES); do \
 			(cd $$m && GOOS=$$os go vet ./...) || { echo "crossvet: FAILED GOOS=$$os $$m"; exit 1; }; \
 		done; \
+		(cd daemon && GOOS=$$os go vet -tags trace ./...) || { echo "crossvet: FAILED GOOS=$$os -tags trace daemon"; exit 1; }; \
 	done
 	@echo "crossvet: clean (windows and darwin, $(words $(CROSSVET_MODULES)) modules)"
 	@# The static build for musl Linux (-tags nosearch, release-targets.txt's
@@ -252,7 +265,7 @@ fuzzguard:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: hookcheck fmt vet crossvet standalone race lint ratchet ledger errcheck evalguard fuzzguard supplychain webview docs debtmarkers targetparity parity reach
+check: hookcheck fmt vet crossvet standalone race trace-test lint ratchet ledger errcheck evalguard fuzzguard supplychain webview docs debtmarkers targetparity parity reach
 	@echo "check: all gates green"
 	@./scripts/gate-parity.sh --what-ci-adds
 

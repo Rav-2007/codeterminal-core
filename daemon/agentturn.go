@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"mochiii/daemon/trace"
 	"mochiii/protocol"
 )
 
@@ -259,6 +260,7 @@ func (s *Server) runAgentTurn(
 	if err != nil {
 		modelErr := asModelError(err)
 		s.logger.Printf("agent: turn failed: %s", modelErr.Detail())
+		traceDone(ctx, string(modelErr.Class), nil) // TRACE D9
 		// The connection is already gone if this fails, and the local log above
 		// is the record that survives either way. There is nothing further to
 		// try and nobody left to tell.
@@ -344,7 +346,10 @@ func (s *Server) runAgentTurn(
 	//
 	// Saved BEFORE the Done, as the chat path is (server.go), so the Done can
 	// say where the shared chat now stands.
+	persist := trace.From(ctx).Begin(trace.StagePersist, trace.Tool{}, 0) // TRACE D9
 	before, after := s.persistTurn(promptReq.Prompt, remembered+sources+report+summariseToolActivity(result.ToolNames), result.Incomplete)
+	persist.End(trace.StatusOK, trace.ClassNone) // TRACE D9
+	traceDone(ctx, "", result.Incomplete)        // TRACE D9
 
 	// A failed terminal write means the client has gone; the turn's real work
 	// (the edit proposals, the persisted history above) is unaffected.
