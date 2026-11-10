@@ -1,0 +1,69 @@
+# SCRATCH, EXISTS ONLY ON THE BRANCH scratch/winfault-experiments. Never merged,
+# no PR. Deleted with the branch once the results are saved.
+#
+# Question: are the two Windows-only runtime faults seen in `cross (windows-latest,
+# daemon)` (sync.Pool popTail write fault; "found pointer to free object") a heap
+# defect, and does a GC setting or the race detector change it?
+#
+# The same daemon tests as the real job (`go test -count=1 ./...` in daemon, on
+# windows-latest, same Go), run 20 times per variant, same code in all four:
+#   control       unchanged
+#   clobberfree   GODEBUG=clobberfree=1  (poison freed objects: a use-after-free
+#                 then fails at the stale use, with that stack)
+#   nogreenteagc  GOEXPERIMENT=nogreenteagc  (the pre-1.26 collector)
+#   race          -race  (cgo + the runner's C toolchain)
+#
+# No secrets, no artifacts, no tokens beyond the default read-only one. Nothing
+# here sends anything anywhere.
+name: scratch winfault
+
+on:
+  push:
+    branches: [scratch/winfault-experiments]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.10"
+
+jobs:
+  daemon-windows:
+    name: ${{ matrix.variant }} #${{ matrix.rep }}
+    runs-on: windows-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [control, clobberfree, nogreenteagc, race]
+        rep: [1] # SMOKE: one rep per variant (4 jobs). The 20-rep run is a separate, approved push.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+
+      - name: Toolchain
+        shell: bash
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOEXPERIMENT GODEBUG
+          if [ "${{ matrix.variant }}" = "race" ]; then gcc --version | head -1; fi
+
+      # The real job's step, verbatim, plus the one variable each variant sets.
+      # The race variant also gets a longer -timeout: the Linux raced suite takes
+      # 417-651s against go test's 10-minute default, and Windows is slower.
+      - name: Test
+        shell: bash
+        working-directory: daemon
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -o pipefail
+          case "$VARIANT" in
+            control)      go test -count=1 ./... ;;
+            clobberfree)  GODEBUG=clobberfree=1 go test -count=1 ./... ;;
+            nogreenteagc) GOEXPERIMENT=nogreenteagc go test -count=1 ./... ;;
+            race)         CGO_ENABLED=1 go test -race -count=1 -timeout 40m ./... ;;
+          esac
