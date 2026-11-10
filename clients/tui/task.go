@@ -67,7 +67,8 @@ func (m chatModel) handleTaskCommand(args string) (tea.Model, tea.Cmd) {
 	case word == "budget" && triesTaskBudget(rest):
 		// A BUDGET MISTYPED IS NOT A GOAL. "/task budget 1 hour" started a paid
 		// task whose goal was "budget 1 hour" (FOUND 2026-10-01). A goal about
-		// budgets has no number in it; one that does can be worded another way.
+		// budgets has no number in it and more than one word; one that does
+		// can be worded another way.
 		reply = m.setTaskBudget(rest) + "\n(for a task about budgets, word the goal another way)"
 	default:
 		return m.beginTaskTurn("/task "+args, args, modeTask, taskFields{budget: m.taskBudget})
@@ -76,6 +77,24 @@ func (m chatModel) handleTaskCommand(args string) (tea.Model, tea.Cmd) {
 	m.resizeViewport()
 	m.refreshViewport()
 	return m, nil
+}
+
+// noSavedTaskNote is the plain answer to a task action the daemon refused
+// because no task is saved: "no saved task for this workspace", or "no saved
+// task <id> in this workspace" for a named one. It is the daemon's own sentence
+// (daemon/taskledger.go: errNoTasks and the by-ID form) without its "task: "
+// and "there is " wrapping, found by the words "no saved task" so the daemon's
+// wording around them can change. Empty for any other error, and for any turn
+// that was not a task action, so a goal's real failures are still failures.
+func noSavedTaskNote(action string, err error) string {
+	if action == "" || err == nil {
+		return ""
+	}
+	_, after, found := strings.Cut(err.Error(), "no saved task")
+	if !found {
+		return ""
+	}
+	return "no saved task" + after
 }
 
 // setTaskBudget is /task budget [30m] [$1] [200 calls] [default].
@@ -128,9 +147,14 @@ func looksLikeTaskBudget(s string) bool {
 }
 
 // triesTaskBudget reports whether s was meant as a budget that did not parse:
-// it holds a number or a dollar sign.
+// it holds a number or a dollar sign, or it is one word. "/task budget abc"
+// started a paid task whose goal was "budget abc" (Phase 3 audit, 2026-11-09):
+// no number, so the rule above let it through as a goal. A goal that starts with
+// the word "budget" has more to say than one word (the test's "budget the
+// quarterly report generator" is still a goal), so one word is a mistyped
+// budget, answered like "0" and "-5m".
 func triesTaskBudget(s string) bool {
-	return strings.ContainsAny(s, "0123456789$")
+	return strings.ContainsAny(s, "0123456789$") || len(strings.Fields(s)) == 1
 }
 
 // parseTaskBudget reads "45m", "2h", "$1.50" or "1.5$", and a bare number (or

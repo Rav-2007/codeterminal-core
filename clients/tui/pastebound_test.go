@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func pasteOf(runes int) tea.KeyMsg {
@@ -173,5 +174,112 @@ func TestBoundPasteLeavesNonRuneKeysAlone(t *testing.T) {
 		if m.statusErr != "" {
 			t.Errorf("key %v produced a paste notice: %q", k, m.statusErr)
 		}
+	}
+}
+
+// A PASTE THAT WAS CUT HAS TO SAY SO WHERE IT CAN BE SEEN. boundPaste has set
+// statusErr since the bound was written, and statusErr is drawn only in
+// stateError (stateLabel), so at a ready prompt -- where every paste happens --
+// 30,008 characters went in, 4,000 stayed, and nothing on screen said so
+// (Phase 3 audit, 2026-11-09). TestAnOversizedPasteSaysWhatItDropped above
+// reads the field, which is why it passed throughout.
+//
+// These read the SCREEN.
+//
+// Neuter check: drop the pasteNoticeShown branch in stateLabel and the first
+// test fails on the screen; stop clearing pasteCut in handleKey and the third
+// fails; take the paste's cost into the transcript again and
+// TestOneMegabytePasteIntoACeilingTranscript (repaintceiling_test.go) fails.
+func TestAnOversizedPasteIsSaidOnTheScreenAtAReadyPrompt(t *testing.T) {
+	m := newTestModel()
+	u, _ := m.Update(pasteOf(30008))
+	m = u.(chatModel)
+
+	if got := len([]rune(m.input.Value())); got != 4000 {
+		t.Fatalf("the box holds %d runes, want the 4,000 it can keep", got)
+	}
+	screen := ansi.Strip(m.View())
+	if !strings.Contains(screen, "pasted text was cut to 4,000 characters") {
+		t.Errorf("30,008 characters were pasted, 4,000 kept, and the screen does not say so:\n%s", screen)
+	}
+	// It is chrome, not conversation, and it costs the transcript nothing: a new
+	// turn would invalidate the render cache (see boundPaste).
+	if len(m.turns) != 0 {
+		t.Errorf("the notice added %d turn(s) to the transcript: %+v", len(m.turns), m.turns)
+	}
+	if h := buildHistory(m.turns); len(h) != 0 {
+		t.Errorf("the notice went into the history sent to the model: %+v", h)
+	}
+}
+
+// On a narrow terminal the notice is cut, not wrapped: the header is one row.
+func TestThePasteNoticeStaysOnTheHeadersOneRow(t *testing.T) {
+	m := newTestModel()
+	u, _ := m.Update(tea.WindowSizeMsg{Width: 30, Height: 24})
+	m = u.(chatModel)
+	u, _ = m.Update(pasteOf(30008))
+	m = u.(chatModel)
+	first := strings.SplitN(ansi.Strip(m.View()), "\n", 2)[0]
+	if w := ansi.StringWidth(first); w > 30 {
+		t.Errorf("the header is %d cells wide on a 30-column terminal: %q", w, first)
+	}
+	if !strings.Contains(first, "pasted") {
+		t.Errorf("the notice is not on the first row: %q", first)
+	}
+}
+
+// The notice is about what is in the box: it goes when the box is emptied
+// (sent or deleted) and does not come back for what is typed next.
+func TestThePasteNoticeGoesWhenTheBoxIsEmptied(t *testing.T) {
+	m := newTestModel()
+	u, _ := m.Update(pasteOf(30008))
+	m = u.(chatModel)
+	if !strings.Contains(ansi.Strip(m.View()), "pasted text was cut") {
+		t.Fatal("no notice to begin with")
+	}
+	m.input.SetValue("")
+	if strings.Contains(ansi.Strip(m.View()), "pasted text was cut") {
+		t.Error("the box is empty and the screen still says the paste was cut")
+	}
+	u, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = u.(chatModel)
+	if strings.Contains(ansi.Strip(m.View()), "pasted text was cut") {
+		t.Error("typing after the box was emptied brought the paste notice back")
+	}
+}
+
+// A paste that fits says nothing, on the screen as in the field.
+func TestAPasteThatFitsSaysNothingOnTheScreen(t *testing.T) {
+	m := newTestModel()
+	u, _ := m.Update(pasteOf(500))
+	m = u.(chatModel)
+	if screen := ansi.Strip(m.View()); strings.Contains(screen, "pasted text was cut") {
+		t.Errorf("a 500-character paste was reported as cut:\n%s", screen)
+	}
+}
+
+// In stateError the header already shows the fuller notice (statusErr); the
+// short one must not replace or repeat it.
+func TestAPasteInTheErrorStateKeepsTheFullerNotice(t *testing.T) {
+	m := newTestModel()
+	m.state = stateError
+	m.statusErr = "an earlier failure"
+	u, _ := m.Update(pasteOf(30008))
+	m = u.(chatModel)
+	screen := ansi.Strip(m.View())
+	if !strings.Contains(screen, "paste of 30,008 characters") {
+		t.Errorf("the error state lost the full notice:\n%s", screen)
+	}
+	if strings.Contains(screen, "pasted text was cut") {
+		t.Errorf("the error state says it twice:\n%s", screen)
+	}
+	// And the error header is drawn exactly as it was before the flag existed:
+	// the one-row cut belongs to the short notice alone, not to every state.
+	u, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 24})
+	m = u.(chatModel)
+	with := m.renderHeader()
+	m.pasteCut = false
+	if without := m.renderHeader(); with != without {
+		t.Errorf("the paste flag changed the error header:\n with: %q\n without: %q", with, without)
 	}
 }

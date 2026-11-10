@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"mochiii/protocol"
 )
@@ -173,6 +174,65 @@ func runCmdTree(cmd tea.Cmd) {
 	if batch, ok := msg.(tea.BatchMsg); ok {
 		for _, c := range batch {
 			go runCmdTree(c)
+		}
+	}
+}
+
+// A TYPO IN A ROLE NAME IS SAID AT ONCE. "/team:nonsense do a thing" drops the
+// role the daemon does not know and runs on, and the daemon says so in a
+// pipeline_shape notice before the first word of the answer. The terminal app
+// kept the notice for /context (the header no longer draws notices), so the
+// person who mistyped was told nothing and the answer came back as though
+// nothing had been dropped (Phase 3 audit, 2026-11-09). The VS Code client
+// shows it as it arrives.
+//
+// Through a fake daemon that sends what the real one sends (pipelineNotices),
+// driven through Update.
+//
+// Neuter check: take DegradedPipelineShape out of handleDegraded's condition
+// and the screen has no notice until /context.
+func TestAnUnknownTeamRoleIsSaidAtOnce(t *testing.T) {
+	const detail = `"nonsense" is not a specialist this daemon knows, so that step did not run. ` +
+		`The steps that exist are planner, researcher, coder and tester.`
+	fakeDaemonReplying(t,
+		protocol.TokenResponse{Degraded: []protocol.Degradation{{Component: protocol.DegradedPipelineShape, Detail: detail}}},
+		protocol.TokenResponse{Token: "the answer"},
+		protocol.TokenResponse{Done: true},
+	)
+	m := typeText(newTestModel(), "/team:nonsense do a thing")
+	m, cmd := pressEnter(m)
+	m = driveTurn(t, m, cmd)
+
+	screen := ansi.Strip(m.View())
+	if !strings.Contains(screen, `"nonsense" is not a specialist`) {
+		t.Errorf("the turn is over and the screen never said the role was dropped:\n%s", screen)
+	}
+	// It is a note, not conversation: the model is not shown it next turn.
+	for _, h := range buildHistory(m.turns) {
+		if strings.Contains(h.Content, "not a specialist") {
+			t.Errorf("the notice went into the history sent to the model: %+v", h)
+		}
+	}
+	// And it is still in /context, where it was.
+	if got := ansi.Strip(strings.Join(m.noticeLines(), "\n")); !strings.Contains(got, "not a specialist") {
+		t.Errorf("/context lost the notice: %q", got)
+	}
+}
+
+// The other degradations stay where they were (/context): only the notice the
+// person's own typing caused is promoted to the transcript.
+func TestOtherDegradationsStayOutOfTheTranscript(t *testing.T) {
+	fakeDaemonReplying(t,
+		protocol.TokenResponse{Degraded: []protocol.Degradation{{Component: protocol.DegradedProviderRouting, Detail: "routing detail"}}},
+		protocol.TokenResponse{Token: "the answer"},
+		protocol.TokenResponse{Done: true},
+	)
+	m := typeText(newTestModel(), "a plain question")
+	m, cmd := pressEnter(m)
+	m = driveTurn(t, m, cmd)
+	for _, tn := range m.turns {
+		if strings.Contains(tn.text, "routing detail") {
+			t.Errorf("a routing notice was drawn in the transcript: %+v", tn)
 		}
 	}
 }
