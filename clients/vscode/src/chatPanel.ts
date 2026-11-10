@@ -1052,8 +1052,16 @@ export class ChatPanel {
     this.startModelTurn(text, text, undefined, autoApply, mode);
   }
 
+  // A LOCAL COMMAND'S ANSWER IS SHOWN, NEVER STORED. The transcript is the
+  // conversation: it is what the next question's history is built from, what
+  // /copy takes the last reply from, what /export writes and what /search reads.
+  // This line used to push the answer into it as an assistant turn, so "mode:
+  // plan" was sent to the model as something it had said (the first question of
+  // a chat carried seven such turns), /copy copied "mode: plan" instead of the
+  // reply the person meant, /export wrote it under "## Mochiii", and /search
+  // matched it. Nothing re-draws the screen from the transcript, so leaving it
+  // out takes nothing off the screen. localReplies.test.ts holds all four.
   private replyLocal(reply: string): void {
-    this.transcript.push({ role: 'assistant', content: reply });
     // plain: command output is aligned text, not markdown. Rendered as markdown,
     // the "* " marking the current model in /model became a bullet point.
     this.host.webview.postMessage({ type: 'token', text: reply, plain: true });
