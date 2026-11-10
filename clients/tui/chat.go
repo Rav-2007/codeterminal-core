@@ -240,6 +240,14 @@ type chatModel struct {
 
 	statusErr string
 
+	// What decides whether a letter may answer a question (promptguard.go):
+	// when the question appeared, when a character was last typed, and the
+	// character before this one. clock is nil outside tests.
+	clock           func() time.Time
+	questionShownAt time.Time
+	lastTypedAt     time.Time
+	prevTypedAt     time.Time
+
 	streamCh     chan tea.Msg       // the active stream's channel; nil when idle
 	streamCancel context.CancelFunc // cancels the in-flight request; nil when idle
 
@@ -697,6 +705,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// anywhere near the input. Bounding it after that point measured no
 	// improvement at all, which is how the real cost was found.
 	msg = m.boundPaste(msg)
+	m.noteKeyArrival(msg) // promptguard.go: typing counts in every state, so it still counts when a question appears
 
 	if m.state == stateSplash {
 		m.state = stateIdle
@@ -974,6 +983,7 @@ func (m chatModel) handleToolApproval(msg toolApprovalMsg) (tea.Model, tea.Cmd) 
 	m.pendingApproval = &req
 	m.approvalReply = msg.reply
 	m.state = stateToolApproval
+	m.noteQuestionShown()
 	m.refreshViewport()
 	// Keep draining: the stream goroutine is blocked on the reply, so
 	// nothing arrives until the user answers, and this wait is what picks up
@@ -2240,6 +2250,7 @@ func (m chatModel) advanceReview() (tea.Model, tea.Cmd) {
 			continue
 		}
 		m.reviewPrepared = prepared
+		m.noteQuestionShown()
 		m.refreshViewport()
 		return m, nil
 	}
@@ -2254,6 +2265,14 @@ func (m chatModel) advanceReview() (tea.Model, tea.Cmd) {
 func (m chatModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.approvalScrollKey(msg) {
 		return m, nil
+	}
+	switch msg.String() {
+	case "y", "n", "q":
+		// Only a deliberate single keypress answers (promptguard.go). Text typed
+		// through the review is dropped, not read as y, n or q.
+		if !m.mayAnswer(msg, false) {
+			return m, nil
+		}
 	}
 	switch msg.String() {
 	case "y":
@@ -2287,9 +2306,24 @@ func (m chatModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // EVERY OTHER KEY IS A NO-OP. Not a deny, not a dismiss: a stray keystroke from
 // a user typing into what they thought was the input box must not answer a
 // security question on their behalf in either direction.
+//
+// AND A KEY THAT IS ONE OF THE ANSWERS STILL HAS TO BE A DELIBERATE ONE
+// (promptguard.go). Typed prose answered this prompt: the "a" of "please" approved
+// a tool for the whole task, with nothing deliberate about it. A letter now
+// answers only as a single keypress, after the question has been on screen and
+// after the person stopped typing.
 func (m chatModel) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.approvalScrollKey(msg) {
 		return m, nil
+	}
+	switch msg.String() {
+	case "y", "a", "s", "n", "q":
+		// Only a deliberate single keypress answers (promptguard.go), and the
+		// answers that grant the whole task or spec are held to a longer wait.
+		// Text typed through the question is dropped, not read as an answer.
+		if !m.mayAnswer(msg, msg.String() == "a" || msg.String() == "s") {
+			return m, nil
+		}
 	}
 	switch msg.String() {
 	case "y", "a", "s":

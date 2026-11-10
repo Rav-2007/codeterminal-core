@@ -634,7 +634,7 @@ func TestChat_ReviewApplyWritesFileAndCLICompatibleBackup(t *testing.T) {
 		t.Fatalf("precondition failed: state = %v", m.state)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	updated, _ = settled(m).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = updated.(chatModel)
 
 	if m.state != stateIdle {
@@ -678,7 +678,7 @@ func TestChat_ReviewSkipDoesNotApply(t *testing.T) {
 	updated, _ = m.Update(streamDoneMsg{})
 	m = updated.(chatModel)
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	updated, _ = settled(m).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(chatModel)
 
 	if m.state != stateIdle {
@@ -710,7 +710,7 @@ func TestChat_ReviewCancelRemainingSkipsAllPendingBlocks(t *testing.T) {
 		t.Fatalf("precondition failed: state=%v prepared=%+v", m.state, m.reviewPrepared)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	updated, _ = settled(m).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	m = updated.(chatModel)
 
 	if m.state != stateIdle {
@@ -746,9 +746,9 @@ func TestChat_ReviewSummaryReflectsMixedOutcomes(t *testing.T) {
 	updated, _ = m.Update(streamDoneMsg{})
 	m = updated.(chatModel)
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}) // apply a.go's first block
+	updated, _ = settled(m).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}) // apply a.go's first block
 	m = updated.(chatModel)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}) // skip b.go
+	updated, _ = settled(m).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}) // skip b.go
 	m = updated.(chatModel)
 	// The third block refuses automatically inside advanceReview — no keypress needed.
 

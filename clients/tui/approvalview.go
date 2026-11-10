@@ -26,7 +26,9 @@ import (
 // THE RULE NOW. A question is shown from its BEGINNING. If it does not fit, the
 // arrow and page keys scroll it, the key line says how much is unread, and the
 // keys that agree do nothing until every line of it has been on screen, in
-// order. Declining is never gated: n and esc answer from the first frame.
+// order. Declining is not held to that: n and esc need no reading. (n is a
+// letter, so it is held to promptguard.go's rule that typed text answers nothing;
+// esc is not text and answers from the first frame.)
 //
 // THE EDIT REVIEW IS THE SAME QUESTION AND GETS THE SAME RULE (2026-10-13). Its
 // diff was also the last thing in the transcript, so a long edit was put to

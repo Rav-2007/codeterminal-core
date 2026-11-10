@@ -53,7 +53,7 @@ func pressKey(t *testing.T, m chatModel, key tea.KeyType) chatModel {
 
 func pressRune(t *testing.T, m chatModel, r rune) chatModel {
 	t.Helper()
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	next, _ := settled(m).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}) // a deliberate press, after reading
 	return next.(chatModel)
 }
 
