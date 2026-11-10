@@ -239,6 +239,10 @@ type chatModel struct {
 	thinkingGen   int
 
 	statusErr string
+	// pasteCut is set when a paste was cut to the prompt box's limit (boundPaste).
+	// The header says so while the box still holds what was kept (stateLabel),
+	// and it is dropped at the next key once the box is empty again.
+	pasteCut bool
 
 	// What decides whether a letter may answer a question (promptguard.go):
 	// when the question appeared, when a character was last typed, and the
@@ -412,6 +416,10 @@ type chatModel struct {
 	// taskStatus is the last long task's progress (task.go): drawn as a meter
 	// under the transcript while it runs, and what /task shows after.
 	taskStatus *protocol.TaskStatus
+	// turnTaskAction is the task action (resume, review, discard) the turn in
+	// flight asked the daemon for, "" for any other turn. handleStreamErr reads
+	// it: a task action with no saved task to act on is an answer, not a failure.
+	turnTaskAction string
 	// taskBudget is what /task budget set for this session's long tasks; nil
 	// uses the daemon's defaults.
 	taskBudget *protocol.TaskBudget
@@ -704,6 +712,9 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// the burst -- so a megabyte paste was stringified twice before it got
 	// anywhere near the input. Bounding it after that point measured no
 	// improvement at all, which is how the real cost was found.
+	if m.pasteCut && m.input.Value() == "" {
+		m.pasteCut = false // sent or deleted: what the notice was about is gone
+	}
 	msg = m.boundPaste(msg)
 	m.noteKeyArrival(msg) // promptguard.go: typing counts in every state, so it still counts when a question appears
 
@@ -919,8 +930,15 @@ func (m chatModel) handleDegraded(msg degradedMsg) (tea.Model, tea.Cmd) {
 	m.lastDegraded = sanitizeDegradations(msg.items)
 	// A turn that could not make its working copy says so in the transcript:
 	// its edits were never tested, which matters at the review that follows.
+	//
+	// So does a turn whose specialist shape was not what was typed: "/team:nonsense"
+	// drops the role it does not know and runs on, and the daemon says so in a
+	// pipeline_shape notice. The header no longer draws the notices (they are in
+	// /context), so until this the person who made the typo was told nothing, and
+	// found out, if ever, by asking /context afterwards. It is the one notice the
+	// person typed themselves into being, and the VS Code client shows it at once.
 	for _, d := range m.lastDegraded {
-		if d.Component == protocol.DegradedWorkingCopy {
+		if d.Component == protocol.DegradedWorkingCopy || d.Component == protocol.DegradedPipelineShape {
 			m.appendTurn(turn{role: roleSystem, text: d.Detail})
 			m.refreshViewport()
 		}
@@ -1113,6 +1131,25 @@ func (m chatModel) handleStreamDone() (tea.Model, tea.Cmd) {
 }
 
 func (m chatModel) handleStreamErr(msg streamErrMsg) (tea.Model, tea.Cmd) {
+	// /task review, resume and discard with NOTHING SAVED TO ACT ON is the
+	// daemon answering "there is no saved task for this workspace", and it
+	// answers it as an error. Taken as one it drew a "You: /task review" turn,
+	// a LINK SEVERED banner ("the prompt was sent, but no answer came back")
+	// and the header's error state, for a command that worked: there was
+	// nothing to review. It is a plain answer, in the transcript as every other
+	// local command's is (no "You:" line, no error state). See task.go.
+	if note := noSavedTaskNote(m.turnTaskAction, msg.err); note != "" {
+		if n := len(m.turns); n > 0 && m.turns[n-1].role == roleUser {
+			m.turns = m.turns[:n-1] // the "/task review" line this turn drew
+		}
+		m.endStream()
+		m.state = stateIdle
+		m.statusErr = ""
+		m.appendTurn(turn{role: roleAssistant, local: true, text: note})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, m.input.Focus()
+	}
 	// THE SAME LOSS, THROUGH THE ERROR DOOR (register item L2's first half).
 	// A stream that fails PARTWAY leaves whatever streamed sitting in
 	// m.turns as an ordinary assistant turn, and buildHistory sends it on
@@ -1579,6 +1616,7 @@ func (m chatModel) beginTurnWith(shown, prompt, promptKind, mode string, pipelin
 	m.daemonProposals = nil
 	m.gotDaemonProposals = false
 	m.turnMode = mode
+	m.turnTaskAction = task.action
 	m.tasks = nil
 	m.resizeViewport()
 	m.refreshViewport()
@@ -3086,6 +3124,11 @@ func (m chatModel) renderHeader() string {
 	// Only a state worth reading is shown -- an error, an approval, a review.
 	// Memory ("mem: N turn(s)") moved to /context with the notices.
 	if state := m.stateLabel(); state != "" {
+		if m.pasteNoticeShown() {
+			// One row, always (headerLineCount): on a narrow terminal the notice
+			// is cut, not wrapped into a second row nobody counted.
+			return truncateToWidth(brand+"  "+state, m.width)
+		}
 		return brand + "  " + state
 	}
 	return brand
@@ -3337,9 +3380,28 @@ func (m chatModel) stateLabel() string {
 	case stateToolApproval:
 		return accentStyle.Render("waiting for your approval…")
 	default:
-		// Idle says nothing: an empty prompt already means "ready".
+		// A paste that was cut says so, for as long as the box holds what was kept.
+		if m.pasteNoticeShown() {
+			return errorStyle.Render(fmt.Sprintf("⚠ pasted text was cut to %s characters", withThousands(m.pasteLimit())))
+		}
+		// Otherwise idle says nothing: an empty prompt already means "ready".
 		return ""
 	}
+}
+
+// pasteNoticeShown reports whether the header is saying a paste was cut: at a
+// ready prompt, while the box still holds what was kept.
+func (m chatModel) pasteNoticeShown() bool {
+	return m.state == stateIdle && m.pasteCut && m.input.Value() != ""
+}
+
+// pasteLimit is the most the prompt box can keep of one paste: its own
+// CharLimit, or 4000 for an input with none (boundPaste's rule).
+func (m chatModel) pasteLimit() int {
+	if m.input.CharLimit > 0 {
+		return m.input.CharLimit
+	}
+	return 4000
 }
 
 // COALESCED REPAINTS.
@@ -3423,10 +3485,7 @@ func (m *chatModel) boundPaste(msg tea.KeyMsg) tea.KeyMsg {
 	// Cutting at exactly the limit -- rather than at the room actually left --
 	// keeps this a pure bound on WORK: it never drops a rune that textinput
 	// would have kept, and textinput still applies its own limit afterwards.
-	limit := m.input.CharLimit
-	if limit <= 0 {
-		limit = 4000 // an input with no limit of its own still gets one here
-	}
+	limit := m.pasteLimit() // an input with no limit of its own still gets one here
 	// A paste into the MCP panel is servers' JSON, read whole rather than put
 	// in the box: a whole config is longer than the box holds (mcppaste.go).
 	if m.mcpPanel != nil && msg.Paste {
@@ -3446,6 +3505,19 @@ func (m *chatModel) boundPaste(msg tea.KeyMsg) tea.KeyMsg {
 	msg.Runes = msg.Runes[:limit]
 	m.statusErr = fmt.Sprintf("paste of %s characters: kept the first %s, dropped %s. The prompt box holds %s.",
 		withThousands(total), withThousands(limit), withThousands(dropped), withThousands(limit))
+	// statusErr IS DRAWN ONLY IN stateError (stateLabel). A paste is made at a
+	// ready prompt, so the line above was set where nobody could read it: a
+	// 30,008-character paste kept 4,000 and said nothing, which is exactly the
+	// silent truncation this function exists to prevent. pasteCut makes the
+	// header say it at a ready prompt (stateLabel), for as long as the box still
+	// holds what was kept.
+	//
+	// THE HEADER AND NOT A TRANSCRIPT LINE, because of what each costs. A note
+	// appended to the transcript invalidates the render cache, and a paste into a
+	// transcript at its ceiling went from under 1ms to 49ms for it
+	// (TestOneMegabytePasteIntoACeilingTranscript, which holds the paste to a
+	// frame budget). The header is one row that is drawn anyway.
+	m.pasteCut = true
 	return msg
 }
 

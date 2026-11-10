@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"mochiii/protocol"
 )
@@ -256,6 +257,172 @@ func TestAMistypedTaskBudgetStartsNothing(t *testing.T) {
 		}
 		if m.taskBudget != nil {
 			t.Errorf("/task %s set a budget: %+v", args, m.taskBudget)
+		}
+	}
+}
+
+// driveTurn runs a turn that Enter started through Update, the way the runtime
+// does: every message the stream produces goes in, and the commands that come
+// back are run, until the stream has ended.
+func driveTurn(t *testing.T, m chatModel, cmd tea.Cmd) chatModel {
+	t.Helper()
+	msgs := make(chan tea.Msg, 64)
+	var run func(c tea.Cmd)
+	run = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		go func() {
+			msg := c()
+			if batch, ok := msg.(tea.BatchMsg); ok {
+				for _, sub := range batch {
+					run(sub)
+				}
+				return
+			}
+			msgs <- msg
+		}()
+	}
+	run(cmd)
+	deadline := time.After(10 * time.Second)
+	for m.streamCh != nil {
+		select {
+		case msg := <-msgs:
+			updated, next := m.Update(msg)
+			m = updated.(chatModel)
+			run(next)
+		case <-deadline:
+			t.Fatalf("the turn never ended; state %v, turns %+v", m.state, m.turns)
+		}
+	}
+	return m
+}
+
+// /task review, /task resume and /task discard WITH NOTHING SAVED are answered,
+// not failed. The daemon says "there is no saved task for this workspace" as an
+// error, and the terminal app drew it as one: a "You: /task review" turn, a LINK
+// SEVERED banner whose second line said "the prompt was sent, but no answer came
+// back", and the header's error state (Phase 3 audit, 2026-11-09).
+//
+// Through a fake daemon that answers exactly as the real one does
+// (serveTaskAction's fail()), driven through Update.
+//
+// Neuter check: remove the noSavedTaskNote branch in handleStreamErr and the
+// turn ends in stateError with the banner.
+func TestATaskActionWithNoSavedTaskIsAnAnswerNotAnError(t *testing.T) {
+	for _, cmdline := range []string{"/task review", "/task resume", "/task discard"} {
+		t.Run(cmdline, func(t *testing.T) {
+			fakeDaemonReplying(t, protocol.TokenResponse{
+				Done: true, Error: "task: there is no saved task for this workspace", ErrorClass: "invalid_request",
+			})
+			m := typeText(newTestModel(), cmdline)
+			m, cmd := pressEnter(m)
+			m = driveTurn(t, m, cmd)
+
+			if m.state != stateIdle || m.statusErr != "" {
+				t.Errorf("state %v, statusErr %q; want a ready prompt and no error", m.state, m.statusErr)
+			}
+			for _, tn := range m.turns {
+				if tn.role == roleUser || tn.role == roleSevered || tn.role == roleUnanswered {
+					t.Errorf("a %v turn was left in the transcript: %q", tn.role, tn.text)
+				}
+			}
+			if len(m.turns) != 1 || m.turns[0].role != roleAssistant || !m.turns[0].local ||
+				m.turns[0].text != "no saved task for this workspace" {
+				t.Fatalf("turns = %+v, want one local answer %q", m.turns, "no saved task for this workspace")
+			}
+			screen := ansi.Strip(m.View())
+			if strings.Contains(screen, "LINK SEVERED") || strings.Contains(screen, "error:") {
+				t.Errorf("the screen still shows a failure:\n%s", screen)
+			}
+			if !strings.Contains(screen, "no saved task for this workspace") {
+				t.Errorf("the screen does not say it:\n%s", screen)
+			}
+			// A local answer is not part of the conversation the model is sent.
+			if h := buildHistory(m.turns); len(h) != 0 {
+				t.Errorf("the answer went into the model's history: %+v", h)
+			}
+		})
+	}
+}
+
+// A task ID that is not there says so in the daemon's own words.
+func TestANamedTaskThatIsNotSavedIsAnswered(t *testing.T) {
+	fakeDaemonReplying(t, protocol.TokenResponse{
+		Done: true, Error: "task: there is no saved task 20260930-120000-abcd in this workspace", ErrorClass: "invalid_request",
+	})
+	m := typeText(newTestModel(), "/task review 20260930-120000-abcd")
+	m, cmd := pressEnter(m)
+	m = driveTurn(t, m, cmd)
+	if len(m.turns) != 1 || m.turns[0].text != "no saved task 20260930-120000-abcd in this workspace" || m.state != stateIdle {
+		t.Errorf("state %v, turns %+v", m.state, m.turns)
+	}
+}
+
+// What is NOT "no saved task" stays the failure it was: a task that is running,
+// and a goal's own errors, which are not task actions at all.
+func TestOtherTaskFailuresAreStillFailures(t *testing.T) {
+	t.Run("a task action refused for another reason", func(t *testing.T) {
+		fakeDaemonReplying(t, protocol.TokenResponse{
+			Done: true, Error: "task: task 20260930-120000-abcd is running; stop it first", ErrorClass: "invalid_request",
+		})
+		m := typeText(newTestModel(), "/task discard")
+		m, cmd := pressEnter(m)
+		m = driveTurn(t, m, cmd)
+		if m.state != stateError || !strings.Contains(m.statusErr, "is running") {
+			t.Errorf("state %v, statusErr %q; want the failure kept", m.state, m.statusErr)
+		}
+	})
+	t.Run("a new goal whose error happens to say it", func(t *testing.T) {
+		fakeDaemonReplying(t, protocol.TokenResponse{
+			Done: true, Error: "the model said there is no saved task", ErrorClass: "provider_error",
+		})
+		m := typeText(newTestModel(), "/task add retries to the fetcher")
+		m, cmd := pressEnter(m)
+		m = driveTurn(t, m, cmd)
+		if m.state != stateError {
+			t.Errorf("state %v; a goal's failure was swallowed as an answer", m.state)
+		}
+	})
+}
+
+// /task budget with a WORD that is not a budget is refused, like "0" and "-5m"
+// are. "/task budget abc" had no number in it, so it fell through as a goal and
+// started a billed long task whose goal was "budget abc" (Phase 3 audit).
+//
+// Neuter check: put triesTaskBudget back to the digit-and-dollar test and "abc"
+// starts a task (a request reaches the daemon and the budget stays unset).
+func TestATaskBudgetThatIsNotABudgetIsRefused(t *testing.T) {
+	for _, arg := range []string{"abc", "soon", "unlimited", "0", "-5m", "1 hour"} {
+		t.Run(arg, func(t *testing.T) {
+			m := typeText(newTestModel(), "/task budget "+arg)
+			m, _ = pressEnter(m)
+			if m.state != stateIdle || m.streamCh != nil {
+				t.Fatalf("state %v: /task budget %s started a turn", m.state, arg)
+			}
+			if m.taskBudget != nil {
+				t.Errorf("the session's budget was set to %+v", m.taskBudget)
+			}
+			var said string
+			for _, tn := range m.turns {
+				if tn.role == roleUser {
+					t.Errorf("a You: turn was drawn for a refused command: %q", tn.text)
+				}
+				said += tn.text
+			}
+			if !strings.Contains(said, "is not a budget") || !strings.Contains(said, "45m") {
+				t.Errorf("the refusal does not say what a budget looks like: %q", said)
+			}
+		})
+	}
+}
+
+// And the goals that merely start with "budget" are still goals.
+func TestAGoalThatStartsWithBudgetIsStillAGoal(t *testing.T) {
+	for _, raw := range []string{"/task budget the quarterly report generator", "/task budget tracker for the team"} {
+		_, req := typedRequest(t, newTestModel(), raw)
+		if req.Mode != modeTask || !strings.HasPrefix(req.Prompt, "budget ") {
+			t.Errorf("%s: wire = mode %q, prompt %q; want a task whose goal is the words typed", raw, req.Mode, req.Prompt)
 		}
 	}
 }
