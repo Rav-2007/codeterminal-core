@@ -75,6 +75,12 @@ type historyMsg struct{ info *protocol.HistoryInfo }
 // That invariant was true of the wire and false of this client.
 type editProposalsMsg struct{ blocks []protocol.EditBlockWire }
 
+// editRejectionsMsg carries what the DAEMON refused or withheld from the answer
+// (see protocol.TokenResponse.EditRejections): a block it could not read, and --
+// in plan mode -- every edit it declined to offer. Delivered before the
+// proposals and before streamDoneMsg, so the notice stands above any review.
+type editRejectionsMsg struct{ rejections []protocol.EditRejectionWire }
+
 // workingCopyMsg carries the daemon's report on the turn's working copy (see
 // protocol.WorkingCopyInfo): what the agent last ran against its changes and
 // how that went, and any changes it is not offering. Rides the Done message.
@@ -484,6 +490,10 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 				return
 			}
 			if tok.SpecReport != nil && !deliver(ctx, ch, specReportMsg{tok.SpecReport}) {
+				return
+			}
+			// What the daemon declined to offer, before the proposals it did.
+			if len(tok.EditRejections) > 0 && !deliver(ctx, ch, editRejectionsMsg{tok.EditRejections}) {
 				return
 			}
 			// Before streamDoneMsg, which is what starts the review: the

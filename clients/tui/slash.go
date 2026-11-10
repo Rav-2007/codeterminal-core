@@ -25,6 +25,12 @@ import (
 // modePlan; see slashDef.Mode.
 const modePlan = "plan"
 
+// isPlanMode mirrors the daemon's predicate of the same name: whether a wire
+// Mode selects plan mode.
+func isPlanMode(mode string) bool {
+	return strings.ToLower(strings.TrimSpace(mode)) == modePlan
+}
+
 // The long-task modes (daemon/taskmodes.go). Each runs as a long task --
 // segments, a ledger, one working copy, a budget -- and must equal the
 // daemon's constant of the same name, the same contract modePlan carries.

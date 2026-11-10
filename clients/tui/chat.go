@@ -318,6 +318,9 @@ type chatModel struct {
 	// local fallback exists for.
 	daemonProposals    []protocol.EditBlockWire
 	gotDaemonProposals bool
+	// daemonRejections are the edits the daemon refused or withheld on this
+	// turn (protocol.TokenResponse.EditRejections), shown once as notices.
+	daemonRejections []protocol.EditRejectionWire
 
 	reviewBlocks    []editapply.EditBlock
 	reviewIndex     int
@@ -613,6 +616,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case incompleteMsg:
 		return m.handleIncomplete(msg)
+
+	case editRejectionsMsg:
+		return m.handleEditRejections(msg)
 
 	case editProposalsMsg:
 		return m.handleEditProposals(msg)
@@ -1100,6 +1106,15 @@ func workingCopyText(info *protocol.WorkingCopyInfo) string {
 	return strings.Join(append(lines, workingCopyMore(info)...), "\n") // workingcopymore.go
 }
 
+func (m chatModel) handleEditRejections(msg editRejectionsMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	// Recorded, not shown: checkForEditBlocks says it, above any review.
+	m.daemonRejections = msg.rejections
+	return m, waitForNext(m.streamCh)
+}
+
 func (m chatModel) handleEditProposals(msg editProposalsMsg) (tea.Model, tea.Cmd) {
 	if m.streamCh == nil {
 		return m, nil // a stray message from an already-abandoned stream
@@ -1544,6 +1559,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.turnActed = false
 	m.daemonProposals = nil
 	m.gotDaemonProposals = false
+	m.daemonRejections = nil
 	m.resizeViewport()
 	m.refreshViewport()
 
@@ -1615,6 +1631,7 @@ func (m chatModel) beginTurnWith(shown, prompt, promptKind, mode string, pipelin
 	m.turnActed = false
 	m.daemonProposals = nil
 	m.gotDaemonProposals = false
+	m.daemonRejections = nil
 	m.turnMode = mode
 	m.turnTaskAction = task.action
 	m.tasks = nil
@@ -2187,6 +2204,27 @@ func (m *chatModel) ensureAssistantTurn() int {
 // offer them.
 func (m chatModel) checkForEditBlocks() (tea.Model, tea.Cmd) {
 	m.state = stateIdle
+
+	// What the daemon refused or withheld is said first, above any review: the
+	// plan-mode notice, and a block it could not read.
+	m.noteRejections(m.daemonRejections)
+	m.daemonRejections = nil
+
+	// A PLAN TURN OFFERS NOTHING, whoever's list or text the edit came from.
+	//
+	// Plan mode is read-only ("no edits, no commands, no network") and the
+	// daemon enforces it: it drops every edit block from the answer and says so
+	// in EditRejections. This function used to ignore that and take the local
+	// fallback below, which re-parsed the same answer text and opened a review
+	// where "y" wrote the file the daemon had just refused to offer.
+	//
+	// Decided from the mode the REQUEST carried (turnMode, set when the turn was
+	// sent), not from anything the UI shows now: a user who typed /plan and then
+	// something else has two turns, and each is judged by its own. The fallback
+	// below is unchanged for every other mode.
+	if isPlanMode(m.turnMode) {
+		return m, m.input.Focus()
+	}
 
 	var blocks []editapply.EditBlock
 	var rejected []editapply.BlockError
