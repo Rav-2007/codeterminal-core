@@ -3202,6 +3202,18 @@
       modelChipEl.click();
       return true;
     }
+    // "/mcp-server add ..." opens the add popup -- the same one "Add a server by
+    // hand" opens, which does the daemon's two steps (what will run, then the
+    // server's name typed) -- and nothing else. It is the FIRST WORD that decides,
+    // exactly "add": "/mcp-server addons" is still a marketplace search. What
+    // follows "add" is not read, not shown and not kept: it may be a mistyped
+    // key, and this returns before the text reaches the transcript, the host
+    // (so the log) or the daemon. The popup is asked for through the message the
+    // button already sends (pages.js, page:command), so the host is unchanged.
+    if (m[1] === 'mcp-server' && /^add(?:\s|$)/.test(m[2] || '')) {
+      vscode.postMessage({ type: 'page:command', name: 'mcpAdd' });
+      return true;
+    }
     if (!pages) {
       return false;
     }
