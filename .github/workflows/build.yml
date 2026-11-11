@@ -295,7 +295,16 @@ jobs:
         run: |
           go vet -tags eval ./...
           go vet -tags warnscan ./...
+          go vet -tags trace ./...
         working-directory: ${{ matrix.module }}
+
+      # THE EXECUTION TRACE (daemon/trace) exists only in a build made with
+      # -tags trace, so the untagged Test step above never runs its tests,
+      # including the one that proves a trace leaks no secret. This builds the
+      # real daemon with the tag (agente2e_test.go reads it) and runs them.
+      - name: Test (traced build)
+        if: matrix.module == 'daemon' && matrix.part == 'race 1/2'
+        run: make trace-test
 
       # -race, not a bare `go test`: this repo's concurrency work (the Gate 6
       # apply/undo locking in particular) is only defended by the race detector.

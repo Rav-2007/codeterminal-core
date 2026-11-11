@@ -98,6 +98,13 @@ mochiii/proxy               85.0
 # that introduced it; floored at 86.0 to leave ordinary run-to-run variance.
 mochiii/daemon/mcp          91.0
 
+# The execution trace (daemon/trace). Measured in a DEFAULT build, which is all
+# this ratchet runs: the enums, their validators and the no-op stub (97.0), and
+# the strict line checker the tests share (91.5). The recorder itself is behind
+# -tags trace and is covered by `make trace-test`, not by this number.
+mochiii/daemon/trace            96.0
+mochiii/daemon/trace/tracecheck 90.0
+
 # 0.0 is the honest floor, not an oversight. testharness is a test-support
 # BINARY (fake Supabase + fake OpenRouter) whose whole purpose is to be driven
 # by out-of-process drills and the soak script -- there is nothing meaningful to

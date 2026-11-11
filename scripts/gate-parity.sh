@@ -160,6 +160,7 @@ targetparity|covered|
 parity|covered|
 fmt|local|CI checks formatting inside build.yml's lint job rather than by this target; the target is the developer-facing spelling of the same invariant.
 vet|local|CI runs `go vet ./...` per module in build.yml's go and cross jobs, which is strictly more coverage than this target; the target exists so a developer gets it before pushing.
+trace-test|both|
 race|local|CI runs `go test -race` per module in build.yml's go job. Same invariant, per-module rather than whole-tree, so the target name never appears in a workflow.
 hookcheck|local|It verifies that this clone's git hooks are installed. There are no hooks on a CI runner and nothing for it to assert there; running it in CI would be a check that cannot fail.
 evalguard|covered|Its one script, eval-delta.sh, runs its self-test in gates.yml's offline gates. The two eval-guard tests it runs inline are asserted directly in gates.yml's `corpus holds no answer key` job, by running the tests rather than the target.

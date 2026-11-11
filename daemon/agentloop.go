@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"mochiii/daemon/mcp"
+	"mochiii/daemon/trace"
 	"mochiii/protocol"
 )
 
@@ -614,6 +615,10 @@ func (s *Server) runAgentLoop(
 
 	for turn.iteration = 1; ; turn.iteration++ {
 		if stop := s.budgetStop(turn, bud); stop != nil {
+			// TRACE D8: which ceiling, by the Incomplete reason the turn already carries.
+			if tr := trace.From(ctx); tr != nil {
+				tr.Emit(trace.Event{Stage: trace.StageBudgetStop, Status: trace.StatusFail, Err: trace.ClassOf(stop.Reason)})
+			}
 			// END WITH AN ANSWER, NOT MID-THOUGHT. A limit used to stop the turn
 			// on whatever the model last said -- typically "let me read one more
 			// file" -- so the user got five tool lines and no conclusion from
@@ -650,8 +655,12 @@ func (s *Server) runAgentLoop(
 		// it -- kept so an empty reply can be routed around (below).
 		servedBy := ""
 		apiKey, apiBase := s.credentials()
+		mc := trace.From(ctx).BeginModelCall()                                                                                // TRACE D4: nil when tracing is off, and the token callback below is then one nil check
 		calls, err := streamWithRetry(ctx, apiBase, apiKey, model, guard.messages(turn.messages), guard.menu(tools), routing, // localguard.go
 			func(token string) error {
+				if mc != nil { // TRACE D4
+					mc.Token()
+				}
 				full.WriteString(token)
 				return guard.show(apiBase, tools, token, onToken) // localguard.go
 			},
@@ -665,6 +674,9 @@ func (s *Server) runAgentLoop(
 			func(reason string) { finishReason = reason },
 			s.logger,
 		)
+		if mc != nil { // TRACE D4
+			mc.End(traceModelErrClass(err))
+		}
 		if err == nil {
 			turn.lastCallAt = time.Now()
 		}
@@ -1153,7 +1165,15 @@ func (s *Server) dispatchToolCall(
 	}
 	report(protocol.ToolPhaseRequested, "", 0, 0)
 
-	decision := s.resolveExecutable(ctx, registry, turn, *bud, call, appr, role)
+	// TRACE D5/D6/D7. The daemon's own number for this call: the id the model
+	// sent (call.ID) is model output and is never recorded. resolveExecutable
+	// writes tool_requested once the registry has resolved the name, and the
+	// approval lines; nothing in `activity` or `decision.reason`, which can carry
+	// what the model typed, is passed to the trace.
+	tr := trace.From(ctx)
+	traceCall := tr.NextCall()
+	decision := s.resolveExecutable(trace.WithCall(ctx, traceCall), registry, turn, *bud, call, appr, role)
+	traceApprovalResult(tr, decision, traceCall)
 
 	// Give the turn back the time the human spent deciding.
 	// mcp.budget.turn_timeout_seconds bounds how long the MACHINE may work; a
@@ -1236,6 +1256,10 @@ func (s *Server) dispatchToolCall(
 		returned = &webResultURLs{}
 		callCtx = withWebResultURLs(callCtx, returned)
 	}
+	var run *trace.Span // TRACE D7: a built-in is tool_run, a server's tool is mcp_call
+	if tr != nil {
+		run = tr.Begin(traceCallStage(decision.tool), traceToolOf(decision.tool), traceCall)
+	}
 	result, err := registry.Call(callCtx, decision.tool.QualifiedName(), json.RawMessage(arguments))
 	if returned != nil {
 		for _, u := range returned.urls {
@@ -1259,6 +1283,9 @@ func (s *Server) dispatchToolCall(
 		}
 		report(protocol.ToolPhaseFailed, detail, 0, elapsed)
 		audit.Outcome = auditOutcomeError
+		if run != nil { // TRACE D7: the same split as the detail above
+			run.End(traceToolOutcome(err))
+		}
 		s.toolAudit.record(audit)
 		return toolResultMessage(call, detail), false
 	}
@@ -1310,6 +1337,7 @@ func (s *Server) dispatchToolCall(
 		s.logger.Printf("agent: %s ran, but the turn's tool-output budget is spent; its output was not sent", name)
 		report(protocol.ToolPhaseSucceeded, "", 0, elapsed)
 		audit.Outcome = auditOutcomeOK
+		run.End(trace.StatusOK, trace.ClassNone) // TRACE D7
 		s.toolAudit.record(audit)
 		return toolResultMessage(call, "this task has already sent as much tool output as it is "+
 			"allowed to send to the model in one turn, so this result was withheld. Answer from what "+
@@ -1437,6 +1465,13 @@ func (s *Server) dispatchToolCall(
 		s.count(func(c *counters) { c.toolCallsFailed.Add(1) })
 	}
 	report(phase, failReason, emitted, elapsed)
+	if run != nil { // TRACE D7: the phase's own answer; failReason (text) is not passed
+		if result.IsError {
+			run.End(trace.StatusFail, trace.ClassToolFailed)
+		} else {
+			run.End(trace.StatusOK, trace.ClassNone)
+		}
+	}
 	audit.ResultBytes = emitted
 	s.toolAudit.record(audit)
 	return toolResultMessage(call, rendered), false
@@ -1507,6 +1542,7 @@ func (s *Server) resolveExecutable(
 	}
 
 	spec, policy, err := lookupForTurn(ctx, registry, qualified) // localhandler.go
+	traceToolRequested(ctx, spec)                                // TRACE D5: spec is the registry's answer, zero when it had none
 	if err != nil {
 		// The model named something that does not exist. Told plainly so it can
 		// pick a real tool rather than retry the same wrong name.
@@ -1810,7 +1846,15 @@ func askApproval(ctx context.Context, appr approver, req protocol.ToolApprovalRe
 	if appr == nil {
 		return denied(denyByNoChannel, 0)
 	}
-	return appr.Ask(ctx, req)
+	// TRACE D6: how long the person was asked for. req.Server and req.Tool are
+	// the registry's spec, never the model's text.
+	var wait *trace.Span
+	if tr := trace.From(ctx); tr != nil {
+		wait = tr.Begin(trace.StageApprovalWait, trace.ToolName(req.Server+"__"+req.Tool), trace.CallFrom(ctx))
+	}
+	answer := appr.Ask(ctx, req)
+	wait.End(trace.StatusOK, trace.ClassNone)
+	return answer
 }
 
 // advertisedToolSpecs converts the registry's tools into the provider's wire
@@ -1932,8 +1976,12 @@ func (s *Server) wrapUpAtLimit(
 	// The same tools are offered so the request stays valid for a provider
 	// that rejects tool results with no tool definitions; any call the model
 	// makes anyway is dropped on the floor.
+	mc := trace.From(ctx).BeginModelCall() // TRACE D4
 	_, err := streamWithRetry(ctx, apiBase, apiKey, model, messages, tools, routing,
 		func(token string) error {
+			if mc != nil { // TRACE D4
+				mc.Token()
+			}
 			if !separated {
 				separated = true
 				full.WriteString("\n\n")
@@ -1945,6 +1993,9 @@ func (s *Server) wrapUpAtLimit(
 			return onToken(token)
 		},
 		onProvider, onReasoning, func(string) {}, s.logger)
+	if mc != nil { // TRACE D4
+		mc.End(traceModelErrClass(err))
+	}
 	if err != nil {
 		s.logger.Printf("agent: the wrap-up call at the limit failed; ending without it: %s", asModelError(err).Detail())
 		return

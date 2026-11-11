@@ -1,6 +1,6 @@
 # Documentation index
 
-**90 documents: 79 in `docs/`, 3 in `docs/ARCHIVE/`, and 8 at the repository root.**
+**91 documents: 80 in `docs/`, 3 in `docs/ARCHIVE/`, and 8 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -126,6 +126,7 @@ a refactor or fails loudly; a line number silently points at something else.
 | [`MIGRATION_RUNBOOK_0000_0004.md`](MIGRATION_RUNBOOK_0000_0004.md) | Applying Supabase migrations by hand. Needs dashboard access. |
 | [`ENTERPRISE_QA_MASTER.md`](ENTERPRISE_QA_MASTER.md) | The whole-product QA campaign definition. |
 | [`SPEC_WORKFLOW.md`](SPEC_WORKFLOW.md) | The spec workflow: `/spec` writes one, then build to it and check the result against it, approving every change. |
+| [`EXECUTION_TRACE.md`](EXECUTION_TRACE.md) | The execution trace (`-tags trace`, `MOCHIII_TRACE=1`): how to run a traced daemon, what each emit point records, and the rules that keep text out of it. |
 | [`AGENT_WORKFLOW_EVAL.md`](AGENT_WORKFLOW_EVAL.md) | Did the agent get the job done? The task-success eval (hidden tests, no model judge) and the results of each run. |
 
 ### Registers the build checks

@@ -300,6 +300,11 @@ const UNSUPPLIED = {
     'read ONLY in proxy mode (daemon/main.go), which the extension cannot enable -- see ' +
     'MOCHIII_USE_PROXY. Unreachable from a packaged install by construction, not by accident. ' +
     'One VS Code inherited from a shell is forwarded on stdin as proxy_key, never in the environment.',
+  MOCHIII_TRACE:
+    'read ONLY by a daemon built with -tags trace (daemon/traceenable.go), to turn the execution trace on. ' +
+    'The daemon this extension ships is built without that tag and contains no code that reads it, so there is ' +
+    'nothing for the extension to supply. A developer who built a traced daemon sets it themselves ' +
+    '(docs/EXECUTION_TRACE.md).',
 };
 
 function goFiles(dir) {
