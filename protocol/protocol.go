@@ -429,6 +429,66 @@ type PromptRequest struct {
 	// allotment of every limit that is at or past its warning mark. The answer
 	// is one Done message carrying Spend. Unknown values are refused.
 	BudgetAction string `json:"budget_action,omitempty"`
+
+	// Trace is the client's id for this turn, so a client's own execution trace
+	// (clients/tui, under -tags trace) can be joined to the daemon's. It is eight
+	// lower-case hex digits (TraceIDBytes). It is read ONLY by a daemon built with
+	// -tags trace and started with MOCHIII_TRACE=1, and only when it is exactly
+	// that shape; anything else is ignored and the daemon mints its own id. In
+	// every other daemon it is ignored without being looked at. It is UNTRUSTED
+	// INPUT: the daemon never logs, echoes or writes it unless it is valid, and it
+	// changes nothing about how the request is answered.
+	//
+	// Absent on the wire (omitempty) unless a traced client chose to send it, so
+	// every request a shipped client sends is byte-for-byte what it was before this
+	// field existed. It is not a discriminator key (daemon/requestfields.go), so it
+	// cannot change which kind of request a body is, and it needed no
+	// ProtocolVersion bump: an older daemon's decoder ignores a key it does not
+	// know (TestAnOlderDaemonReadsATracedClientsRequestTheSameWay).
+	Trace TraceID `json:"trace,omitempty"`
+}
+
+// TraceIDBytes is the length of PromptRequest.Trace: eight lower-case hex digits,
+// the same shape as the id the daemon mints for a turn.
+const TraceIDBytes = 8
+
+// TraceID is PromptRequest.Trace's type, and it exists for one reason: a request
+// must never fail, in any daemon, because of this field. A plain string field
+// makes encoding/json refuse the whole request when the key arrives as a number,
+// an array or an object, where an older daemon (which has no such field) would
+// have skipped it. So UnmarshalJSON accepts any JSON at all, keeps a string only
+// when it is a valid id (ValidTraceID) and otherwise leaves the id empty. The
+// bytes the daemon uses for a trace never come from here (daemon/traceemit.go
+// reads the raw body); this is what keeps the struct decode from being the
+// thing a bad value breaks.
+type TraceID string
+
+// UnmarshalJSON never returns an error: see TraceID.
+func (t *TraceID) UnmarshalJSON(b []byte) error {
+	*t = ""
+	var s string
+	if json.Unmarshal(b, &s) == nil && ValidTraceID(s) {
+		*t = TraceID(s)
+	}
+	return nil
+}
+
+// ValidTraceID reports whether s is a turn id a client may send and the daemon
+// may use: exactly TraceIDBytes lower-case hex digits and nothing else. It is a
+// byte-by-byte test, with no regular expression, no decoding, no trimming and no
+// case folding, and it is the one definition: the daemon's recorder and the TUI's
+// both call it.
+func ValidTraceID(s string) bool {
+	if len(s) != TraceIDBytes {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // MaxSessionIDBytes bounds PromptRequest.Session.

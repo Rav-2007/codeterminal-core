@@ -475,9 +475,9 @@ func (s *Server) serveConn(conn net.Conn) {
 	// MOCHIII_TRACE=1): this connection's turn id, carried on ctx, and one line
 	// saying what kind of request it is. The kind comes from which keys the body
 	// has; nothing else in it is read except the session name, which is recorded
-	// as a hash.
+	// as a hash, and a prompt's own turn id (PromptRequest.Trace) when it is valid.
 	if trace.On() {
-		tr := trace.NewTurn(traceSessionOf(raw))
+		tr := trace.NewTurnWithID(traceSessionOf(raw), traceTurnOf(raw))
 		ctx = trace.With(ctx, tr)
 		tr.Emit(trace.Event{Stage: trace.StageRequest, Status: trace.StatusOK, Tool: traceKindOf(raw).Tool()})
 	}

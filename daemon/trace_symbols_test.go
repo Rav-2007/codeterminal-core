@@ -25,7 +25,7 @@ func TestADefaultBuildHasNoTraceEmitter(t *testing.T) {
 	tracedSyms, tracedBin := daemonSymbolsAndBytes(t, "trace")
 
 	// The control: the traced build has the recorder, its switch and its helpers.
-	for _, want := range []string{"mochiii/daemon/trace.(*Turn).Emit", "mochiii/daemon/trace.NewTurn", "mochiii/daemon/trace.Enable", "main.traceKindOf"} {
+	for _, want := range []string{"mochiii/daemon/trace.(*Turn).Emit", "mochiii/daemon/trace.NewTurn", "mochiii/daemon/trace.Enable", "mochiii/daemon/trace.NewTurnWithID", "main.traceKindOf", "main.traceTurnOf"} {
 		if !strings.Contains(tracedSyms, want) {
 			t.Fatalf("the traced build has no symbol %q: this test cannot see the recorder, so its result on the default build means nothing", want)
 		}

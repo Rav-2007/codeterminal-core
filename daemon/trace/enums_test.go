@@ -117,7 +117,7 @@ func TestClassOfNeverReturnsATextOrNone(t *testing.T) {
 
 // Off is nil, and nil is safe: the daemon's call sites rely on it.
 func TestNoTurnIsSafeEverywhere(t *testing.T) {
-	if NewTurn("a session") != nil {
+	if NewTurn("a session") != nil || NewTurnWithID("a session", "a1b2c3d4") != nil {
 		t.Skip("a recorder is enabled in this process")
 	}
 	ctx := context.Background()

@@ -7,6 +7,7 @@ import (
 
 	"mochiii/daemon/mcp"
 	"mochiii/daemon/trace"
+	"mochiii/protocol"
 )
 
 // The daemon's side of the execution trace (daemon/trace). Everything here turns
@@ -52,6 +53,33 @@ func traceSessionOf(raw json.RawMessage) string {
 	}
 	_ = json.Unmarshal(raw, &s)
 	return s.Session
+}
+
+// traceTurnOf is the turn id a prompt request asks the daemon to use
+// (protocol.PromptRequest.Trace), or "" when it names none or names anything
+// that cannot be one. It is UNTRUSTED: it is looked at only for a prompt, only
+// at the exact key "trace" (not "Trace", not a duplicate), and only when the
+// value is a JSON string of exactly ten bytes, quotes included: eight characters
+// with no escape in them. What it returns still goes through
+// trace.ValidClientID in NewTurnWithID, so this is the cheap first line and that
+// is the one that decides. A value that fails either is never logged or kept.
+func traceTurnOf(raw json.RawMessage) string {
+	if traceKindOf(raw) != trace.KindPrompt {
+		return ""
+	}
+	fields, ok := requestFields(raw)
+	if !ok {
+		return ""
+	}
+	v := fields["trace"]
+	if len(v) != protocol.TraceIDBytes+2 {
+		return ""
+	}
+	var id string
+	if json.Unmarshal(v, &id) != nil {
+		return ""
+	}
+	return id
 }
 
 // traceToolOf is the name of a tool the REGISTRY resolved. A zero spec, which

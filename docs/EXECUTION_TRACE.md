@@ -29,6 +29,28 @@ first. The TUI and the VS Code extension connect to whichever daemon is serving
 the workspace, so run the traced daemon on the workspace and then open the
 client on it.
 
+## Joining a client's trace to the daemon's
+
+A client that traces itself names each turn with eight lower-case hex digits and
+sends them in the one optional field `trace` of `protocol.PromptRequest`. A
+traced daemon (built with `-tags trace`, `MOCHIII_TRACE=1`) uses that id as the
+`turn` of every line it writes for the request, so the two files join on it. The
+field is absent from the wire unless a traced client sets it, so a request is
+byte-for-byte what it always was without one, and it needed no
+`ProtocolVersion` bump: an older daemon skips a key it does not know.
+
+The id is untrusted input. The daemon uses it only for a prompt, only at the
+exact key `trace`, and only when it is exactly eight characters of `0-9a-f`
+(`protocol.ValidTraceID`); any other value, of any type, is ignored: the daemon
+mints its own id, the request is answered as usual, and the bad value is not
+logged, echoed or written. A default daemon, and a traced one with the switch
+off, never look at it. `TestAnInvalidJoinIDIsReplacedAndIsNowhereInTheTraceTheLogOrTheAnswer`
+and `TestTheJoinIDIsIgnoredWithNoTracingAndSaysNothing` are the checks.
+
+Two requests that name the same id write lines under the same `turn`, each
+numbering its own `n` from 1; the id says which turn a line belongs to, not that
+it is unique. A client mints a fresh one per prompt.
+
 ## What each emit point records
 
 | Point | Where | Lines |

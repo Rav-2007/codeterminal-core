@@ -26,6 +26,10 @@ func On() bool { return false }
 // NewTurn starts a trace for one request. It returns nil in this build.
 func NewTurn(string) *Turn { return nil }
 
+// NewTurnWithID is NewTurn with the id the client chose. In this build the id is
+// never looked at.
+func NewTurnWithID(string, string) *Turn { return nil }
+
 // With and From carry a *Turn on a context. From returns nil in this build.
 func With(ctx context.Context, _ *Turn) context.Context { return ctx }
 func From(context.Context) *Turn                        { return nil }
