@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"mochiii/clients/tui/tuitrace"
 	"mochiii/protocol"
 )
 
@@ -267,6 +268,10 @@ type taskFields struct {
 	// (attach.go). Not a long-task field: it rides here because this struct is
 	// the one bag of optional request fields both ways of starting a turn pass.
 	attached []protocol.AttachedOutput
+	// trace is this turn's execution trace (tuitrace): nil in a default build and
+	// whenever MOCHIII_TRACE is not 1. It carries the id the request names its turn
+	// with and is what the stream goroutine writes its lines to.
+	trace *tuitrace.Turn
 }
 
 // askForApproval hands the request to the UI and waits for the user's answer,
@@ -280,9 +285,16 @@ type taskFields struct {
 // and the conn-closing watcher in streamPrompt cannot unblock a channel
 // receive, so without it this goroutine would leak for the life of the process.
 func askForApproval(ctx context.Context, sess *daemonSession, req protocol.ToolApprovalRequest, ch chan tea.Msg) bool {
+	return askForApprovalTraced(ctx, sess, req, ch, nil)
+}
+
+// askForApprovalTraced is askForApproval that also records, in the turn's trace,
+// that the question was handed to the screen. st is nil when nothing is traced.
+func askForApprovalTraced(ctx context.Context, sess *daemonSession, req protocol.ToolApprovalRequest, ch chan tea.Msg, st *streamTrace) bool {
 	reply := make(chan string, 1)
 	select {
 	case ch <- toolApprovalMsg{req: req, reply: reply}:
+		st.approvalShown(req)
 	case <-ctx.Done():
 		return false
 	}
@@ -363,7 +375,16 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 // the shared chat's revision (PromptRequest.ChatRevision) and a long task's
 // fields.
 func streamPromptWith(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, chatRev string, task taskFields, ch chan tea.Msg) {
+	// The trace of this turn from the client's side (tuitrace; nil and inlined away
+	// unless this is a traced build with MOCHIII_TRACE=1). finish closes whatever is
+	// still open on every way out of this function.
+	st := newStreamTrace(task.trace)
+	if st != nil { // a deferred call is never inlined, so only a traced run may have one
+		defer st.finish(ctx)
+	}
+	st.dialStart()
 	sess, err := connectWithPolicy(clientName, promptCapabilities()) // localmodels.go
+	st.dialDone(err)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -393,6 +414,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		task.attached = nil
 	}
 
+	st.requestSent()
 	if err := sess.enc.Encode(protocol.PromptRequest{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Prompt:          prompt,
@@ -410,6 +432,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		TaskBudget:      task.budget,
 		ChatRevision:    chatRev,
 		Session:         clientSession,
+		Trace:           task.trace.ID(),
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -431,13 +454,16 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			deliver(ctx, ch, streamErrMsg{err: err, sent: true})
 			return
 		}
+		st.answered()
 		if tok.Error != "" {
 			if (tok.Usage != nil || len(tok.StoppedUsage) > 0 || tok.Spend != nil) &&
 				!deliver(ctx, ch, usageMsg{tok.Usage, tok.StoppedUsage, tok.Spend}) {
 				return
 			}
-			deliver(ctx, ch, streamErrMsg{err: errors.New(tok.Error), sent: true,
-				class: tok.ErrorClass, keyReplaceable: tok.KeyReplaceable})
+			if deliver(ctx, ch, streamErrMsg{err: errors.New(tok.Error), sent: true,
+				class: tok.ErrorClass, keyReplaceable: tok.KeyReplaceable}) {
+				st.rendered(tok.ErrorClass, true)
+			}
 			return
 		}
 		if tok.Grounding != nil && !deliver(ctx, ch, groundingMsg{tok.Grounding}) {
@@ -470,7 +496,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			return
 		}
 		if tok.ToolApproval != nil {
-			if !askForApproval(ctx, sess, *tok.ToolApproval, ch) {
+			if !askForApprovalTraced(ctx, sess, *tok.ToolApproval, ch, st) {
 				return
 			}
 		}
@@ -508,7 +534,9 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			if tok.ChatRevision != "" && !deliver(ctx, ch, chatRevMsg{rev: tok.ChatRevision, behind: tok.ChatBehind}) {
 				return
 			}
-			deliver(ctx, ch, streamDoneMsg{})
+			if deliver(ctx, ch, streamDoneMsg{}) {
+				st.rendered("", false)
+			}
 			return
 		}
 	}

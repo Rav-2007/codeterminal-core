@@ -25,7 +25,10 @@ func TestADefaultBuildHasNoTraceEmitter(t *testing.T) {
 	tracedSyms, tracedBin := daemonSymbolsAndBytes(t, "trace")
 
 	// The control: the traced build has the recorder, its switch and its helpers.
-	for _, want := range []string{"mochiii/daemon/trace.(*Turn).Emit", "mochiii/daemon/trace.NewTurn", "mochiii/daemon/trace.Enable", "mochiii/daemon/trace.NewTurnWithID", "main.traceKindOf", "main.traceTurnOf"} {
+	for _, want := range []string{"mochiii/daemon/trace.(*Turn).Emit", "mochiii/daemon/trace.NewTurn", "mochiii/daemon/trace.Enable", "mochiii/daemon/trace.NewTurnWithID", "main.traceKindOf", "main.traceTurnOf",
+		// The terminal client is linked into this binary too (programrole.go), so its
+		// recorder is part of the same question.
+		"mochiii/clients/tui/tuitrace.(*Turn).Emit", "mochiii/clients/tui/tuitrace.Begin"} {
 		if !strings.Contains(tracedSyms, want) {
 			t.Fatalf("the traced build has no symbol %q: this test cannot see the recorder, so its result on the default build means nothing", want)
 		}
@@ -36,13 +39,13 @@ func TestADefaultBuildHasNoTraceEmitter(t *testing.T) {
 
 	// The default build has none of it.
 	for _, line := range strings.Split(defSyms, "\n") {
-		for _, bad := range []string{"mochiii/daemon/trace", "main.trace", "tracecheck"} {
+		for _, bad := range []string{"mochiii/daemon/trace", "main.trace", "tracecheck", "tuitrace", "tui.trace", "streamTrace", "dialFailure"} {
 			if strings.Contains(line, bad) {
 				t.Errorf("the default build has a trace symbol: %s", line)
 			}
 		}
 	}
-	for _, bad := range []string{"MOCHIII_TRACE", "trace: writing to", "trace: off", "daemon-%d.jsonl"} {
+	for _, bad := range []string{"MOCHIII_TRACE", "trace: writing to", "trace: off", "daemon-%d.jsonl", "tui-%d", "handshake_rejected"} {
 		if bytes.Contains(defBin, []byte(bad)) {
 			t.Errorf("the default build contains the string %q", bad)
 		}

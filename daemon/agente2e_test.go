@@ -102,7 +102,7 @@ type e2eModel struct {
 func newE2EModel(t *testing.T, reply func(n int, chat e2eChat) e2eReply) *e2eModel {
 	t.Helper()
 	m := &e2eModel{}
-	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	m.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
 			http.NotFound(w, r)
 			return
@@ -139,9 +139,24 @@ func newE2EModel(t *testing.T, reply func(n int, chat e2eChat) e2eReply) *e2eMod
 			}
 		}
 	}))
+	// e2eModelIP, when a test sets it, is the address the scripted provider listens
+	// on instead of loopback. The terminal client treats a loopback provider as "a
+	// model on this computer" and turns the agent's tools off for it, so a test that
+	// drives that client through a tool call needs the provider somewhere else.
+	if e2eModelIP != "" {
+		ln, err := net.Listen("tcp", net.JoinHostPort(e2eModelIP, "0"))
+		if err != nil {
+			t.Fatalf("listening on %s: %v", e2eModelIP, err)
+		}
+		m.srv.Listener = ln
+	}
+	m.srv.Start()
 	t.Cleanup(m.srv.Close)
 	return m
 }
+
+// e2eModelIP is set (and restored) by a test that needs the provider off loopback.
+var e2eModelIP string
 
 func (m *e2eModel) requests() []e2eChat {
 	m.mu.Lock()
