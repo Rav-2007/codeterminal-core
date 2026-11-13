@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"mochiii/protocol"
 )
 
 // maxLineBytes is the schema's line cap. A line is built from a fixed template
@@ -181,16 +183,33 @@ type Turn struct {
 // NewTurn starts a trace for one request, or returns nil when the recorder is
 // off. The id is random and the daemon's own. The session name is the client's:
 // it is recorded only as the first 8 hex digits of its SHA-256.
-func NewTurn(session string) *Turn {
+func NewTurn(session string) *Turn { return NewTurnWithID(session, "") }
+
+// ValidClientID reports whether s is an id a client may name its turn with:
+// protocol.ValidTraceID, the one definition (exactly eight lower-case hex
+// digits and nothing else). It is the only test an id from the wire passes.
+func ValidClientID(s string) bool { return protocol.ValidTraceID(s) }
+
+// NewTurnWithID is NewTurn for a request that named its turn. clientID is
+// UNTRUSTED INPUT from the socket: it is used only when ValidClientID accepts
+// it, so what is written is one of 2^32 shapes and never a byte the client chose
+// beyond those. Any other value, including the empty one, is dropped without a
+// log line or an echo and the daemon mints its own id, exactly as NewTurn does.
+func NewTurnWithID(session, clientID string) *Turn {
 	s := active.Load()
 	if s == nil {
 		return nil
 	}
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return nil
+	t := &Turn{s: s, started: time.Now()}
+	if ValidClientID(clientID) {
+		t.id = clientID
+	} else {
+		var b [4]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return nil
+		}
+		t.id = hex.EncodeToString(b[:])
 	}
-	t := &Turn{s: s, id: hex.EncodeToString(b[:]), started: time.Now()}
 	if session != "" {
 		sum := sha256.Sum256([]byte(session))
 		t.sid = hex.EncodeToString(sum[:4])

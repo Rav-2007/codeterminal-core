@@ -95,7 +95,7 @@ vet:
 # test (daemon/trace_leak_test.go) is the one that matters. ~1 minute.
 trace-test:
 	@cd daemon && go test -tags trace -count=1 ./trace/... && \
-		go test -tags trace -count=1 -timeout 15m -run 'TestTheTraceLeaks|TestWithTheSwitchOff|TestASymlinkedTraceFile|TestTheGoldenTrace|TestNoTurnIsSafe' .
+		go test -tags trace -count=1 -timeout 15m -run 'TestTheTraceLeaks|TestWithTheSwitchOff|TestASymlinkedTraceFile|TestTheGoldenTrace|TestNoTurnIsSafe|TestTheJoinID|TestAnInvalidJoinID' .
 
 # Compile the windows/ and darwin/ tagged files, which a vet on this machine
 # never sees. 23 files carry `//go:build windows` and 3 carry darwin -- the
