@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"mochiii/clients/tui/tuitrace"
 	"mochiii/daemon/trace/tracecheck"
 )
 
@@ -45,11 +46,16 @@ func TestTheEnumsAreMembersOfTheSchema(t *testing.T) {
 	for c := ClassOther; c < numClasses; c++ {
 		classes = append(classes, classNames[c])
 	}
+	// The schema's list is the closed list for every emitter. Three of its names are
+	// the terminal client's alone (a failed dial), listed in clients/tui/tuitrace;
+	// the daemon's enum has the rest.
 	slices.Sort(classes)
-	want := slices.Clone(s.ErrorClasses)
+	want := slices.DeleteFunc(slices.Clone(s.ErrorClasses), func(c string) bool {
+		return c != "other" && slices.Contains(tuitrace.DialClassNames(), c)
+	})
 	slices.Sort(want)
 	if !slices.Equal(classes, want) {
-		t.Errorf("the error classes in the enum and in the schema differ:\n enum   %v\n schema %v", classes, want)
+		t.Errorf("the error classes in the enum and in the schema (less the client's dial classes) differ:\n enum   %v\n schema %v", classes, want)
 	}
 	// Every name table is complete: a zero string would write an empty value
 	// where a member is required.

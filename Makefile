@@ -87,15 +87,23 @@ vet:
 # Third tag: `trace` compiles the execution recorder (daemon/trace) and its
 # tests. A default build does not contain it, so an untagged vet never sees it.
 	@(cd daemon && go vet -tags trace ./...) || exit 1
+	@(cd clients/tui && go vet -tags trace ./...) || exit 1
 	@echo "vet: clean (including -tags eval, -tags warnscan and -tags trace)"
 
 # THE EXECUTION TRACE'S TESTS. The recorder exists only in a build made with
 # -tags trace, so `go test ./...` never runs its tests; this does, with the real
 # daemon built the same way (daemon/agente2e_test.go reads the tag). The leak
 # test (daemon/trace_leak_test.go) is the one that matters. ~1 minute.
+#
+# The terminal client's half (clients/tui/tuitrace and its emit points) is the same
+# arrangement: its tests run under -tags trace here, and the end-to-end ones drive
+# the real client in a pty against the real traced daemon, so they are in the
+# daemon module's list (daemon/tracetui_e2e_test.go).
 trace-test:
+	@cd clients/tui && go test -tags trace -count=1 ./tuitrace/ && \
+		go test -tags trace -count=1 -run 'TestASuccessfulTurnWrites|TestAnErrorDoneIs|TestAnApprovalShownIs|TestAnApprovalWithATool|TestARequestThatIsNever|TestAnAnsweredTurnThat|TestADialFailure|TestTheDialErrors|TestTheRequestIsTheSame|TestACommandIsRecorded|TestEachEnter|TestASteered|TestNoKeystroke|TestAConnectWithAKey|TestWithTheSwitchOffACommand' .
 	@cd daemon && go test -tags trace -count=1 ./trace/... && \
-		go test -tags trace -count=1 -timeout 15m -run 'TestTheTraceLeaks|TestWithTheSwitchOff|TestASymlinkedTraceFile|TestTheGoldenTrace|TestNoTurnIsSafe|TestTheJoinID|TestAnInvalidJoinID' .
+		go test -tags trace -count=1 -timeout 15m -run 'TestTheTraceLeaks|TestWithTheSwitchOff|TestASymlinkedTraceFile|TestTheGoldenTrace|TestNoTurnIsSafe|TestTheJoinID|TestAnInvalidJoinID|TestTheTerminalClientLeaks|TestASuccessfulTaskIsOneTurn|TestADeniedApprovalIsSeen|TestAStoppedDaemonIsADial|TestAHungModelLeaves|TestWithTheClientsSwitchOff' .
 
 # Compile the windows/ and darwin/ tagged files, which a vet on this machine
 # never sees. 23 files carry `//go:build windows` and 3 carry darwin -- the
@@ -126,6 +134,7 @@ crossvet:
 			(cd $$m && GOOS=$$os go vet ./...) || { echo "crossvet: FAILED GOOS=$$os $$m"; exit 1; }; \
 		done; \
 		(cd daemon && GOOS=$$os go vet -tags trace ./...) || { echo "crossvet: FAILED GOOS=$$os -tags trace daemon"; exit 1; }; \
+		(cd clients/tui && GOOS=$$os go vet -tags trace ./...) || { echo "crossvet: FAILED GOOS=$$os -tags trace clients/tui"; exit 1; }; \
 	done
 	@echo "crossvet: clean (windows and darwin, $(words $(CROSSVET_MODULES)) modules)"
 	@# The static build for musl Linux (-tags nosearch, release-targets.txt's

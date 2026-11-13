@@ -158,9 +158,12 @@
     "user_cancelled",
     "provider_error",
     "tool_failed",
-    "server_unavailable"
+    "server_unavailable",
+    "no_lockfile",
+    "unreachable",
+    "handshake_rejected"
   ],
-  "error_classes_note": "the closed set an emitter may write in err: daemon ModelErrorClass (modelerror.go), the audit* decision sources that refuse a call, protocol.Incomplete*, and the two tool failure classes; anything else is written as other",
+  "error_classes_note": "the closed set an emitter may write in err: daemon ModelErrorClass (modelerror.go), the audit* decision sources that refuse a call, protocol.Incomplete*, and the two tool failure classes; and, written only by a client on a failed dial, no_lockfile (no daemon lockfile), unreachable (the lockfile's address did not answer) and handshake_rejected (the daemon refused the handshake); anything else is written as other",
   "patterns": {
     "turn": "^[a-z0-9]{1,16}$",
     "id": "^[a-z0-9_.:-]{1,64}$",
