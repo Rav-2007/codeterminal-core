@@ -358,7 +358,12 @@ func (b *mcpStateBook) listed(outcomes map[string]mcp.ListOutcome) {
 		if !ok || st.state == protocol.MCPStateFailed {
 			continue
 		}
-		if o.Err != nil {
+		if o.Err != nil && o.Tools > 0 {
+			// An incomplete list (mcp.ErrToolListIncomplete): the server runs and
+			// its tools are offered, so it is not "tools failed" -- but what is
+			// missing is said, in the field a client already shows.
+			st.state, st.toolsErr, st.tools, st.counted = protocol.MCPStateRunning, truncateForClient(o.Err.Error(), 240), o.Tools, true
+		} else if o.Err != nil {
 			st.state, st.toolsErr, st.tools, st.counted = protocol.MCPStateToolsFailed, truncateForClient(o.Err.Error(), 240), 0, false
 		} else {
 			st.state, st.toolsErr, st.tools, st.counted = protocol.MCPStateRunning, "", o.Tools, true
