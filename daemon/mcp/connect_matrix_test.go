@@ -326,3 +326,166 @@ func TestMatrixCancelledCallReturns(t *testing.T) {
 		t.Errorf("cancel took %s to take effect", d)
 	}
 }
+
+// F5. A remote server may end a session at any time and answer 404 afterwards.
+// That is not a failed tool and not a dead server: the request was never acted
+// on, so one new session and one retry is correct -- and no more than one.
+
+func connectRaw(t *testing.T, m *rawMCP) *RemoteClient {
+	t.Helper()
+	ts := httptest.NewServer(m)
+	t.Cleanup(ts.Close)
+	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "raw", URL: ts.URL, ConnectTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+func TestMatrixLostSessionIsReopenedOnce(t *testing.T) {
+	m := &rawMCP{}
+	c := connectRaw(t, m)
+	if got := m.initHits.Load(); got != 1 {
+		t.Fatalf("a fresh connection opened %d sessions", got)
+	}
+
+	m.expired.Store(true) // the server forgets the session; the next initialize reopens it
+	res, err := c.CallTool(context.Background(), "anything", nil)
+	if err != nil || res.Content != "ok" {
+		t.Fatalf("call after the session was lost: %+v, %v", res, err)
+	}
+	if got := m.initHits.Load(); got != 2 {
+		t.Errorf("%d sessions were opened; want exactly 2 (the original and one replacement)", got)
+	}
+
+	// The replacement is the session now: later calls do not reconnect again.
+	for i := 0; i < 3; i++ {
+		if _, err := c.CallTool(context.Background(), "anything", nil); err != nil {
+			t.Fatalf("call %d on the replacement session: %v", i, err)
+		}
+	}
+	if got := m.initHits.Load(); got != 2 {
+		t.Errorf("later calls opened more sessions: %d", got)
+	}
+}
+
+func TestMatrixLostSessionDuringListIsReopened(t *testing.T) {
+	m := &rawMCP{toolsJSON: `[{"name":"t","inputSchema":{"type":"object"}}]`}
+	c := connectRaw(t, m)
+	m.expired.Store(true)
+	tools, err := c.ListTools(context.Background())
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("list after the session was lost: %v, %v", tools, err)
+	}
+}
+
+// A server that keeps refusing is unavailable after exactly one retry, not
+// retried until something gives.
+func TestMatrixLostSessionTwiceIsUnavailable(t *testing.T) {
+	m := &rawMCP{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Like rawMCP, but a new session is refused too: initialize succeeds and
+		// then every later request 404s again.
+		m.ServeHTTP(w, r)
+		m.expired.Store(true)
+	}))
+	t.Cleanup(ts.Close)
+	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "raw", URL: ts.URL, ConnectTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	before := m.initHits.Load()
+	_, err = c.CallTool(context.Background(), "anything", nil)
+	if !errors.Is(err, ErrServerUnavailable) {
+		t.Fatalf("want ErrServerUnavailable, got %v", err)
+	}
+	if got := m.initHits.Load() - before; got != 1 {
+		t.Errorf("%d reconnects were attempted; want exactly 1", got)
+	}
+}
+
+// Many calls losing the same session at once open one replacement, not one each.
+func TestMatrixConcurrentLossOpensOneSession(t *testing.T) {
+	m := &rawMCP{}
+	c := connectRaw(t, m)
+	m.expired.Store(true)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.CallTool(context.Background(), "anything", nil); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if got := m.initHits.Load(); got != 2 {
+		t.Errorf("%d sessions were opened; want 2 (the original and ONE replacement)", got)
+	}
+}
+
+// A closed client does not come back to life by being called.
+func TestMatrixClosedRemoteDoesNotReconnect(t *testing.T) {
+	m := &rawMCP{}
+	c := connectRaw(t, m)
+	_ = c.Close()
+	m.expired.Store(true)
+	before := m.initHits.Load()
+	if _, err := c.CallTool(context.Background(), "anything", nil); !errors.Is(err, ErrServerUnavailable) {
+		t.Fatalf("want ErrServerUnavailable, got %v", err)
+	}
+	if m.initHits.Load() != before {
+		t.Error("a closed client opened a new session")
+	}
+}
+
+func TestIsTransportDeathRecognisesTheSDKsSentinels(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"session missing":           {fmt.Errorf("sending: %w", sdk.ErrSessionMissing), true},
+		"connection closed":         {fmt.Errorf("write: %w", sdk.ErrConnectionClosed), true},
+		"eof":                       {fmt.Errorf("read: %w", errors.New("x: EOF")), true},
+		"a tool's own failure":      {errors.New("tool exploded"), false},
+		"invalid params from tools": {errors.New("invalid params"), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := isTransportDeath(tc.err); got != tc.want {
+				t.Errorf("isTransportDeath(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// A closed connection is retried ONLY when this session's server is known to
+// have forgotten it. Without that it may be a network drop with the request
+// already acted on, and asking again could do a thing twice.
+func TestMatrixClosedConnectionIsNotRetriedUnlessSessionWasLost(t *testing.T) {
+	m := &rawMCP{}
+	c := connectRaw(t, m)
+	closed := func(*sdk.ClientSession) error { return fmt.Errorf("write: %w", sdk.ErrConnectionClosed) }
+
+	calls := 0
+	err := c.run(func(s *sdk.ClientSession) error { calls++; return closed(s) })
+	if !errors.Is(err, sdk.ErrConnectionClosed) || calls != 1 || m.initHits.Load() != 1 {
+		t.Fatalf("no lost flag: err=%v calls=%d sessions=%d; want one attempt, no reconnect", err, calls, m.initHits.Load())
+	}
+
+	c.lost.Store(true)
+	calls = 0
+	_ = c.run(func(s *sdk.ClientSession) error { calls++; return closed(s) })
+	if calls != 2 || m.initHits.Load() != 2 {
+		t.Fatalf("lost flag raised: calls=%d sessions=%d; want two attempts and one reconnect", calls, m.initHits.Load())
+	}
+}

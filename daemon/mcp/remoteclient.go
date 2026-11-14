@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -65,11 +66,24 @@ type RemoteClient struct {
 	host string
 	logf func(format string, args ...any)
 
+	// cfg, origin and parent are what reconnect needs to open a second session
+	// to the same server: the same address, headers and sign-in, and a context
+	// that ends when the caller's does.
+	cfg    RemoteConfig
+	origin *url.URL
+	parent context.Context
+
 	mu      sync.Mutex
 	session *sdk.ClientSession
 	closed  bool
-	// end cancels the session's context (ConnectRemote).
+	// end cancels the session's context (dialRemote).
 	end context.CancelFunc
+	// lost is raised by this session's transport when its server answers 404.
+	lost *atomic.Bool
+	// gen counts sessions: it moves each time reconnect replaces one, so a
+	// caller that lost to a concurrent reconnect can see it and use the new
+	// session instead of opening a third.
+	gen uint64
 }
 
 // ValidateRemoteURL reports why raw cannot be a remote server's address, or
@@ -134,6 +148,12 @@ type guardedTransport struct {
 	// handshake past its timeout, and a closed session's request open, until
 	// the transport's own header timeout.
 	life context.Context
+	// lost, when set, is raised the moment this session's server answers 404.
+	// On a live session that is the spec's "session terminated", and it is
+	// seen HERE, before the SDK reacts to it by closing the connection -- which
+	// is what lets a caller whose own call fails with "connection closed"
+	// (because a neighbour's call got the 404) know why. See RemoteClient.run.
+	lost *atomic.Bool
 }
 
 func sameOrigin(a, b *url.URL) bool {
@@ -159,6 +179,9 @@ func (g *guardedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req.Header.Set(k, v)
 	}
 	resp, err := g.next.RoundTrip(req)
+	if err == nil && resp != nil && resp.StatusCode == http.StatusNotFound && g.lost != nil {
+		g.lost.Store(true)
+	}
 	if err != nil || resp == nil || resp.Body == nil {
 		release()
 		return resp, err
@@ -181,7 +204,7 @@ func (b *limitedBody) Close() error {
 }
 
 // remoteHTTPClient is the guarded client for one server.
-func remoteHTTPClient(cfg RemoteConfig, origin *url.URL, life context.Context) *http.Client {
+func remoteHTTPClient(cfg RemoteConfig, origin *url.URL, life context.Context, lost *atomic.Bool) *http.Client {
 	next := http.RoundTripper(&http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -198,7 +221,7 @@ func remoteHTTPClient(cfg RemoteConfig, origin *url.URL, life context.Context) *
 		limit = DefaultMaxMessageBytes
 	}
 	return &http.Client{
-		Transport: &guardedTransport{origin: origin, headers: cfg.Headers, limit: limit, server: cfg.Name, next: next, life: life},
+		Transport: &guardedTransport{origin: origin, headers: cfg.Headers, limit: limit, server: cfg.Name, next: next, life: life, lost: lost},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
@@ -225,6 +248,21 @@ func ConnectRemote(ctx context.Context, cfg RemoteConfig) (*RemoteClient, error)
 			return nil, fmt.Errorf("server %s: %v", cfg.Name, err)
 		}
 	}
+	session, end, lost, err := dialRemote(ctx, cfg, origin)
+	if err != nil {
+		return nil, err
+	}
+	return &RemoteClient{
+		name: cfg.Name, host: origin.Host, logf: cfg.Logf,
+		cfg: cfg, origin: origin, parent: ctx,
+		session: session, end: end, lost: lost,
+	}, nil
+}
+
+// dialRemote opens one session to an already-validated server and completes the
+// handshake. It is the whole of connecting, kept apart from validation so that
+// reconnect (below) can repeat it without repeating the checks.
+func dialRemote(ctx context.Context, cfg RemoteConfig, origin *url.URL) (*sdk.ClientSession, context.CancelFunc, *atomic.Bool, error) {
 	// THE SESSION OUTLIVES THE HANDSHAKE. The SSE transport keeps its event
 	// stream on the context Connect is given, so a context cancelled when the
 	// handshake's time is up ended the stream the moment this returned and
@@ -233,7 +271,8 @@ func ConnectRemote(ctx context.Context, cfg RemoteConfig) (*RemoteClient, error)
 	// is timed, by cancelling it if the deadline passes first. Every request
 	// ends with it too (guardedTransport.life).
 	sessionCtx, endSession := context.WithCancel(ctx)
-	httpClient := remoteHTTPClient(cfg, origin, sessionCtx)
+	lost := new(atomic.Bool)
+	httpClient := remoteHTTPClient(cfg, origin, sessionCtx, lost)
 
 	var transport sdk.Transport
 	switch strings.ToLower(cfg.Transport) {
@@ -252,7 +291,7 @@ func ConnectRemote(ctx context.Context, cfg RemoteConfig) (*RemoteClient, error)
 		transport = &sdk.SSEClientTransport{Endpoint: origin.String(), HTTPClient: httpClient}
 	default:
 		endSession()
-		return nil, fmt.Errorf("server %s: transport %q is not http or sse", cfg.Name, cfg.Transport)
+		return nil, nil, nil, fmt.Errorf("server %s: transport %q is not http or sse", cfg.Name, cfg.Transport)
 	}
 
 	handshake := cfg.ConnectTimeout
@@ -271,9 +310,101 @@ func ConnectRemote(ctx context.Context, cfg RemoteConfig) (*RemoteClient, error)
 		if err == nil || timedOut {
 			err = fmt.Errorf("no answer within %s: %w", handshake, context.DeadlineExceeded)
 		}
-		return nil, fmt.Errorf("%w: server %s could not be reached at %s: %v", ErrServerUnavailable, cfg.Name, origin.Host, err)
+		return nil, nil, nil, fmt.Errorf("%w: server %s could not be reached at %s: %v", ErrServerUnavailable, cfg.Name, origin.Host, err)
 	}
-	return &RemoteClient{name: cfg.Name, host: origin.Host, logf: cfg.Logf, session: session, end: endSession}, nil
+	return session, endSession, lost, nil
+}
+
+// current returns the live session, its generation and its lost flag, or why
+// there is no session.
+func (c *RemoteClient) current() (*sdk.ClientSession, uint64, *atomic.Bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.session == nil {
+		return nil, 0, nil, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
+	}
+	return c.session, c.gen, c.lost, nil
+}
+
+// reconnect replaces a session the server has forgotten with a fresh one.
+//
+// ONLY FOR A FORGOTTEN SESSION. A remote server may end a session at any time
+// and then answers every request that carries its id with HTTP 404 (the spec's
+// "session terminated"). That answer means the server did not act on the
+// request, so asking again on a new session cannot do a thing twice. It is
+// deliberately NOT done for a subprocess that died mid-call: there the server
+// may have acted before it died, and starting it again to repeat the call could
+// repeat a side effect.
+//
+// gen is the generation the caller was using. If another caller has already
+// replaced that session, its replacement is returned and nothing is dialled: a
+// burst of concurrent calls on a lost session makes one new session, not one
+// each.
+func (c *RemoteClient) reconnect(gen uint64) (*sdk.ClientSession, error) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
+	}
+	if c.gen != gen {
+		session := c.session
+		c.mu.Unlock()
+		return session, nil
+	}
+	// The lock is held across the handshake on purpose: it is what makes the
+	// reconnect single-flight, and the handshake is bounded by ConnectTimeout.
+	session, end, lost, err := dialRemote(c.parent, c.cfg, c.origin)
+	if err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
+	oldSession, oldEnd := c.session, c.end
+	c.session, c.end, c.lost = session, end, lost
+	c.gen++
+	c.mu.Unlock()
+
+	c.logfSafe("mcp: server %s forgot its session; opened a new one", c.name)
+	if oldSession != nil {
+		_ = oldSession.Close()
+	}
+	if oldEnd != nil {
+		oldEnd()
+	}
+	return session, nil
+}
+
+// run performs op on the live session and, if the server has forgotten that
+// session, on one new session -- once. A second loss is reported as it is
+// (ErrServerUnavailable, through isTransportDeath), not retried again.
+//
+// WHEN A FAILURE MEANS "THE SESSION IS GONE". Two shapes:
+//   - the SDK's own ErrSessionMissing: this call got the 404;
+//   - ErrConnectionClosed WITH the transport's lost flag raised: another call
+//     on the same session got the 404 first, the SDK shut the connection, and
+//     this call -- sent after, or still in flight -- was refused with a closed
+//     connection that no longer says why. The flag, raised in the HTTP layer
+//     before the SDK reacts, is the why.
+//
+// A closed connection WITHOUT the flag is not retried: it may be a network drop
+// with the request already acted on, and asking again could do a thing twice.
+func (c *RemoteClient) run(op func(*sdk.ClientSession) error) error {
+	session, gen, lost, err := c.current()
+	if err != nil {
+		return err
+	}
+	err = op(session)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sdk.ErrSessionMissing) && !(lost.Load() && errors.Is(err, sdk.ErrConnectionClosed)) {
+		return err
+	}
+	session, rerr := c.reconnect(gen)
+	if rerr != nil {
+		return fmt.Errorf("%w: server %s lost its session and a new one could not be opened: %w",
+			ErrServerUnavailable, c.name, rerr)
+	}
+	return op(session)
 }
 
 func (c *RemoteClient) logfSafe(format string, args ...any) {
@@ -284,24 +415,24 @@ func (c *RemoteClient) logfSafe(format string, args ...any) {
 
 // ListTools returns the server's tools, each naming the host it is reached at.
 func (c *RemoteClient) ListTools(ctx context.Context) ([]Tool, error) {
-	c.mu.Lock()
-	session, closed := c.session, c.closed
-	c.mu.Unlock()
-	if closed || session == nil {
-		return nil, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
-	}
-	return listSessionTools(ctx, session, c.name, c.host, c.logfSafe)
+	var tools []Tool
+	err := c.run(func(session *sdk.ClientSession) error {
+		var err error
+		tools, err = listSessionTools(ctx, session, c.name, c.host, c.logfSafe)
+		return err
+	})
+	return tools, err
 }
 
 // CallTool invokes one tool on the remote server.
 func (c *RemoteClient) CallTool(ctx context.Context, name string, args json.RawMessage) (Result, error) {
-	c.mu.Lock()
-	session, closed := c.session, c.closed
-	c.mu.Unlock()
-	if closed || session == nil {
-		return Result{}, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
-	}
-	return callSessionTool(ctx, session, c.name, name, args)
+	var res Result
+	err := c.run(func(session *sdk.ClientSession) error {
+		var err error
+		res, err = callSessionTool(ctx, session, c.name, name, args)
+		return err
+	})
+	return res, err
 }
 
 // Close ends the session (the streamable transport tells the server so).

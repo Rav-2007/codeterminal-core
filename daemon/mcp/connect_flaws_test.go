@@ -4,12 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,55 +105,6 @@ func TestFlawF3EmbeddedTextResourceIsDropped(t *testing.T) {
 		"an embedded text resource reaches the model as "+quote(res.Content))
 }
 
-// rawMCP is the smallest streamable-HTTP MCP server that answers with plain
-// application/json, so a test controls every byte of a response -- which the
-// SDK's own server never lets it do.
-type rawMCP struct {
-	pad       string       // inserted just inside the opening brace of every response
-	callCode  atomic.Int32 // when non-zero, tools/call answers with this status
-	hits      atomic.Int32
-	toolsJSON string
-}
-
-func (m *rawMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	body, _ := io.ReadAll(r.Body)
-	var req struct {
-		Method string          `json:"method"`
-		ID     json.RawMessage `json:"id"`
-		Params struct {
-			ProtocolVersion string `json:"protocolVersion"`
-		} `json:"params"`
-	}
-	_ = json.Unmarshal(body, &req)
-	m.hits.Add(1)
-	if len(req.ID) == 0 { // a notification
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	var result string
-	switch req.Method {
-	case "initialize":
-		result = `{"protocolVersion":"` + req.Params.ProtocolVersion +
-			`","capabilities":{"tools":{}},"serverInfo":{"name":"raw","version":"v0"}}`
-	case "tools/list":
-		result = `{"tools":` + orDefault(m.toolsJSON, "[]") + `}`
-	case "tools/call":
-		if code := int(m.callCode.Load()); code != 0 {
-			http.Error(w, "session not found", code)
-			return
-		}
-		result = `{"content":[{"type":"text","text":"ok"}]}`
-	default:
-		result = `{}`
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = io.WriteString(w, `{`+m.pad+`"jsonrpc":"2.0","id":`+string(req.ID)+`,"result":`+result+`}`)
-}
-
 // F4. DefaultMaxMessageBytes is 2 MiB "per message", enforced by counting bytes
 // since the last newline. That is exact for stdio (newline-delimited) and wrong
 // for an HTTP application/json body, where whitespace may contain newlines: a
@@ -186,34 +134,6 @@ func TestFlawF4HTTPMessageLimitIsBypassedByNewlines(t *testing.T) {
 	lines := connect(strings.Repeat(strings.Repeat(" ", 1000)+"\n", size/1001))
 	knownFlaw(t, "F4", lines != nil,
 		"a 5 MiB message with a newline every 1000 bytes was accepted against a 1 MiB limit")
-}
-
-// F5. A remote server that forgets the session (HTTP 404 on a later request) is
-// reported as an ordinary call failure, not as ErrServerUnavailable, so the
-// loop cannot tell "this server is gone" from "this tool failed".
-func TestFlawF5SessionLossIsNotClassifiedAsUnavailable(t *testing.T) {
-	m := &rawMCP{}
-	ts := httptest.NewServer(m)
-	t.Cleanup(ts.Close)
-	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "raw", URL: ts.URL, ConnectTimeout: 10 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c.Close() }()
-	m.callCode.Store(http.StatusNotFound)
-	_, err = c.CallTool(context.Background(), "anything", nil)
-	if err == nil {
-		t.Fatal("a 404 answer produced no error")
-	}
-	knownFlaw(t, "F5", errors.Is(err, ErrServerUnavailable),
-		"a 404 mid-session is reported as: "+err.Error())
-}
-
-func orDefault(s, d string) string {
-	if s == "" {
-		return d
-	}
-	return s
 }
 
 func quote(s string) string { return `"` + s + `"` }

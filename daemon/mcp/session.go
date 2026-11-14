@@ -31,7 +31,7 @@ func listSessionTools(ctx context.Context, session *sdk.ClientSession, server, r
 	logf func(string, ...any)) ([]Tool, error) {
 	res, err := session.ListTools(ctx, &sdk.ListToolsParams{})
 	if err != nil {
-		return nil, fmt.Errorf("%w: listing tools on server %s: %v", ErrServerUnavailable, server, err)
+		return nil, fmt.Errorf("%w: listing tools on server %s: %w", ErrServerUnavailable, server, err)
 	}
 
 	tools := make([]Tool, 0, len(res.Tools))
@@ -128,9 +128,17 @@ func annotationBool(t *sdk.Tool, kind annotationKind) bool {
 // wrapping an unexported error, so there is nothing else to match on. It is
 // narrow, and it is additive -- a future SDK that returns a proper sentinel is
 // caught by the lines above without this ever being consulted.
+//
+// The SDK's own sentinels come first: ErrSessionMissing is what an HTTP 404 on
+// a live session becomes (the server forgot it), and ErrConnectionClosed is a
+// write to a connection that is closed or closing. Matching them by type is why
+// callers below wrap the cause with %w and not %v -- a %v flattens the chain
+// and the next layer up can no longer tell a forgotten session from a failed
+// tool (flaw F5).
 func isTransportDeath(err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, io.ErrClosedPipe) || errors.Is(err, ErrServerUnavailable) {
+		errors.Is(err, io.ErrClosedPipe) || errors.Is(err, ErrServerUnavailable) ||
+		errors.Is(err, sdk.ErrSessionMissing) || errors.Is(err, sdk.ErrConnectionClosed) {
 		return true
 	}
 	text := err.Error()
@@ -163,7 +171,7 @@ func callSessionTool(ctx context.Context, session *sdk.ClientSession, server, na
 		// as a bare io.EOF wrapped in prose, and passed through unclassified
 		// the loop could not tell "this server is gone" from "this tool failed".
 		if isTransportDeath(err) {
-			return Result{}, fmt.Errorf("%w: server %s stopped responding during %s: %v",
+			return Result{}, fmt.Errorf("%w: server %s stopped responding during %s: %w",
 				ErrServerUnavailable, server, name, err)
 		}
 		return Result{}, fmt.Errorf("calling %s on server %s: %w", name, server, err)
