@@ -653,6 +653,12 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 				return fmt.Sprintf("%s %s. It answered, and needs you to sign in before its tools work: %s", done, name,
 					s.signInAdvice(name)), notes
 			}
+			// A LAUNCHER STILL DOWNLOADING is not a wrong command, and "fix the
+			// command" sent people to remove a server that works on the next try.
+			if hint := timeoutHint(srv, err); hint != "" {
+				return fmt.Sprintf("%s %s, but it was still starting when the wait ran out: %v. It is saved, and "+
+					"its command is likely fine. %s", done, name, err, hint), notes
+			}
 			return fmt.Sprintf("%s %s, but it did NOT start when tried: %v. It is saved; fix the command "+
 				"(`/mcp-server remove %s`, then add it again) or see the daemon log.", done, name, err, name), notes
 		}

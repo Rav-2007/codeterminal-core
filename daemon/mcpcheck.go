@@ -43,9 +43,19 @@ func listDeadline(cfg *Config) time.Duration {
 // server times out once and then starts.
 var downloadingLaunchers = map[string]bool{"npx": true, "uvx": true, "docker": true, "bunx": true, "pnpx": true}
 
+// isLauncherCommand reports whether command is one of those launchers, by the
+// name of its program (a path, and a Windows .exe/.cmd/.bat suffix, are ignored).
+func isLauncherCommand(command string) bool {
+	name := filepath.Base(strings.TrimSpace(command))
+	for _, suffix := range []string{".exe", ".cmd", ".bat"} {
+		name = strings.TrimSuffix(strings.ToLower(name), suffix)
+	}
+	return downloadingLaunchers[name]
+}
+
 // timeoutHint is said with a start that timed out under a launcher.
 func timeoutHint(srv MCPServerConfig, err error) string {
-	if err == nil || !downloadingLaunchers[strings.TrimSuffix(filepath.Base(srv.Command), ".exe")] {
+	if err == nil || !isLauncherCommand(srv.Command) {
 		return ""
 	}
 	text := strings.ToLower(err.Error())
@@ -53,8 +63,9 @@ func timeoutHint(srv MCPServerConfig, err error) string {
 		return ""
 	}
 	return fmt.Sprintf("%s downloads the package the first time it runs, which can take longer than the %s allowed. "+
-		"Check again with a longer wait (`mcp check <name> --timeout 120`, or Check in VS Code), or set "+
-		"connect_timeout_seconds on the server.", filepath.Base(srv.Command), handshakeBound(srv, MCPBudgetConfig{}))
+		"Once it is downloaded a second start is quick, so Check again; or allow longer with "+
+		"`mcp check <name> --timeout 120` or connect_timeout_seconds on the server (up to 120).",
+		filepath.Base(srv.Command), handshakeBound(srv, MCPBudgetConfig{}))
 }
 
 // mcpCheck starts the named server -- or every enabled one, for "" -- now,
