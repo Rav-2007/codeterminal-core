@@ -105,6 +105,12 @@ mochiii/daemon/mcp          91.0
 mochiii/daemon/trace            96.0
 mochiii/daemon/trace/tracecheck 90.0
 
+# The terminal client's half of it (clients/tui/tuitrace). Same arrangement: a
+# DEFAULT build measures the enums, the validating constructors and the no-op
+# stub (measured 97.0 x3); the recorder, under -tags trace, is covered by
+# `make trace-test`.
+mochiii/clients/tui/tuitrace    95.0
+
 # 0.0 is the honest floor, not an oversight. testharness is a test-support
 # BINARY (fake Supabase + fake OpenRouter) whose whole purpose is to be driven
 # by out-of-process drills and the soak script -- there is nothing meaningful to

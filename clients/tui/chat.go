@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"mochiii/clients/tui/tuitrace"
 	"mochiii/editapply"
 	"mochiii/protocol"
 )
@@ -208,6 +209,11 @@ type chatModel struct {
 	// command and all -- what a refused key hands to pendingPrompt so the same
 	// question can be asked again once a working key is in.
 	turnInput string
+	// turnTrace is this turn's execution trace (tuitrace), from the Enter that
+	// started it to the request that carries its id. Nil in a default build and
+	// whenever MOCHIII_TRACE is not 1; a command that stays local never leaves it
+	// set, and a turn that starts some other way gets a fresh one (beginTurnWith).
+	turnTrace *tuitrace.Turn
 	chatExtras
 	// limits bounds the transcript; evictedTurns and evictedBytes are the
 	// running totals the eviction marker reports. See transcriptbound.go.
@@ -1492,12 +1498,26 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.turnInput = raw
+	// ONE TRACE TURN PER ENTER (tuitrace; nil, and every call below an empty
+	// inlined body, unless this is a traced build with MOCHIII_TRACE=1). A line that
+	// starts with "/" is recorded as the catalog command it names or as unknown,
+	// never with its arguments; a command that stays local ends its trace here, and
+	// one that becomes a request hands the turn on in m.turnTrace.
+	tr := tuitrace.Begin()
+	traceCommandParsed(tr, raw)
+	var began time.Time
+	if tr != nil { // in a default build tr is the constant nil, and this is gone
+		began = time.Now()
+	}
 	if arg, isModel := parseModelCommand(raw); isModel {
 		m.input.SetValue("")
-		return m.handleModelCommand(arg)
+		mm, cmd := m.handleModelCommand(arg)
+		traceLocalDone(tr, raw, began)
+		return mm, cmd
 	}
 	if sp := parseSlash(raw); !sp.RawPassthrough {
 		m.input.SetValue("")
+		m.turnTrace = tr
 		return m.handleSlash(sp)
 	}
 	if note := unknownCommandNote(raw); note != "" {
@@ -1505,6 +1525,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 		m.appendTurn(turn{role: roleSystem, text: note})
 		m.resizeViewport()
 		m.refreshViewport()
+		traceLocalDone(tr, raw, began)
 		return m, nil
 	}
 	// A QUESTION IS THE MOMENT A KEY IS ACTUALLY NEEDED -- and this is below the
@@ -1571,7 +1592,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.turnMode = mode
 	m.tasks = nil
 	m.turnChatRev = m.chatRev
-	task := taskFields{attached: m.takeAttached()}
+	task := taskFields{attached: m.takeAttached(), trace: tr}
 	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, task, ch))
 }
 
@@ -1579,16 +1600,28 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 	if sp.Def == nil {
 		return m, nil
 	}
+	// The turn's trace, if any, was set by startTurn. A command that stays local
+	// takes it and ends it; one that becomes a request leaves it for beginTurnWith.
+	tr := m.turnTrace
+	var began time.Time
+	if tr != nil {
+		began = time.Now()
+	}
 	if sp.UsageOnly {
+		m.turnTrace = nil
 		msg := fmt.Sprintf("usage: /%s <args…>", sp.Def.Name)
 		m.appendTurn(turn{role: roleAssistant, local: true, text: msg})
 		m.resizeViewport()
 		m.refreshViewport()
+		traceLocalDone(tr, "/"+sp.Def.Name, began)
 		return m, nil
 	}
 	switch sp.Def.Kind {
 	case slashLocal:
-		return m.handleLocalSlash(sp.Def.Name, sp.Args)
+		m.turnTrace = nil
+		mm, cmd := m.handleLocalSlash(sp.Def.Name, sp.Args)
+		traceLocalDone(tr, "/"+sp.Def.Name, began)
+		return mm, cmd
 	case slashSteered:
 		// A long-task command starts a new long task, on this session's budget.
 		if isLongTaskMode(sp.Def.Mode) {
@@ -1643,6 +1676,12 @@ func (m chatModel) beginTurnWith(shown, prompt, promptKind, mode string, pipelin
 	m.streamCh = ch
 	m.turnChatRev = m.chatRev
 	task.attached = m.takeAttached()
+	// A turn started by a command carries the trace startTurn began for it; any
+	// other way of starting one (a resumed task, a held prompt) begins its own.
+	if task.trace = m.turnTrace; task.trace == nil {
+		task.trace = tuitrace.Begin()
+	}
+	m.turnTrace = nil
 	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, task, ch))
 }
 

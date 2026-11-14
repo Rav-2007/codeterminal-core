@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"mochiii/clients/tui/tuitrace"
 	"mochiii/protocol"
 )
 
@@ -111,7 +112,7 @@ func connectToDaemon(clientName string, capabilities ...string) (*daemonSession,
 	lockPath := lockPathFunc()
 	lock, err := readLockFile(lockPath)
 	if err != nil {
-		return nil, fmt.Errorf("daemon not found (expected a lockfile at %s; start it with: mochiii-daemon): %w", lockPath, err)
+		return nil, traceDialErr(tuitrace.ClassNoLockfile, fmt.Errorf("daemon not found (expected a lockfile at %s; start it with: mochiii-daemon): %w", lockPath, err))
 	}
 
 	// The lockfile carries the address, transport and all, so this dials what
@@ -121,7 +122,7 @@ func connectToDaemon(clientName string, capabilities ...string) (*daemonSession,
 	addr := protocol.AddressFromLock(lock)
 	conn, err := protocol.Dial(addr)
 	if err != nil {
-		return nil, fmt.Errorf("could not connect to daemon at %s (it may have crashed or been stopped; restart it and try again): %w", addr, err)
+		return nil, traceDialErr(tuitrace.ClassUnreachable, fmt.Errorf("could not connect to daemon at %s (it may have crashed or been stopped; restart it and try again): %w", addr, err))
 	}
 
 	enc := json.NewEncoder(conn)
@@ -148,7 +149,7 @@ func connectToDaemon(clientName string, capabilities ...string) (*daemonSession,
 	}
 	if !hsResp.Ok {
 		_ = conn.Close()
-		return nil, fmt.Errorf("daemon rejected handshake: %s (this client speaks protocol v%d; make sure client and daemon are the same build)", hsResp.Error, protocol.ProtocolVersion)
+		return nil, traceDialErr(tuitrace.ClassHandshakeRejected, fmt.Errorf("daemon rejected handshake: %s (this client speaks protocol v%d; make sure client and daemon are the same build)", hsResp.Error, protocol.ProtocolVersion))
 	}
 
 	rememberDaemonFeatures(hsResp) // localmodels.go: what a local model's questions may ask of it

@@ -51,6 +51,65 @@ Two requests that name the same id write lines under the same `turn`, each
 numbering its own `n` from 1; the id says which turn a line belongs to, not that
 it is unique. A client mints a fresh one per prompt.
 
+## The terminal client's half
+
+The terminal client (`clients/tui`) writes its own file, `tui-<pid>.jsonl`, in the
+same directory, in the same format with `"src":"tui"`. One writer per file: the
+viewer merges the two by `turn` and time. It is built the same two ways: the
+recorder (`clients/tui/tuitrace`) exists only in a build made with `-tags trace`,
+and still writes nothing unless `MOCHIII_TRACE=1` is set in the client's own
+environment. A default client has no trace code and sends the same request bytes
+as ever (`TestADefaultBuildHasNoTraceCode`; the traced client with the switch off
+sends no `trace` key either).
+
+The client mints an id for each turn (every Enter, whether it is a command or a
+question) and sends it as `trace` on the prompt request, so the daemon's lines for
+that turn carry the same `turn`. A command that never reaches the daemon has a turn
+of its own with only the client's lines.
+
+| Point | Where | Lines |
+|---|---|---|
+| T1 | `startTurn`, once per Enter | `command_parsed` (ok), subject = the catalog command the line names, or `unknown`; only for a line that starts with `/`; never its arguments |
+| T2 | `handleSlash` and the other local branches | `command_local_done` (ok): the handler for a command that stays local returned. A request a command starts for later is not part of it |
+| T3 | `streamPromptWith` | `dial` start, then ok or fail (class `no_lockfile`, `unreachable`, `handshake_rejected` or `other`, the ways `connectToDaemon` fails); a failed dial ends the turn's trace. `request_sent` start when the request goes, then ok when the daemon first answers (its duration is how long that took), or fail (`user_cancelled` when the person stopped it, else `other`) |
+| T4 | `askForApprovalTraced`, the Done and error branches | `approval_shown` (ok), subject = the server's and the tool's name the daemon sent, as `server__tool`, else `unknown_tool` (the call number is the daemon's and the client does not have it, so it is 0); `result_rendered` (ok, or fail with the Done's `ErrorClass`, else `other`) when the result is handed to the screen. A turn that is stopped after the daemon answered ends with `result_rendered` fail `user_cancelled` |
+
+**A request that never comes back** is `request_sent` start with nothing after it
+(until the turn is stopped, which closes it). A daemon that took the request and
+whose model never answered shows as the daemon's `model_call` start with no end,
+and the client's `request_sent` ok with no `result_rendered`.
+
+What is not traced: keystrokes, renders, `/connect`'s key entry, a command's
+arguments, and anything from `View()`. Every line is written from the update
+goroutine (once per Enter) or the stream goroutine (a few per turn).
+
+**Why a second copy of the vocabulary.** `clients/tui` is its own module and the
+daemon module requires it (the one binary is both), so the client cannot import
+`daemon/trace`. The shared pieces are `protocol.ValidTraceID` (the id), the schema
+file (every name), and parity tests: the client's tables against the schema in its
+own module, and the daemon's tables against the client's in the daemon module
+(`TestTheDaemonsStagesAndTheClientsAreTheSchemasStagesExactly`,
+`TestTheClientsErrorClassesAndTheDaemonsAreTheSchemasClosedList`,
+`TestTheClientsToolNameCheckAgreesWithTheDaemons`).
+
+### Running the client traced
+
+Start the traced daemon first (a client does not trace a daemon that is already
+running, and a daemon that is already running does not trace), then the traced
+client, with the switch on in both:
+
+```sh
+cd daemon && go build -tags trace -o mochiii-daemon-traced .
+MOCHIII_TRACE=1 ./mochiii-daemon-traced daemon --workspace "$PWD/.."    # the daemon; plus the flags you normally use
+# in another terminal. The client is the same binary under another name (only the
+# name "mochiii-daemon" makes it the daemon), and a traced build is all it needs:
+cp mochiii-daemon-traced /tmp/mochiii-traced
+MOCHIII_TRACE=1 /tmp/mochiii-traced --workspace "$PWD/.."
+```
+
+Both write into `<socket dir>/trace/`. The client's file is created at its first
+line and never when the switch is off.
+
 ## What each emit point records
 
 | Point | Where | Lines |
