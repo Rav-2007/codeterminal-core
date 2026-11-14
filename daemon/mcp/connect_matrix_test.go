@@ -489,3 +489,146 @@ func TestMatrixClosedConnectionIsNotRetriedUnlessSessionWasLost(t *testing.T) {
 		t.Fatalf("lost flag raised: calls=%d sessions=%d; want two attempts and one reconnect", calls, m.initHits.Load())
 	}
 }
+
+// F1. tools/list is paged. The host follows the cursor -- within bounds -- and
+// when it stops short it keeps what it has and says so.
+
+func toolJSON(name string) string {
+	return fmt.Sprintf(`{"name":%q,"inputSchema":{"type":"object"}}`, name)
+}
+
+func TestMatrixPagedToolListIsFollowed(t *testing.T) {
+	srv := sdk.NewServer(&sdk.Implementation{Name: "paged", Version: "v0"}, &sdk.ServerOptions{PageSize: 2})
+	for _, n := range []string{"t1", "t2", "t3", "t4", "t5"} {
+		srv.AddTool(&sdk.Tool{Name: n, InputSchema: map[string]any{"type": "object"}},
+			func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+				return &sdk.CallToolResult{}, nil
+			})
+	}
+	ts := serveStreamable(t, srv)
+	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "paged", URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	tools, err := c.ListTools(context.Background())
+	if err != nil || len(tools) != 5 {
+		t.Fatalf("got %d tools, %v; want all 5 across 3 pages", len(tools), err)
+	}
+}
+
+// A server that answers every page with another cursor is stopped at the page
+// limit, and the tools gathered so far are kept.
+func TestMatrixEndlessCursorsStopAtThePageLimit(t *testing.T) {
+	m := &rawMCP{listFn: func(_ string, n int) (string, string) {
+		return fmt.Sprintf(`{"tools":[%s],"nextCursor":"c%d"}`, toolJSON(fmt.Sprintf("t%d", n)), n), ""
+	}}
+	c := connectRaw(t, m)
+	tools, err := c.ListTools(context.Background())
+	if !errors.Is(err, ErrToolListIncomplete) {
+		t.Fatalf("want ErrToolListIncomplete, got %v", err)
+	}
+	if len(tools) != maxToolListPages {
+		t.Errorf("kept %d tools; want %d (one per page, up to the limit)", len(tools), maxToolListPages)
+	}
+	if got := int(m.listHits.Load()); got != maxToolListPages {
+		t.Errorf("asked for %d pages; want %d", got, maxToolListPages)
+	}
+	if errors.Is(err, ErrServerUnavailable) {
+		t.Error("an incomplete list must not read as an unavailable server")
+	}
+}
+
+// The same cursor twice is a loop, caught on the second sighting.
+func TestMatrixRepeatedCursorStopsTheList(t *testing.T) {
+	m := &rawMCP{listFn: func(_ string, n int) (string, string) {
+		return fmt.Sprintf(`{"tools":[%s],"nextCursor":"same"}`, toolJSON(fmt.Sprintf("t%d", n))), ""
+	}}
+	c := connectRaw(t, m)
+	tools, err := c.ListTools(context.Background())
+	if !errors.Is(err, ErrToolListIncomplete) || len(tools) != 2 {
+		t.Fatalf("got %d tools, %v; want 2 tools and ErrToolListIncomplete", len(tools), err)
+	}
+	if got := int(m.listHits.Load()); got != 2 {
+		t.Errorf("asked for %d pages; a repeated cursor should stop at 2", got)
+	}
+}
+
+func TestMatrixToolCountIsBounded(t *testing.T) {
+	srv := sdk.NewServer(&sdk.Implementation{Name: "many", Version: "v0"}, &sdk.ServerOptions{PageSize: 5000})
+	for i := 0; i < maxToolsPerServer+5; i++ {
+		srv.AddTool(&sdk.Tool{Name: fmt.Sprintf("tool_%04d", i), InputSchema: map[string]any{"type": "object"}},
+			func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+				return &sdk.CallToolResult{}, nil
+			})
+	}
+	ts := serveStreamable(t, srv)
+	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "many", URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	tools, err := c.ListTools(context.Background())
+	if !errors.Is(err, ErrToolListIncomplete) || len(tools) != maxToolsPerServer {
+		t.Fatalf("got %d tools, %v; want exactly %d and ErrToolListIncomplete", len(tools), err, maxToolsPerServer)
+	}
+}
+
+// A later page that fails does not throw away the first page's tools.
+func TestMatrixLaterPageFailureKeepsEarlierTools(t *testing.T) {
+	m := &rawMCP{listFn: func(cursor string, _ int) (string, string) {
+		if cursor == "" {
+			return fmt.Sprintf(`{"tools":[%s,%s],"nextCursor":"p2"}`, toolJSON("a"), toolJSON("b")), ""
+		}
+		return "", "page two is broken"
+	}}
+	c := connectRaw(t, m)
+	tools, err := c.ListTools(context.Background())
+	if !errors.Is(err, ErrToolListIncomplete) || len(tools) != 2 {
+		t.Fatalf("got %d tools, %v; want the first page's 2 tools and ErrToolListIncomplete", len(tools), err)
+	}
+	// A first page that fails is still just a failed listing.
+	bad := connectRaw(t, &rawMCP{listFn: func(string, int) (string, string) { return "", "no" }})
+	if tools, err := bad.ListTools(context.Background()); !errors.Is(err, ErrServerUnavailable) || len(tools) != 0 {
+		t.Fatalf("a failed first page: %d tools, %v", len(tools), err)
+	}
+}
+
+// A tool name repeated across pages is one tool: the first is used.
+func TestMatrixDuplicateToolNamesAcrossPagesAreOne(t *testing.T) {
+	m := &rawMCP{listFn: func(cursor string, _ int) (string, string) {
+		if cursor == "" {
+			return fmt.Sprintf(`{"tools":[%s,%s],"nextCursor":"p2"}`, toolJSON("dup"), toolJSON("a")), ""
+		}
+		return fmt.Sprintf(`{"tools":[%s,%s]}`, toolJSON("dup"), toolJSON("b")), ""
+	}}
+	c := connectRaw(t, m)
+	tools, err := c.ListTools(context.Background())
+	if err != nil || len(tools) != 3 {
+		t.Fatalf("got %d tools, %v; want dup, a, b", len(tools), err)
+	}
+}
+
+// The Registry uses an incomplete list and reports the shortfall; it does not
+// treat the server as down.
+func TestMatrixRegistryKeepsAnIncompleteList(t *testing.T) {
+	m := &rawMCP{listFn: func(_ string, n int) (string, string) {
+		return fmt.Sprintf(`{"tools":[%s],"nextCursor":"c%d"}`, toolJSON(fmt.Sprintf("t%d", n)), n), ""
+	}}
+	c := connectRaw(t, m)
+	reg := NewRegistry(matrixPolicy{}, 0)
+	if err := reg.AddServer("raw", c); err != nil {
+		t.Fatal(err)
+	}
+	tools, errs := reg.Advertised(context.Background())
+	if len(tools) != maxToolListPages {
+		t.Errorf("the registry offered %d tools; want %d", len(tools), maxToolListPages)
+	}
+	if len(errs) != 1 || !errors.Is(errs[0], ErrToolListIncomplete) {
+		t.Errorf("the shortfall must be reported: %v", errs)
+	}
+	got := reg.Listed()["raw"]
+	if got.Tools != maxToolListPages || !errors.Is(got.Err, ErrToolListIncomplete) {
+		t.Errorf("the listing outcome is %+v; want the tools counted and the error carried", got)
+	}
+}

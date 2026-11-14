@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 )
@@ -18,12 +19,17 @@ type rawMCP struct {
 	pad string
 	// toolsJSON is the array tools/list answers with ("" means none).
 	toolsJSON string
+	// listFn, when set, scripts tools/list: it is given the request's cursor and
+	// the 1-based count of tools/list requests so far, and returns the result
+	// object -- or, if rpcErr is not empty, a JSON-RPC error message instead.
+	listFn func(cursor string, n int) (result, rpcErr string)
 
 	// expired makes every tools/* request answer 404 ("session not found"),
 	// as a server does for a session it has ended, until a client sends a new
 	// initialize -- which clears it, as opening a session does.
 	expired atomic.Bool
 
+	listHits atomic.Int32 // tools/list requests
 	hits     atomic.Int32 // every POST
 	initHits atomic.Int32 // initialize requests: how many sessions were opened
 }
@@ -39,6 +45,7 @@ func (m *rawMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ID     json.RawMessage `json:"id"`
 		Params struct {
 			ProtocolVersion string `json:"protocolVersion"`
+			Cursor          string `json:"cursor"`
 		} `json:"params"`
 	}
 	_ = json.Unmarshal(body, &req)
@@ -52,6 +59,7 @@ func (m *rawMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var result string
+	w.Header().Set("Content-Type", "application/json")
 	switch req.Method {
 	case "initialize":
 		m.initHits.Add(1)
@@ -59,13 +67,22 @@ func (m *rawMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		result = `{"protocolVersion":"` + req.Params.ProtocolVersion +
 			`","capabilities":{"tools":{}},"serverInfo":{"name":"raw","version":"v0"}}`
 	case "tools/list":
+		if m.listFn != nil {
+			res, rpcErr := m.listFn(req.Params.Cursor, int(m.listHits.Add(1)))
+			if rpcErr != "" {
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(req.ID)+
+					`,"error":{"code":-32603,"message":`+strconv.Quote(rpcErr)+`}}`)
+				return
+			}
+			result = res
+			break
+		}
 		result = `{"tools":` + orDefault(m.toolsJSON, "[]") + `}`
 	case "tools/call":
 		result = `{"content":[{"type":"text","text":"ok"}]}`
 	default:
 		result = `{}`
 	}
-	w.Header().Set("Content-Type", "application/json")
 	_, _ = io.WriteString(w, `{`+m.pad+`"jsonrpc":"2.0","id":`+string(req.ID)+`,"result":`+result+`}`)
 }
 

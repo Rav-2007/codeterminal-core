@@ -34,31 +34,6 @@ func knownFlaw(t *testing.T, id string, holds bool, why string) {
 	t.Skipf("KNOWN FLAW %s: %s", id, why)
 }
 
-// F1. tools/list is requested once. A server that pages its tool list (nextCursor)
-// has every tool after the first page silently dropped: session.go calls
-// ListTools with empty params and never follows NextCursor.
-func TestFlawF1ToolListPaginationIsNotFollowed(t *testing.T) {
-	srv := sdk.NewServer(&sdk.Implementation{Name: "paged", Version: "v0"}, &sdk.ServerOptions{PageSize: 2})
-	for _, n := range []string{"t1", "t2", "t3", "t4", "t5"} {
-		srv.AddTool(&sdk.Tool{Name: n, InputSchema: map[string]any{"type": "object"}},
-			func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-				return &sdk.CallToolResult{}, nil
-			})
-	}
-	ts := serveStreamable(t, srv)
-	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "paged", URL: ts.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c.Close() }()
-	tools, err := c.ListTools(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	knownFlaw(t, "F1", len(tools) == 5,
-		"server offers 5 tools over pages of 2; the host sees "+itoa(len(tools))+" and says nothing about the rest")
-}
-
 // F2. A result that carries only structuredContent (no content blocks) reaches
 // the model as an empty string; the structured value is never read.
 func TestFlawF2StructuredContentOnlyResultIsLost(t *testing.T) {

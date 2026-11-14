@@ -13,6 +13,23 @@ import (
 	"mochiii/protocol"
 )
 
+// THE BOUNDS ON A TOOL LIST. A server's tools/list is paged, and the SDK's own
+// iterator follows cursors with no limit -- a server that answers every page
+// with another cursor would keep it going for ever -- so the loop is ours, and
+// stops at whichever of these it meets first. Each is far above a real server
+// (the largest public ones list well under a hundred tools) and far below
+// anything that would hurt: one page is already bounded by the message limit,
+// so these bound how many pages, not how big one is.
+//
+// WHEN A BOUND IS MET THE LIST IS KEPT, NOT DROPPED, and the shortfall is
+// reported (ErrToolListIncomplete). Cutting a list short without saying so is
+// the flaw this replaced: a server's later tools simply never existed.
+const (
+	maxToolListPages  = 20
+	maxToolsPerServer = 1000
+	maxToolListBytes  = 8 << 20
+)
+
 // WHAT EVERY THIRD-PARTY SESSION SHARES, whatever carries it -- a subprocess's
 // pipes (stdioclient.go) or HTTP to a remote server (remoteclient.go): how its
 // tools are translated, and how a call is made and its answer flattened. One
@@ -29,50 +46,105 @@ import (
 // arguments go.
 func listSessionTools(ctx context.Context, session *sdk.ClientSession, server, remote string,
 	logf func(string, ...any)) ([]Tool, error) {
-	res, err := session.ListTools(ctx, &sdk.ListToolsParams{})
-	if err != nil {
-		return nil, fmt.Errorf("%w: listing tools on server %s: %w", ErrServerUnavailable, server, err)
-	}
+	var (
+		tools      []Tool
+		names      = map[string]bool{}
+		cursors    = map[string]bool{}
+		cursor     string
+		listBytes  int
+		incomplete error // why the list stops short, if it does
+	)
 
-	tools := make([]Tool, 0, len(res.Tools))
-	for _, t := range res.Tools {
-		if err := ValidateToolName(t.Name); err != nil {
-			// Skipped for the same reason and at the same cost as an
-			// unserialisable schema below: one unusable tool must not cost the
-			// user the server's other tools. See ValidateToolName for why a
-			// name is a security-relevant string rather than a label.
-			logf("mcp: server %s offered a tool this daemon will not advertise: %v", server, err)
-			continue
-		}
-		schema, err := json.Marshal(t.InputSchema)
+pages:
+	for page := 1; ; page++ {
+		res, err := session.ListTools(ctx, &sdk.ListToolsParams{Cursor: cursor})
 		if err != nil {
-			// A tool whose schema will not serialise cannot be advertised to
-			// the model: it would arrive as an unusable entry that only widens
-			// the menu. Skipped rather than fatal.
-			continue
+			if page == 1 {
+				return nil, fmt.Errorf("%w: listing tools on server %s: %w", ErrServerUnavailable, server, err)
+			}
+			// Page one worked, a later page did not: keep what there is and
+			// say so, rather than throw away tools the server did offer.
+			incomplete = fmt.Errorf("%w: server %s: page %d of its tool list failed after %d tool(s): %w",
+				ErrToolListIncomplete, server, page, len(tools), err)
+			break
 		}
-		tools = append(tools, Tool{
-			Server: server,
-			Name:   t.Name,
-			// SANITISED, NOT COPIED. This string is read by the model on
-			// every request AND printed to the human at the approval prompt
-			// (ToolApprovalRequest.Detail). See SanitiseToolDescription.
-			Description: SanitiseToolDescription(t.Description),
-			Schema:      schema,
-			Lane:        protocol.LaneThirdParty,
-			Confined:    false,
-			Remote:      remote,
-			// A remote server's call SENDS its arguments to that host, so a
-			// "yes for this turn" covers those arguments only (grantKey), as
-			// for web_search.
-			ReachesNetwork: remote != "",
-			ReadOnlyHint:   annotationBool(t, readOnly),
-			Destructive:    annotationBool(t, destructive),
-			OpenWorldHint:  annotationBool(t, openWorld),
-		})
+
+		for _, t := range res.Tools {
+			if err := ValidateToolName(t.Name); err != nil {
+				// Skipped for the same reason and at the same cost as an
+				// unserialisable schema below: one unusable tool must not cost the
+				// user the server's other tools. See ValidateToolName for why a
+				// name is a security-relevant string rather than a label.
+				logf("mcp: server %s offered a tool this daemon will not advertise: %v", server, err)
+				continue
+			}
+			if names[t.Name] {
+				// A name repeated across pages: the first is kept. Two tools of
+				// one name would be one menu entry the model cannot tell apart.
+				logf("mcp: server %s listed the tool %q more than once; the first is used", server, t.Name)
+				continue
+			}
+			schema, err := json.Marshal(t.InputSchema)
+			if err != nil {
+				// A tool whose schema will not serialise cannot be advertised to
+				// the model: it would arrive as an unusable entry that only widens
+				// the menu. Skipped rather than fatal.
+				continue
+			}
+			if len(tools) >= maxToolsPerServer {
+				incomplete = fmt.Errorf("%w: server %s offers more than %d tools; the rest are not listed",
+					ErrToolListIncomplete, server, maxToolsPerServer)
+				break pages
+			}
+			if listBytes += len(t.Name) + len(t.Description) + len(schema); listBytes > maxToolListBytes {
+				incomplete = fmt.Errorf("%w: server %s's tool list is larger than %d MiB; the rest are not listed",
+					ErrToolListIncomplete, server, maxToolListBytes>>20)
+				break pages
+			}
+			names[t.Name] = true
+			tools = append(tools, Tool{
+				Server: server,
+				Name:   t.Name,
+				// SANITISED, NOT COPIED. This string is read by the model on
+				// every request AND printed to the human at the approval prompt
+				// (ToolApprovalRequest.Detail). See SanitiseToolDescription.
+				Description: SanitiseToolDescription(t.Description),
+				Schema:      schema,
+				Lane:        protocol.LaneThirdParty,
+				Confined:    false,
+				Remote:      remote,
+				// A remote server's call SENDS its arguments to that host, so a
+				// "yes for this turn" covers those arguments only (grantKey), as
+				// for web_search.
+				ReachesNetwork: remote != "",
+				ReadOnlyHint:   annotationBool(t, readOnly),
+				Destructive:    annotationBool(t, destructive),
+				OpenWorldHint:  annotationBool(t, openWorld),
+			})
+		}
+
+		next := res.NextCursor
+		if next == "" {
+			break
+		}
+		if cursors[next] {
+			incomplete = fmt.Errorf("%w: server %s sent the same page cursor twice; its tool list was cut off after %d tool(s)",
+				ErrToolListIncomplete, server, len(tools))
+			break
+		}
+		if page >= maxToolListPages {
+			incomplete = fmt.Errorf("%w: server %s's tool list runs past %d pages; the rest are not listed",
+				ErrToolListIncomplete, server, maxToolListPages)
+			break
+		}
+		cursors[next] = true
+		cursor = next
 	}
 	SortTools(tools)
-	return tools, nil
+	if incomplete != nil {
+		logf("mcp: %v", incomplete)
+	}
+	return tools, incomplete
 }
 
 type annotationKind int
