@@ -632,3 +632,31 @@ func TestMatrixRegistryKeepsAnIncompleteList(t *testing.T) {
 		t.Errorf("the listing outcome is %+v; want the tools counted and the error carried", got)
 	}
 }
+
+// F2 and F3 end to end: what a real server sends reaches the model.
+func TestMatrixStructuredAndResourceContentReachTheModel(t *testing.T) {
+	srv := sdk.NewServer(&sdk.Implementation{Name: "content", Version: "v0"}, nil)
+	add := func(name string, res *sdk.CallToolResult) {
+		srv.AddTool(&sdk.Tool{Name: name, InputSchema: map[string]any{"type": "object"}},
+			func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) { return res, nil })
+	}
+	add("stats", &sdk.CallToolResult{StructuredContent: map[string]any{"answer": 42}})
+	add("readme", &sdk.CallToolResult{Content: []sdk.Content{&sdk.EmbeddedResource{
+		Resource: &sdk.ResourceContents{URI: "file:///README.md", MIMEType: "text/markdown", Text: "SECRET-PAYLOAD-7"},
+	}}})
+	ts := serveStreamable(t, srv)
+	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "content", URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	got, err := c.CallTool(context.Background(), "stats", nil)
+	if err != nil || !strings.Contains(got.Content, `"answer":42`) {
+		t.Errorf("structured-only result: %+v, %v", got, err)
+	}
+	got, err = c.CallTool(context.Background(), "readme", nil)
+	if err != nil || !strings.Contains(got.Content, "SECRET-PAYLOAD-7") || strings.Contains(got.Content, "omitted") {
+		t.Errorf("embedded text resource: %+v, %v", got, err)
+	}
+}

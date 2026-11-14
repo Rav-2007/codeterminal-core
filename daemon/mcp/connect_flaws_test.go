@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // KNOWN FLAWS in the MCP host's connection path, each stated as the behaviour
@@ -32,52 +30,6 @@ func knownFlaw(t *testing.T, id string, holds bool, why string) {
 		t.Fatalf("%s: %s", id, why)
 	}
 	t.Skipf("KNOWN FLAW %s: %s", id, why)
-}
-
-// F2. A result that carries only structuredContent (no content blocks) reaches
-// the model as an empty string; the structured value is never read.
-func TestFlawF2StructuredContentOnlyResultIsLost(t *testing.T) {
-	srv := sdk.NewServer(&sdk.Implementation{Name: "structured", Version: "v0"}, nil)
-	srv.AddTool(&sdk.Tool{Name: "stats", InputSchema: map[string]any{"type": "object"}},
-		func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-			return &sdk.CallToolResult{StructuredContent: map[string]any{"answer": 42}}, nil
-		})
-	ts := serveStreamable(t, srv)
-	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "structured", URL: ts.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c.Close() }()
-	res, err := c.CallTool(context.Background(), "stats", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	knownFlaw(t, "F2", strings.Contains(res.Content, "42"),
-		"the tool answered {\"answer\":42} as structuredContent; the model is given "+quote(res.Content))
-}
-
-// F3. An embedded resource that is plain text is reported as "content omitted"
-// even though its text is right there in the result.
-func TestFlawF3EmbeddedTextResourceIsDropped(t *testing.T) {
-	srv := sdk.NewServer(&sdk.Implementation{Name: "res", Version: "v0"}, nil)
-	srv.AddTool(&sdk.Tool{Name: "readme", InputSchema: map[string]any{"type": "object"}},
-		func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.EmbeddedResource{
-				Resource: &sdk.ResourceContents{URI: "file:///README.md", MIMEType: "text/markdown", Text: "SECRET-PAYLOAD-7"},
-			}}}, nil
-		})
-	ts := serveStreamable(t, srv)
-	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "res", URL: ts.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c.Close() }()
-	res, err := c.CallTool(context.Background(), "readme", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	knownFlaw(t, "F3", strings.Contains(res.Content, "SECRET-PAYLOAD-7"),
-		"an embedded text resource reaches the model as "+quote(res.Content))
 }
 
 // F4. DefaultMaxMessageBytes is 2 MiB "per message", enforced by counting bytes

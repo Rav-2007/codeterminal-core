@@ -1,12 +1,14 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -249,29 +251,178 @@ func callSessionTool(ctx context.Context, session *sdk.ClientSession, server, na
 		return Result{}, fmt.Errorf("calling %s on server %s: %w", name, server, err)
 	}
 
-	return Result{Content: flattenContent(res.Content), IsError: res.IsError}, nil
+	return Result{Content: renderCallResult(res), IsError: res.IsError}, nil
+}
+
+// renderCallResult is everything the model is told about one tool result.
+//
+// The content blocks come first (flattenContent). A result may ALSO carry a
+// structured value -- the spec's structuredContent -- and a server that sends
+// ONLY that, with no block the model can read, used to reach the model as an
+// empty string, which the daemon then labels "this call succeeded and returned
+// nothing" (toolresult.go): a real answer reported as no answer.
+//
+// So when no block carries text for the model, the structured value is rendered
+// as JSON. It is rendered ONLY then, never beside text that is already there:
+// a conforming server sends both, and showing both would pay for the answer
+// twice. It goes into Content, which is what makes it safe: Content is the one
+// string the daemon truncates, scrubs for secrets, defuses delimiters in and
+// strips control characters from (daemon/toolresult.go), and a second field
+// would be a second path around that.
+func renderCallResult(res *sdk.CallToolResult) string {
+	text := flattenContent(res.Content)
+	if res.StructuredContent == nil || hasModelText(res.Content) {
+		return text
+	}
+	structured := renderStructured(res.StructuredContent)
+	switch {
+	case structured == "":
+		return text
+	case text == "":
+		return structured
+	}
+	return text + "\n" + structured
+}
+
+// hasModelText reports whether any block carries text the model can read: a
+// text block, or an embedded resource whose contents are text.
+func hasModelText(content []sdk.Content) bool {
+	for _, c := range content {
+		switch v := c.(type) {
+		case *sdk.TextContent:
+			return true
+		case *sdk.EmbeddedResource:
+			if v.Resource != nil && v.Resource.Text != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// renderStructured is a structured value as compact JSON, with HTML escaping
+// OFF. json.Marshal turns "<" into \u003c, and a forged delimiter written that
+// way would no longer look like a tag to the neutralisation that runs later --
+// while still reading as one to the model. Unescaped, "<" stays "<" and is
+// defused like any other text.
+func renderStructured(v any) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // flattenContent renders MCP content blocks as text for the model.
 //
 // Non-text blocks are named rather than dropped: a tool that returned an image
 // has told the model something, and silently returning "" would leave the model
-// to conclude the call produced nothing and try again.
+// to conclude the call produced nothing and try again. The name is a word the
+// model can use ("image", "audio") and what the server said about it (its type
+// and size), never a Go type name: this once printed "*mcp.EmbeddedResource".
+//
+// An embedded resource whose contents are TEXT is shown, headed by where the
+// server says it came from. Its address and type are the server's words, so they
+// are cut to one short line here; the text goes through the same scrubbing and
+// delimiter defusing as any other (it is part of Content).
 func flattenContent(content []sdk.Content) string {
 	var b strings.Builder
 	for _, c := range content {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
 		switch v := c.(type) {
 		case *sdk.TextContent:
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
 			b.WriteString(v.Text)
-		default:
-			if b.Len() > 0 {
+		case *sdk.EmbeddedResource:
+			if v.Resource != nil && v.Resource.Text != "" {
+				b.WriteString(resourceHeader(v.Resource.URI, v.Resource.MIMEType))
 				b.WriteString("\n")
+				b.WriteString(v.Resource.Text)
+				continue
 			}
-			fmt.Fprintf(&b, "[%T content omitted: this tool returned a non-text result]", v)
+			b.WriteString(omitted("resource", mimeOf(v.Resource), blobLen(v.Resource)))
+		case *sdk.ImageContent:
+			b.WriteString(omitted("image", v.MIMEType, len(v.Data)))
+		case *sdk.AudioContent:
+			b.WriteString(omitted("audio", v.MIMEType, len(v.Data)))
+		case *sdk.ResourceLink:
+			b.WriteString(omitted("resource link", capField(v.URI, maxContentFieldBytes), 0))
+		default:
+			b.WriteString(omitted("", "", 0))
 		}
 	}
 	return b.String()
+}
+
+// maxContentFieldBytes bounds an address or type a server put in a result
+// before it is shown to the model: they are the server's words, and a header
+// is not the place for a paragraph of them.
+const maxContentFieldBytes = 256
+
+func mimeOf(r *sdk.ResourceContents) string {
+	if r == nil {
+		return ""
+	}
+	return r.MIMEType
+}
+
+func blobLen(r *sdk.ResourceContents) int {
+	if r == nil {
+		return 0
+	}
+	return len(r.Blob)
+}
+
+// resourceHeader is the line before an embedded text resource's contents.
+func resourceHeader(uri, mime string) string {
+	h := "[resource " + capField(uri, maxContentFieldBytes)
+	if mime != "" {
+		h += " (" + capField(mime, maxContentFieldBytes) + ")"
+	}
+	return h + "]"
+}
+
+// omitted is the notice for a block the model is not shown. It keeps the words
+// "content omitted" and "non-text": tests and the model's own reading of an
+// earlier version both rely on them.
+func omitted(kind, detail string, size int) string {
+	label := "content omitted"
+	if kind != "" {
+		label = kind + " content omitted"
+	}
+	var facts []string
+	if detail != "" {
+		facts = append(facts, capField(detail, maxContentFieldBytes))
+	}
+	if size > 0 {
+		facts = append(facts, fmt.Sprintf("%d bytes", size))
+	}
+	notice := "[" + label + ": this tool returned a non-text result"
+	if len(facts) > 0 {
+		notice += " (" + strings.Join(facts, ", ") + ")"
+	}
+	return notice + "]"
+}
+
+// capField makes a server-supplied address or type one short line: control
+// characters (a line break among them) become spaces and the rest is cut at a
+// character boundary.
+func capField(s string, limit int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return ' '
+		}
+		return r
+	}, s)
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
