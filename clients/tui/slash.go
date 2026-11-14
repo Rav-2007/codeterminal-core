@@ -105,7 +105,7 @@ var slashCatalog = []slashDef{
 	{Name: "connect", Kind: slashLocal, Summary: "choose a provider, paste its key, choose a model (/connect <provider> skips the list; /connect local finds a model server on this computer; /connect show, /connect forget)"},
 	{Name: "agent", Kind: slashLocal, Summary: "tools for a model on this computer: /agent on (checks what the model can do), /agent off, /agent check"},
 	{Name: "web", Kind: slashLocal, Summary: "internet tools for a model on this computer: /web on, /web off (off until you turn it on)"},
-	{Name: "exit", Kind: slashLocal, Summary: "quit the TUI"},
+	{Name: "exit", Kind: slashLocal, Summary: "quit the TUI (asks first if the chat is not saved)"},
 
 	// /team is in the catalog to be FOUND, and parsed elsewhere.
 	//
@@ -292,7 +292,7 @@ func formatSlashHelp() string {
 	// cannot go looking for once a turn is running.
 	b.WriteString("\nkeys:\n")
 	b.WriteString("  esc            stop the turn in flight; the transcript is kept\n")
-	b.WriteString("  ctrl+c         stop the turn in flight, or quit when nothing is running\n")
+	b.WriteString("  ctrl+c         stop the turn in flight, or quit when nothing is running (asks first if this chat is not saved)\n")
 	b.WriteString("  ctrl+n         start a new chat (same as /clear); /save first to keep this one\n")
 	b.WriteString("  ↑ ↓            scroll the chat (the wheel sends these too)\n")
 	b.WriteString("  ctrl+↑ ctrl+↓  the prompts you sent before (alt+↑ alt+↓ too)\n")
