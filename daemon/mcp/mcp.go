@@ -239,6 +239,14 @@ type Client interface {
 // protocol.DegradedMCPServer notice the user can read.
 var ErrServerUnavailable = errors.New("mcp server unavailable")
 
+// ErrToolListIncomplete accompanies a tool list that stops short: the server
+// has more tools than this daemon will take (a page, count or size bound), or
+// a later page of its list failed. The tools returned WITH it are real and are
+// used; the error says there are others that are not. The Registry keeps the
+// tools and reports the error; a caller that only checks err != nil would
+// throw the list away, which is the opposite of the point.
+var ErrToolListIncomplete = errors.New("mcp tool list incomplete")
+
 // BuiltinServerName is the reserved Server value for Lane A tools. Reserved:
 // ValidateServerName refuses it for a configured server, so a user cannot
 // shadow the confined tools with unconfined ones of the same name.

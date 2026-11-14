@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -139,7 +140,9 @@ type Registry struct {
 	listed map[string]ListOutcome
 }
 
-// ListOutcome is one server's answer to the last tool listing.
+// ListOutcome is one server's answer to the last tool listing. Err with Tools
+// above zero is an INCOMPLETE list (ErrToolListIncomplete): those tools are in
+// use and Err says what is missing. Err with no tools is a failed listing.
 type ListOutcome struct {
 	Tools int
 	Err   error
@@ -313,12 +316,19 @@ func (r *Registry) AdvertisedFor(ctx context.Context, query string) ([]Tool, []e
 	listed := make(map[string]ListOutcome, len(servers))
 	for _, name := range sortedKeys(servers) {
 		tools, err := servers[name].ListTools(ctx)
-		if err != nil {
+		switch {
+		case err != nil && errors.Is(err, ErrToolListIncomplete) && len(tools) > 0:
+			// A list that stops short is still a list: the tools are used, the
+			// shortfall is reported (the outcome carries both), not swallowed.
+			errs = append(errs, err)
+			listed[name] = ListOutcome{Tools: len(tools), Err: err}
+		case err != nil:
 			errs = append(errs, err)
 			listed[name] = ListOutcome{Err: err}
 			continue
+		default:
+			listed[name] = ListOutcome{Tools: len(tools)}
 		}
-		listed[name] = ListOutcome{Tools: len(tools)}
 		for _, tool := range tools {
 			if policyOf(policy, name, tool.Name) == PolicyDeny {
 				continue

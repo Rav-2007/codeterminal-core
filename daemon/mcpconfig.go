@@ -414,12 +414,38 @@ type MCPServerConfig struct {
 // remote reports whether srv is reached at a URL rather than started here.
 func (srv MCPServerConfig) remote() bool { return strings.TrimSpace(srv.URL) != "" }
 
-// connectTimeout is how long this server's handshake may take.
+// launcherConnectTimeout is the handshake bound for a server started through a
+// launcher (npx, uvx, docker ...) when nobody has set one.
+//
+// THE DEFAULT (20 s, mcp.DefaultConnectTimeout) IS RIGHT FOR A PROGRAM THAT IS
+// ALREADY THERE and wrong for one that is not: a launcher downloads the package
+// the first time it runs, and measured on 2026-11-14 a cold `npx -y
+// @modelcontextprotocol/server-everything` took 21.8 s to answer -- so the first
+// run of an ordinary server failed, and the second, with the package cached,
+// worked. That is the worst shape of failure: it looks like a broken server and
+// goes away when tried again.
+//
+// 90 s sits inside the 120 s ceiling (maxConnectTimeoutSeconds). The cost is a
+// launcher that hangs for real now holds that first start for up to 90 s instead
+// of 20; connects run in parallel and are not charged to the turn's budget, and
+// neither client gives up on the request (the terminal waits for the reply, VS
+// Code waits for it or for the socket to close).
+const launcherConnectTimeout = 90 * time.Second
+
+// connectTimeout is how long this server's handshake may take: its own setting,
+// else the budget's, else -- for a launcher -- the longer first-run bound, else 0
+// (the caller's default).
 func (srv MCPServerConfig) connectTimeout(budget MCPBudgetConfig) time.Duration {
 	if srv.ConnectTimeoutSeconds > 0 {
 		return time.Duration(min(srv.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)) * time.Second
 	}
-	return budget.resolvedConnectTimeout()
+	if d := budget.resolvedConnectTimeout(); d > 0 {
+		return d
+	}
+	if !srv.remote() && isLauncherCommand(srv.Command) {
+		return launcherConnectTimeout
+	}
+	return 0
 }
 
 // ServerCwdWorkspace is the one value MCPServerConfig.Cwd takes besides empty.
