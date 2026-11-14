@@ -127,3 +127,26 @@ func TestApprovalDecisionVocabularyIsClosed(t *testing.T) {
 		}
 	}
 }
+
+// WindowID is additive like Capabilities: a client that sends none must marshal to
+// the bytes it always did, and a handshake from before the field must decode with
+// no window. The daemon keys a per-window chat on it (daemon/chatscope.go), so a
+// key that appeared for every client -- or an empty one that decoded as a window --
+// would silently change whose chat a request is about.
+func TestWindowIDIsOmittedWhenAbsentAndAdditiveWhenPresent(t *testing.T) {
+	b, err := json.Marshal(HandshakeRequest{ProtocolVersion: 1, ClientName: "tui"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(b); got != `{"protocol_version":1,"client_name":"tui"}` {
+		t.Errorf("a window-less handshake marshalled to %s, want the pre-window bytes exactly", got)
+	}
+	var req HandshakeRequest
+	if err := json.Unmarshal([]byte(`{"protocol_version":1,"client_name":"tui"}`), &req); err != nil || req.WindowID != "" {
+		t.Errorf("an old handshake decoded with window %q (%v), want none", req.WindowID, err)
+	}
+	b, err = json.Marshal(HandshakeRequest{ProtocolVersion: 1, ClientName: "tui", WindowID: "00ff00ff00ff00ff"})
+	if err != nil || string(b) != `{"protocol_version":1,"client_name":"tui","window_id":"00ff00ff00ff00ff"}` {
+		t.Errorf("a handshake with a window marshalled to %s (%v)", b, err)
+	}
+}

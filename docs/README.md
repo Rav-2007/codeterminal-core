@@ -1,6 +1,6 @@
 # Documentation index
 
-**91 documents: 80 in `docs/`, 3 in `docs/ARCHIVE/`, and 8 at the repository root.**
+**92 documents: 81 in `docs/`, 3 in `docs/ARCHIVE/`, and 8 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -150,6 +150,7 @@ on every push**. Editing a status cell in one of them changes what CI asserts.
 | [`../SIGNAL_ESCALATION_DESIGN.md`](../SIGNAL_ESCALATION_DESIGN.md) | Degradation signalling |
 | [`MULTI_AGENT_DESIGN.md`](MULTI_AGENT_DESIGN.md) | Multi-agent orchestration: the pipeline, and the `/team` command that replaced automatic shape routing |
 | [`SYNTAX_GATE_TIER_C_DESIGN.md`](SYNTAX_GATE_TIER_C_DESIGN.md) | LSP diagnostics as a third syntax tier. **Design, not shipped.** |
+| [`CHAT_STORAGE_SPLIT_DESIGN_2026-11-14.md`](CHAT_STORAGE_SPLIT_DESIGN_2026-11-14.md) | Splitting the chat store by client (terminal, VS Code): schema v6, per-surface revision and lock, saved-chat folders and their migration. **Built; section 9 records where it differs.** |
 
 ---
 

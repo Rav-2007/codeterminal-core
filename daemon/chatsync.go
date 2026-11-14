@@ -12,11 +12,17 @@ import (
 	"mochiii/protocol"
 )
 
-// THE CURRENT CHAT IS SHARED, SO EVERY CLIENT HAS TO BE ABLE TO KEEP UP WITH IT.
+// THE CURRENT CHAT CAN BE SHARED, SO EVERY CLIENT HAS TO BE ABLE TO KEEP UP WITH IT.
 //
-// Conversation memory is one chat per workspace (memory.go), and one daemon
+// SINCE SCHEMA v6 (chatscope.go) A CHAT IS PER SURFACE, so the terminal and the
+// editor no longer share one: everything below is true of the clients of ONE
+// surface -- two terminals, or two VS Code windows, on the same folder. It was
+// written when the terminal and the editor were the two windows, and that is
+// the story it tells.
+//
+// Conversation memory was one chat per workspace (memory.go), and one daemon
 // serves every client of a workspace -- so a terminal and an editor open on the
-// same folder are writing to the same chat. Until this file existed each client
+// same folder were writing to the same chat. Until this file existed each client
 // read that chat ONCE, at startup, and from then on showed and sent only what
 // it had itself been part of. FOUND 2026-10-08 with both clients open: a
 // question asked in the editor was missing from the terminal's screen, and from
@@ -53,6 +59,21 @@ import (
 
 // chatEpoch tells this daemon process's revisions apart from any other's.
 var chatEpoch = newChatEpoch()
+
+// chatEpochFor is the epoch of one chat's revisions: the process epoch, the
+// surface's letter, and a terminal window's id. A revision taken from the
+// terminal's chat therefore fails the epoch check on the editor's -- and one from
+// one terminal window's fails it on another's -- parses as "has seen nothing", and
+// is answered with the whole chat, never an append onto the wrong one. It is the
+// protection the epoch already gives against a restarted daemon, extended to more
+// chats (chatscope.go).
+func chatEpochFor(sc chatScope) string {
+	e := chatEpoch + "-" + sc.Surface.letter()
+	if sc.Window != "" {
+		e += "-" + sc.Window
+	}
+	return e
+}
 
 func newChatEpoch() string {
 	var b [6]byte
@@ -95,19 +116,19 @@ func parseChatRevision(s string) (chatRevision, bool) {
 // chatRevisionNow is the current chat's revision, read without historyMu. It is
 // what a request is compared against; anything a client is GIVEN carries the
 // revision read with its turns instead (loadPersistedHistoryAt, currentChat).
-func (s *Server) chatRevisionNow(ctx context.Context) (string, error) {
-	gen := s.chatGen.Load()
-	last, err := s.memory.lastTurnID(ctx, s.workspace)
+func (s *Server) chatRevisionNow(ctx context.Context, sc chatScope) (string, error) {
+	gen := s.chatOf(sc).gen.Load()
+	last, err := s.memory.lastTurnID(ctx, sc)
 	if err != nil {
 		return "", err
 	}
-	return chatRevision{epoch: chatEpoch, gen: gen, last: last}.String(), nil
+	return chatRevision{epoch: chatEpochFor(sc), gen: gen, last: last}.String(), nil
 }
 
 // chatRevisionLocked is the revision while the caller holds historyMu, so no
 // write can land between the two reads.
-func (s *Server) chatRevisionLocked(ctx context.Context) string {
-	rev, err := s.chatRevisionNow(ctx)
+func (s *Server) chatRevisionLocked(ctx context.Context, sc chatScope) string {
+	rev, err := s.chatRevisionNow(ctx, sc)
 	if err != nil {
 		s.logger.Printf("chat revision: %v", err)
 		return ""
@@ -118,9 +139,9 @@ func (s *Server) chatRevisionLocked(ctx context.Context) string {
 // chatReplacedLocked records that the stored chat was just replaced or cleared.
 // Caller holds historyMu and has finished the write: bumping first would let a
 // reader pair the new generation with the old turns.
-func (s *Server) chatReplacedLocked(ctx context.Context) string {
-	s.chatGen.Add(1)
-	return s.chatRevisionLocked(ctx)
+func (s *Server) chatReplacedLocked(ctx context.Context, sc chatScope) string {
+	s.chatOf(sc).gen.Add(1)
+	return s.chatRevisionLocked(ctx, sc)
 }
 
 // historyForTurn is the conversation a turn is answered from: what the client
@@ -137,7 +158,7 @@ func (s *Server) historyForTurn(ctx context.Context, req protocol.PromptRequest)
 	if req.ChatRevision == "" || s.memory == nil {
 		return req.History, false
 	}
-	now, err := s.chatRevisionNow(ctx)
+	now, err := s.chatRevisionNow(ctx, s.scope(ctx))
 	if err != nil {
 		s.logger.Printf("chat revision: %v; answering from the history the client sent", err)
 		return req.History, false
@@ -165,13 +186,14 @@ func markChatRevision(done *protocol.TokenResponse, sent, before, after string) 
 // currentChat answers HistoryCurrent: what a client that shows the chat as of
 // since is missing, and the revision that brings it level.
 func (s *Server) currentChat(ctx context.Context, since string) (protocol.HistoryResponse, error) {
-	gen := s.chatGen.Load() // before the turns -- see the note at the top of this file
+	sc := s.scope(ctx)
+	gen := s.chatOf(sc).gen.Load() // before the turns -- see the note at the top of this file
 	var after int64
 	appendTo := false
-	if r, ok := parseChatRevision(since); ok && r.epoch == chatEpoch && r.gen == gen {
+	if r, ok := parseChatRevision(since); ok && r.epoch == chatEpochFor(sc) && r.gen == gen {
 		after, appendTo = r.last, true
 	}
-	stored, last, err := s.memory.turnsAfter(ctx, s.workspace, after)
+	stored, last, err := s.memory.turnsAfter(ctx, sc, after)
 	if err != nil {
 		return protocol.HistoryResponse{}, err
 	}
@@ -184,7 +206,7 @@ func (s *Server) currentChat(ctx context.Context, since string) (protocol.Histor
 		}
 	}
 	return protocol.HistoryResponse{
-		ChatRevision: chatRevision{epoch: chatEpoch, gen: gen, last: last}.String(),
+		ChatRevision: chatRevision{epoch: chatEpochFor(sc), gen: gen, last: last}.String(),
 		Turns:        turns,
 		Append:       appendTo,
 	}, nil

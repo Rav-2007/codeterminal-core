@@ -27,7 +27,7 @@ func TestPersistTurn_StoresTheScrubbedPrompt(t *testing.T) {
 	srv := &Server{logger: discardLogger(), workspace: ws, memory: memStore, cfg: &Config{}}
 
 	const secret = "AKIAIOSFODNN7EXAMPLE"
-	srv.persistTurn("deploy with "+secret+" please", "done", nil)
+	srv.persistTurn(srv.testScope(), "deploy with "+secret+" please", "done", nil)
 
 	// READ BACK WITH SCRUBBING DISABLED, which is what isolates 1a from 1b.
 	//
@@ -41,7 +41,7 @@ func TestPersistTurn_StoresTheScrubbedPrompt(t *testing.T) {
 	// Two overlapping controls are the point -- a secret should have to get
 	// past both -- but a test that cannot distinguish them proves only that at
 	// least one works, and would have gone green if 1a were removed tomorrow.
-	turns, err := memStore.LoadRecentTurns(t.Context(), ws, 10, true)
+	turns, err := memStore.LoadRecentTurns(t.Context(), tscope(ws), 10, true)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -81,14 +81,14 @@ func TestPersistTurn_NoScrubStoresTheRawPrompt(t *testing.T) {
 	srv := &Server{logger: discardLogger(), workspace: ws, memory: memStore, cfg: &Config{NoScrub: true}}
 
 	const secret = "AKIAIOSFODNN7EXAMPLE"
-	srv.persistTurn("deploy with "+secret, "done", nil)
+	srv.persistTurn(srv.testScope(), "deploy with "+secret, "done", nil)
 
 	// scrubDisabled=true on the READ too, matching what server.go passes
 	// (s.noScrub()) for this configuration. Both halves of the escape hatch or
 	// neither: reading back with scrubbing ENABLED would redact on the way out
 	// what --no-scrub deliberately stored raw, which is the inconsistency the
 	// threaded flag exists to prevent.
-	turns, err := memStore.LoadRecentTurns(t.Context(), ws, 10, true)
+	turns, err := memStore.LoadRecentTurns(t.Context(), tscope(ws), 10, true)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -124,9 +124,9 @@ func TestPersistTurn_NilConfigScrubsRatherThanSkips(t *testing.T) {
 	srv := &Server{logger: discardLogger(), workspace: ws, memory: memStore} // cfg deliberately nil
 
 	const secret = "AKIAIOSFODNN7EXAMPLE"
-	srv.persistTurn("key "+secret, "done", nil)
+	srv.persistTurn(srv.testScope(), "key "+secret, "done", nil)
 
-	turns, err := memStore.LoadRecentTurns(t.Context(), ws, 10, false)
+	turns, err := memStore.LoadRecentTurns(t.Context(), tscope(ws), 10, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}

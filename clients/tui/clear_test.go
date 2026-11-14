@@ -34,6 +34,8 @@ type fakeChatDaemon struct {
 	saveFails string
 	// order is every save and reset, in the order they arrived.
 	order []string
+	// windows is the window id of every handshake that arrived, in order.
+	windows []string
 }
 
 func (f *fakeChatDaemon) saved() (saves int, order []string) {
@@ -75,6 +77,9 @@ func serveChatDaemon(t *testing.T, current *protocol.HistoryEntry) *fakeChatDaem
 				if dec.Decode(&hs) != nil {
 					return
 				}
+				f.mu.Lock()
+				f.windows = append(f.windows, hs.WindowID)
+				f.mu.Unlock()
 				_ = enc.Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true,
 					Features: []string{protocol.FeatureSavedChats}})
 				var raw map[string]json.RawMessage

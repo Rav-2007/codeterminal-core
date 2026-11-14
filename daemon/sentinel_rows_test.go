@@ -167,9 +167,9 @@ func TestSentinelRow7_PersistedPromptIsScrubbed(t *testing.T) {
 
 	ws := "/tmp/sentinel-ws"
 	srv := &Server{logger: discardLogger(), workspace: ws, memory: store, cfg: &Config{}}
-	srv.persistTurn("my key is "+secret, "noted", nil)
+	srv.persistTurn(srv.testScope(), "my key is "+secret, "noted", nil)
 
-	turns, err := store.LoadRecentTurns(ctx, ws, 10, true)
+	turns, err := store.LoadRecentTurns(ctx, tscope(ws), 10, true)
 	if err != nil {
 		t.Fatalf("loading turns: %v", err)
 	}

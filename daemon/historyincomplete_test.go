@@ -223,10 +223,10 @@ func TestACutOffAnswerIsPersistedAsCutOff(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	srv := &Server{logger: discardLogger(), workspace: "/workspace/cutoff", memory: memStore}
 
-	srv.persistTurn("explain goroutines", "A goroutine is a lightweight",
+	srv.persistTurn(srv.testScope(), "explain goroutines", "A goroutine is a lightweight",
 		&protocol.IncompleteInfo{Reason: protocol.IncompleteLength, Detail: "hit the output limit"})
 
-	got, err := memStore.LoadRecentTurns(t.Context(), "/workspace/cutoff", 12, false)
+	got, err := memStore.LoadRecentTurns(t.Context(), tscope("/workspace/cutoff"), 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -257,9 +257,9 @@ func TestAHydratedCutOffTurnIsNotAnnotatedTwice(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	srv := &Server{logger: discardLogger(), workspace: "/workspace/twice", memory: memStore}
 
-	srv.persistTurn("q", "partial", &protocol.IncompleteInfo{Reason: protocol.IncompleteLength})
+	srv.persistTurn(srv.testScope(), "q", "partial", &protocol.IncompleteInfo{Reason: protocol.IncompleteLength})
 
-	hydrated, err := memStore.LoadRecentTurns(t.Context(), "/workspace/twice", 12, false)
+	hydrated, err := memStore.LoadRecentTurns(t.Context(), tscope("/workspace/twice"), 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}

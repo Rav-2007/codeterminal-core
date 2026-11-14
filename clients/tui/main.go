@@ -107,6 +107,8 @@ func runChat(workspace string, launch launchOptions) {
 		os.Exit(1)
 	}
 	setDaemonWorkspaceRoot(workspaceRoot)
+	// This window's own chat (window.go): set before the first connection.
+	setDaemonWindowID(newWindowID())
 	sayIfNotAProject(os.Stderr, workspaceRoot)
 	prepareDaemon(workspaceRoot, launch, true)
 

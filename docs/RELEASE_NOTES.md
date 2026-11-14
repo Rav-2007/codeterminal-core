@@ -5,6 +5,54 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## Unreleased
+
+The release commit gives this section its version and date.
+
+### The terminal and VS Code no longer share a chat
+
+**What changed.** Until now the terminal app and the VS Code panel, open on the
+same folder, wrote to one chat: a question asked in the editor was in the
+terminal's history, and starting a new chat in one erased the other's. Each now
+has its own chat, its own saved chats (`/history`, `/resume`), its own search, and
+its own "new chat". The code index, your saved rules and your spending limits are
+still shared, because they belong to the project.
+
+**What happens to chats you already have.** The chat that was current becomes the
+VS Code panel's. Every chat you saved is copied into both lists, so nothing you
+saved disappears from either. The terminal starts with an empty current chat.
+
+### Each terminal window has its own chat
+
+**What changed.** Two terminal windows open on one folder used to share a chat.
+Each window now has its own: what you ask in one is not in the other's history,
+and `/clear` or ctrl+n in one leaves the other alone. Saved chats are still the
+terminal's, so a chat you `/save` in one window is in the other's `/history`.
+
+**What to expect.** A window's chat belongs to that window. Closing the terminal
+and opening it again starts an empty chat; `/save` a chat you want to come back to,
+then `/resume` it. A chat left behind by a window that was closed is removed
+once nothing has been said in it for seven days. The VS Code panel's windows still
+share one chat.
+
+### Update the terminal app and the VS Code extension together
+
+**What changed.** Mochiii keeps chat memory in one file for every folder on the
+machine, and the first new version to open it upgrades it in place, keeping every
+chat. An older version cannot use the upgraded file. If the terminal app and the VS
+Code extension (which brings its own copy of the background service) are on
+different versions, the older one misbehaves until it is updated:
+
+- a service that was already running keeps answering you, but **does not save new
+  chat turns** (its log says why), until it is restarted on the new version;
+- a service that starts after the upgrade **runs without chat memory**, and logs
+  `memory db schema version … is newer than this binary supports`.
+
+**What to do.** Update both, then restart: run `mochiii -stop` in each folder you
+use the terminal app in, and reload VS Code. The logs are in
+`~/.local/state/mochiii/logs/`. There is no automatic way back to an older version
+after the upgrade.
+
 ## v1.5.1 — 2026-10-27
 
 ### The installer ends on the line your terminal needs

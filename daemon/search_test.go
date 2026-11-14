@@ -15,14 +15,14 @@ func TestSearchTurns_FindsByKeyword(t *testing.T) {
 	ctx := context.Background()
 	const ws = "/workspace/search-keyword"
 
-	if err := store.AppendTurn(ctx, ws, "user", "what is a goroutine?"); err != nil {
+	if err := store.AppendTurn(ctx, tscope(ws), "user", "what is a goroutine?"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
-	if err := store.AppendTurn(ctx, ws, "assistant", "a goroutine is a lightweight thread managed by the go runtime"); err != nil {
+	if err := store.AppendTurn(ctx, tscope(ws), "assistant", "a goroutine is a lightweight thread managed by the go runtime"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	hits, err := store.SearchTurns(ctx, ws, "goroutine", 10)
+	hits, err := store.SearchTurns(ctx, tscope(ws), "goroutine", 10)
 	if err != nil {
 		t.Fatalf("SearchTurns: %v", err)
 	}
@@ -45,14 +45,14 @@ func TestSearchTurns_FindsBySubstringCodeToken(t *testing.T) {
 	ctx := context.Background()
 	const ws = "/workspace/search-substring"
 
-	if err := store.AppendTurn(ctx, ws, "assistant", `use fmt.Println("hello") to print in Go`); err != nil {
+	if err := store.AppendTurn(ctx, tscope(ws), "assistant", `use fmt.Println("hello") to print in Go`); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
-	if err := store.AppendTurn(ctx, ws, "assistant", "unrelated turn about something else entirely"); err != nil {
+	if err := store.AppendTurn(ctx, tscope(ws), "assistant", "unrelated turn about something else entirely"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	hits, err := store.SearchTurns(ctx, ws, "fmt.Println", 10)
+	hits, err := store.SearchTurns(ctx, tscope(ws), "fmt.Println", 10)
 	if err != nil {
 		t.Fatalf("SearchTurns: %v", err)
 	}
@@ -71,14 +71,14 @@ func TestSearchTurns_ScopedToWorkspace(t *testing.T) {
 	store, _ := openTestMemoryStore(t)
 	ctx := context.Background()
 
-	if err := store.AppendTurn(ctx, "/workspace/a", "user", "how do channels work in go"); err != nil {
+	if err := store.AppendTurn(ctx, tscope("/workspace/a"), "user", "how do channels work in go"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
-	if err := store.AppendTurn(ctx, "/workspace/b", "user", "channels question from workspace b"); err != nil {
+	if err := store.AppendTurn(ctx, tscope("/workspace/b"), "user", "channels question from workspace b"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	hitsA, err := store.SearchTurns(ctx, "/workspace/a", "channels", 10)
+	hitsA, err := store.SearchTurns(ctx, tscope("/workspace/a"), "channels", 10)
 	if err != nil {
 		t.Fatalf("SearchTurns a: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSearchTurns_ScopedToWorkspace(t *testing.T) {
 		t.Fatalf("workspace a: got %d hits, want 1: %+v", len(hitsA), hitsA)
 	}
 
-	hitsB, err := store.SearchTurns(ctx, "/workspace/b", "channels", 10)
+	hitsB, err := store.SearchTurns(ctx, tscope("/workspace/b"), "channels", 10)
 	if err != nil {
 		t.Fatalf("SearchTurns b: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestSearchTurns_ScopedToWorkspace(t *testing.T) {
 		t.Fatalf("workspace b: got %d hits, want 1: %+v", len(hitsB), hitsB)
 	}
 
-	hitsC, err := store.SearchTurns(ctx, "/workspace/c-never-wrote-anything", "channels", 10)
+	hitsC, err := store.SearchTurns(ctx, tscope("/workspace/c-never-wrote-anything"), "channels", 10)
 	if err != nil {
 		t.Fatalf("SearchTurns c: %v", err)
 	}
@@ -110,11 +110,11 @@ func TestSearchTurns_NoMatchReturnsEmptyNotError(t *testing.T) {
 	ctx := context.Background()
 	const ws = "/workspace/no-match"
 
-	if err := store.AppendTurn(ctx, ws, "user", "something completely unrelated"); err != nil {
+	if err := store.AppendTurn(ctx, tscope(ws), "user", "something completely unrelated"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	hits, err := store.SearchTurns(ctx, ws, "nonexistentxyzzy", 10)
+	hits, err := store.SearchTurns(ctx, tscope(ws), "nonexistentxyzzy", 10)
 	if err != nil {
 		t.Fatalf("SearchTurns: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestBackfillSearchIndex_IndexesPreExistingRows(t *testing.T) {
 		t.Fatalf("creating turns table: %v", err)
 	}
 	if _, err := db.Exec(
-		`INSERT INTO turns (workspace, role, content, created_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO turns (workspace, surface, window_id, role, content, created_at) VALUES (?, 'other', '', ?, ?, ?)`,
 		"/workspace/pre-existing", "user", "a turn written before search existed", "2020-01-01T00:00:00Z",
 	); err != nil {
 		t.Fatalf("seeding pre-existing turn: %v", err)
@@ -179,7 +179,7 @@ func TestBackfillSearchIndex_IndexesPreExistingRows(t *testing.T) {
 	// scrub nor prepareHistory, so an unscrubbed pre-fix prompt was retrievable
 	// here by the exact string that matched it. This test now pins that it is
 	// not.
-	hits, err := store.SearchTurns(context.Background(), "/workspace/pre-existing", "written before search", 10)
+	hits, err := store.SearchTurns(context.Background(), tscope("/workspace/pre-existing"), "written before search", 10)
 	if err != nil {
 		t.Fatalf("SearchTurns: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestBackfillSearchIndex_IdempotentAcrossReopens(t *testing.T) {
 		t.Fatalf("OpenMemoryStore (first open): %v", err)
 	}
 	const ws = "/workspace/reopen"
-	if err := store1.AppendTurn(context.Background(), ws, "user", "a turn about reopening databases"); err != nil {
+	if err := store1.AppendTurn(context.Background(), tscope(ws), "user", "a turn about reopening databases"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 	if err := store1.Close(); err != nil {
@@ -223,7 +223,7 @@ func TestBackfillSearchIndex_IdempotentAcrossReopens(t *testing.T) {
 	}
 	defer store3.Close()
 
-	hits, err := store3.SearchTurns(context.Background(), ws, "reopening", 10)
+	hits, err := store3.SearchTurns(context.Background(), tscope(ws), "reopening", 10)
 	if err != nil {
 		t.Fatalf("SearchTurns: %v", err)
 	}
@@ -256,11 +256,11 @@ func TestAppendTurn_WorksEvenWithoutSearchIndexOrTriggers(t *testing.T) {
 
 	store := &MemoryStore{db: db}
 	ctx := context.Background()
-	if err := store.AppendTurn(ctx, "/workspace/no-search", "user", "does this still work without any search index?"); err != nil {
+	if err := store.AppendTurn(ctx, tscope("/workspace/no-search"), "user", "does this still work without any search index?"); err != nil {
 		t.Fatalf("AppendTurn without a search index present: %v", err)
 	}
 
-	got, err := store.LoadRecentTurns(ctx, "/workspace/no-search", 12, false)
+	got, err := store.LoadRecentTurns(ctx, tscope("/workspace/no-search"), 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}

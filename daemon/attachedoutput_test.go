@@ -180,7 +180,7 @@ func TestAttachedOutputReachesTheProviderOnceAndIsNotStored(t *testing.T) {
 		}
 	}
 
-	turns, err := memStore.LoadAllTurns(context.Background(), "/workspace/attached")
+	turns, err := memStore.LoadAllTurns(context.Background(), tscope("/workspace/attached"))
 	if err != nil {
 		t.Fatal(err)
 	}

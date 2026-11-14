@@ -63,26 +63,26 @@ func TestSearchStaysCorrectThroughDeletes(t *testing.T) {
 	store, _ := openTestMemory(t)
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		if err := store.AppendTurn(ctx, "/ws", "user", fmt.Sprintf("create a folder named Go_chii number %d", i)); err != nil {
+		if err := store.AppendTurn(ctx, tscope("/ws"), "user", fmt.Sprintf("create a folder named Go_chii number %d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_ = store.AppendTurn(ctx, "/other", "user", "Go_chii elsewhere")
+	_ = store.AppendTurn(ctx, tscope("/other"), "user", "Go_chii elsewhere")
 
-	hits, err := store.SearchTurns(ctx, "/ws", "Go_chii", 10)
+	hits, err := store.SearchTurns(ctx, tscope("/ws"), "Go_chii", 10)
 	if err != nil || len(hits) != 5 || !strings.Contains(hits[0].Snippet, "[Go_chii]") {
 		t.Fatalf("search before clearing: %d hit(s), err %v, %+v", len(hits), err, hits)
 	}
 	ftsIntegrity(t, store.db)
 
-	if err := store.ClearWorkspace(ctx, "/ws"); err != nil {
+	if err := store.ClearWorkspace(ctx, tscope("/ws")); err != nil {
 		t.Fatal(err)
 	}
 	ftsIntegrity(t, store.db)
-	if hits, _ := store.SearchTurns(ctx, "/ws", "Go_chii", 10); len(hits) != 0 {
+	if hits, _ := store.SearchTurns(ctx, tscope("/ws"), "Go_chii", 10); len(hits) != 0 {
 		t.Errorf("cleared turns are still found: %+v", hits)
 	}
-	if hits, _ := store.SearchTurns(ctx, "/other", "Go_chii", 10); len(hits) != 1 {
+	if hits, _ := store.SearchTurns(ctx, tscope("/other"), "Go_chii", 10); len(hits) != 1 {
 		t.Errorf("clearing one workspace touched another: %+v", hits)
 	}
 }
@@ -96,12 +96,12 @@ func TestClearedHistoryGivesItsSpaceBack(t *testing.T) {
 	}
 	long := strings.Repeat("some fairly long conversation text about the retry loop. ", 40)
 	for i := 0; i < 150; i++ {
-		if err := store.AppendTurn(ctx, "/ws", "user", fmt.Sprintf("%d %s", i, long)); err != nil {
+		if err := store.AppendTurn(ctx, tscope("/ws"), "user", fmt.Sprintf("%d %s", i, long)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	full := pragmaInt(t, store.db, "page_count")
-	if err := store.ClearWorkspace(ctx, "/ws"); err != nil {
+	if err := store.ClearWorkspace(ctx, tscope("/ws")); err != nil {
 		t.Fatal(err)
 	}
 	if free := pragmaInt(t, store.db, "freelist_count"); free != 0 {
@@ -123,8 +123,8 @@ func TestAVersion4MemoryMigrates(t *testing.T) {
 	for _, stmt := range []string{
 		`CREATE TABLE schema_meta (version INTEGER NOT NULL)`,
 		`INSERT INTO schema_meta (version) VALUES (4)`,
-		turnsTableDDL,
-		turnsWorkspaceIndexDDL,
+		legacyTurnsTableDDL,
+		legacyTurnsWorkspaceIndexDDL,
 		`CREATE VIRTUAL TABLE turns_fts USING fts5(content, workspace UNINDEXED, tokenize='trigram')`,
 		`CREATE TRIGGER turns_ai AFTER INSERT ON turns BEGIN
 			INSERT INTO turns_fts(rowid, content, workspace) VALUES (new.id, new.content, new.workspace); END`,
@@ -150,9 +150,13 @@ func TestAVersion4MemoryMigrates(t *testing.T) {
 	if n := pragmaIntQuery(t, store.db, `SELECT count(*) FROM turns`); n != 2 {
 		t.Errorf("%d turns after migration, want 2: history was lost", n)
 	}
-	hits, err := store.SearchTurns(context.Background(), "/ws", "Go_chii", 5)
+	// What existed before the split is the editor's chat (migrateToScopedTurns).
+	hits, err := store.SearchTurns(context.Background(), chatScope{Workspace: "/ws", Surface: SurfaceVSCode}, "Go_chii", 5)
 	if err != nil || len(hits) != 1 {
 		t.Errorf("search after migration: %+v %v", hits, err)
+	}
+	if hits, err := store.SearchTurns(context.Background(), chatScope{Workspace: "/ws", Surface: SurfaceTerminal}, "Go_chii", 5); err != nil || len(hits) != 0 {
+		t.Errorf("the terminal found the editor's migrated chat: %+v %v", hits, err)
 	}
 	if n := pragmaIntQuery(t, store.db, `SELECT count(*) FROM sqlite_master WHERE name = 'turns_fts_content'`); n != 0 {
 		t.Error("the migrated index still keeps its own copy of the text")

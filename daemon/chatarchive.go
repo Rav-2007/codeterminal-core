@@ -40,8 +40,11 @@ import (
 // what was saved, and writing that over the copy threw the difference away
 // with a message that said "saved".
 //
-// ONE GZIPPED JSONL FILE PER CHAT, under StateDir()/history/<workspace key>/ --
-// beside memory.db and never inside the project, so it cannot be committed.
+// ONE GZIPPED JSONL FILE PER CHAT, under StateDir()/history/<workspace key>/
+// <surface>/ -- beside memory.db and never inside the project, so it cannot be
+// committed. The surface folder (terminal, vscode, other) is schema v6's split of
+// the chat by client (chatscope.go); before it the files sat directly under the
+// workspace key, and migrateLegacyArchives moves them.
 // Line 1 is a small header (title, when, how many turns, the spec, whether the
 // last answer was cut off); every later line is one turn. Listing reads only
 // the header line, so a folder of hundreds of chats lists without loading any
@@ -140,10 +143,14 @@ type savedChat struct {
 	Header archiveHeader
 }
 
-// chatArchive is one workspace's saved chats.
+// chatArchive is one chat's saved chats: one workspace's, as one surface keeps
+// them (chatscope.go). The terminal's list and the editor's are different
+// folders, as their live chats are different rows.
 type chatArchive struct {
-	root string // StateDir()/history
-	dir  string // root/<workspace key>
+	root   string    // StateDir()/history
+	keyDir string    // root/<workspace key>
+	dir    string    // keyDir/<surface>
+	scope  chatScope // whose saved chats these are
 }
 
 // historyRoot is the folder every workspace's saved chats live under.
@@ -162,15 +169,19 @@ func workspaceKey(workspace string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-func newChatArchive(root, workspace string) *chatArchive {
-	return &chatArchive{root: root, dir: filepath.Join(root, workspaceKey(workspace))}
+func newChatArchive(root string, sc chatScope) *chatArchive {
+	keyDir := filepath.Join(root, workspaceKey(sc.Workspace))
+	return &chatArchive{root: root, keyDir: keyDir, dir: filepath.Join(keyDir, string(sc.Surface)), scope: sc}
 }
 
 // ensureDir makes root and dir, owner-only, and refuses either one if it is a
 // symlink -- the same refusal OpenMemoryStore makes for memory.db, for the
 // same reason: a planted link would send every chat somewhere else.
 func (a *chatArchive) ensureDir() error {
-	for _, d := range []string{a.root, a.dir} {
+	if err := a.scope.check(); err != nil {
+		return err
+	}
+	for _, d := range []string{a.root, a.keyDir, a.dir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("creating history folder: %w", err)
 		}
@@ -191,7 +202,10 @@ func (a *chatArchive) ensureDir() error {
 // dirUsable reports whether the workspace folder exists and is a plain
 // directory under a plain root. A missing folder means no saved chats.
 func (a *chatArchive) dirUsable() (bool, error) {
-	for _, d := range []string{a.root, a.dir} {
+	if err := a.scope.check(); err != nil {
+		return false, err
+	}
+	for _, d := range []string{a.root, a.keyDir, a.dir} {
 		fi, err := os.Lstat(d)
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
@@ -416,13 +430,24 @@ type chatLink struct {
 	Turns int    `json:"turns"`
 }
 
+// linkFile is the file that says which saved chat the LIVE chat is. The saved
+// chats are the surface's, shared by all its windows; the link belongs to a live
+// chat, so each terminal window has its own (current-<window>.json) and the
+// shared chat keeps current.json.
+func (a *chatArchive) linkFile() string {
+	if a.scope.Window == "" {
+		return currentLinkName
+	}
+	return "current-" + a.scope.Window + ".json"
+}
+
 // readLink returns the link, or a zero one when there is none or it cannot be
 // trusted (bounded read, and the id must be an id).
 func (a *chatArchive) readLink() chatLink {
 	if ok, err := a.dirUsable(); err != nil || !ok {
 		return chatLink{}
 	}
-	f, err := openArchive(filepath.Join(a.dir, currentLinkName))
+	f, err := openArchive(filepath.Join(a.dir, a.linkFile()))
 	if err != nil {
 		return chatLink{}
 	}
@@ -457,7 +482,7 @@ func (a *chatArchive) writeLink(id string, turns int) error {
 		_ = os.Remove(tmpName) // best effort, as above
 		return fmt.Errorf("linking the current chat: %w", err)
 	}
-	if err := os.Rename(tmpName, filepath.Join(a.dir, currentLinkName)); err != nil {
+	if err := os.Rename(tmpName, filepath.Join(a.dir, a.linkFile())); err != nil {
 		_ = os.Remove(tmpName) // best effort, as above
 		return fmt.Errorf("linking the current chat: %w", err)
 	}
@@ -470,7 +495,7 @@ func (a *chatArchive) clearLink() {
 	if ok, err := a.dirUsable(); err != nil || !ok {
 		return
 	}
-	_ = os.Remove(filepath.Join(a.dir, currentLinkName)) // absent is the goal either way
+	_ = os.Remove(filepath.Join(a.dir, a.linkFile())) // absent is the goal either way
 }
 
 // incompleteReasonOf recovers why an answer was cut off from the note
@@ -671,9 +696,13 @@ func (a *chatArchive) pathFor(id string) (string, error) {
 	return filepath.Join(a.dir, id+archiveSuffix), nil
 }
 
-// pruneHistory keeps the whole history folder bounded: at most keep chats
-// per workspace, then at most maxBytes across every workspace, oldest first
-// either way. It also removes temp files a crash left behind. Best effort:
+// pruneHistory keeps the whole history folder bounded: at most keep chats per
+// saved-chat folder (a workspace's chats as one surface keeps them -- the
+// folders history/<key>/<surface>/ -- and any files still directly under
+// history/<key>/ from before the split, which count as a folder of their own
+// until migrateLegacyArchives moves them), then at most maxBytes across every
+// folder, oldest first either way. The byte bound is the whole history folder's,
+// as it always was: the split does not give each surface a bound of its own. It also removes temp files a crash left behind. Best effort:
 // a file that cannot be removed is left for the next prune. It returns how
 // many saved chats it removed, so the save that caused it can say so.
 func pruneHistory(root string, keep int, maxBytes int64, now time.Time) int {
@@ -691,11 +720,24 @@ func pruneHistory(root string, keep int, maxBytes int64, now time.Time) int {
 		size     int64
 	}
 	var all []file
+	// The folders to prune, each on its own: every workspace folder, and every
+	// surface folder inside it.
+	var units []string
 	for _, d := range dirs {
 		if !d.IsDir() {
 			continue
 		}
-		dir := filepath.Join(root, d.Name())
+		keyDir := filepath.Join(root, d.Name())
+		units = append(units, keyDir)
+		if subs, err := os.ReadDir(keyDir); err == nil {
+			for _, sd := range subs {
+				if sd.IsDir() {
+					units = append(units, filepath.Join(keyDir, sd.Name()))
+				}
+			}
+		}
+	}
+	for _, dir := range units {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -739,7 +781,7 @@ func pruneHistory(root string, keep int, maxBytes int64, now time.Time) int {
 	for _, f := range all {
 		total += f.size
 	}
-	// Oldest first across workspaces: ids start with the time they were saved.
+	// Oldest first across folders: ids start with the time they were saved.
 	sort.Slice(all, func(i, j int) bool { return all[i].id < all[j].id })
 	for _, f := range all {
 		if total <= maxBytes {

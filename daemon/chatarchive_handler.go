@@ -42,12 +42,11 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 		reply(protocol.HistoryResponse{Error: "conversation memory is not available, so there is no history"})
 		return
 	}
-	root, err := historyRoot()
+	archive, err := s.archiveFor(ctx)
 	if err != nil {
 		fail("finding the history folder", err)
 		return
 	}
-	archive := newChatArchive(root, s.workspace)
 
 	switch req.Action {
 	case protocol.HistoryList:
@@ -63,7 +62,7 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 
 	case protocol.HistoryBookmark, protocol.HistoryUnbookmark:
 		on := req.Action == protocol.HistoryBookmark
-		s.historyMu.Lock()
+		s.chatOf(archive.scope).mu.Lock()
 		id := req.ID
 		var pruned int
 		if id == "" {
@@ -72,13 +71,13 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 			var err error
 			id, _, pruned, err = s.saveChatLocked(ctx, archive, req.Spec, "")
 			if err != nil {
-				s.historyMu.Unlock()
+				s.chatOf(archive.scope).mu.Unlock()
 				fail("saving this chat", err)
 				return
 			}
 		}
 		h, err := archive.setBookmark(id, on)
-		s.historyMu.Unlock()
+		s.chatOf(archive.scope).mu.Unlock()
 		if err != nil {
 			fail("bookmarking that chat", err)
 			return
@@ -109,9 +108,9 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 		reply(protocol.HistoryResponse{Entry: &entry, Turns: turns, Compacted: compacted, ChatRevision: rev})
 
 	case protocol.HistorySave:
-		s.historyMu.Lock()
+		s.chatOf(archive.scope).mu.Lock()
 		id, h, pruned, err := s.saveChatLocked(ctx, archive, req.Spec, req.Name)
-		s.historyMu.Unlock()
+		s.chatOf(archive.scope).mu.Unlock()
 		if err != nil {
 			fail("saving this chat", err)
 			return
@@ -178,7 +177,7 @@ func historyClientError(what string, err error) string {
 // link names a saved copy that still exists and holds as many turns as it has.
 func (s *Server) listChats(ctx context.Context, archive *chatArchive, spec string) ([]protocol.HistoryEntry, error) {
 	var entries []protocol.HistoryEntry
-	current, err := s.memory.LoadAllTurns(ctx, s.workspace)
+	current, err := s.memory.LoadAllTurns(ctx, archive.scope)
 	if err != nil {
 		return nil, err
 	}
@@ -250,16 +249,16 @@ func (s *Server) entryFor(id string, h archiveHeader, current bool) protocol.His
 // It also returns the chat's new revision (chatsync.go): the turns it returns
 // are the whole current chat, so the client that resumed is level with it.
 func (s *Server) resumeChat(ctx context.Context, archive *chatArchive, id string) (protocol.HistoryEntry, []protocol.Turn, string, error) {
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
+	s.chatOf(archive.scope).mu.Lock()
+	defer s.chatOf(archive.scope).mu.Unlock()
 	h, stored, err := archive.loadStored(id)
 	if err != nil {
 		return protocol.HistoryEntry{}, nil, "", err
 	}
-	if err := s.memory.ReplaceWorkspace(ctx, s.workspace, stored); err != nil {
+	if err := s.memory.ReplaceWorkspace(ctx, archive.scope, stored); err != nil {
 		return protocol.HistoryEntry{}, nil, "", err
 	}
-	rev := s.chatReplacedLocked(ctx)
+	rev := s.chatReplacedLocked(ctx, archive.scope)
 	turns := make([]protocol.Turn, len(stored))
 	for i, t := range stored {
 		turns[i] = protocol.Turn{Role: t.Role, Content: t.Content}
@@ -289,7 +288,7 @@ func (s *Server) filterChats(ctx context.Context, archive *chatArchive, entries 
 		}
 		matched := false
 		if e.Current {
-			if turns, err := s.memory.LoadAllTurns(ctx, s.workspace); err == nil {
+			if turns, err := s.memory.LoadAllTurns(ctx, archive.scope); err == nil {
 				for _, t := range turns {
 					if has(t.Content) {
 						matched = true

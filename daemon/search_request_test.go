@@ -52,7 +52,7 @@ func TestHandleSearch_FindsByKeyword(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	ctx := context.Background()
 	const ws = "/workspace/search-handler"
-	if err := memStore.AppendTurn(ctx, ws, "user", "what is a goroutine?"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope(ws), "user", "what is a goroutine?"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 	srv := &Server{logger: discardLogger(), workspace: ws, memory: memStore}
@@ -82,7 +82,7 @@ func TestHandleSearch_FindsBySubstringCodeToken(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	ctx := context.Background()
 	const ws = "/workspace/search-substring"
-	if err := memStore.AppendTurn(ctx, ws, "assistant", `use fmt.Println("hi") to print in Go`); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope(ws), "assistant", `use fmt.Println("hi") to print in Go`); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 	srv := &Server{logger: discardLogger(), workspace: ws, memory: memStore}
@@ -106,10 +106,10 @@ func TestHandleSearch_FindsBySubstringCodeToken(t *testing.T) {
 func TestHandleSearch_ScopedToServerWorkspaceNotClientSupplied(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	ctx := context.Background()
-	if err := memStore.AppendTurn(ctx, "/workspace/a", "user", "channels question in workspace a"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope("/workspace/a"), "user", "channels question in workspace a"); err != nil {
 		t.Fatalf("AppendTurn a: %v", err)
 	}
-	if err := memStore.AppendTurn(ctx, "/workspace/b", "user", "channels question in workspace b"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope("/workspace/b"), "user", "channels question in workspace b"); err != nil {
 		t.Fatalf("AppendTurn b: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestHandleSearch_NoMatchReturnsEmptyResultsNotError(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	ctx := context.Background()
 	const ws = "/workspace/search-no-match"
-	if err := memStore.AppendTurn(ctx, ws, "user", "something unrelated"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope(ws), "user", "something unrelated"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 	srv := &Server{logger: discardLogger(), workspace: ws, memory: memStore}
@@ -175,7 +175,7 @@ func TestHandleSearch_LimitDefaultsWhenOmittedOrRespectsExplicitValue(t *testing
 	ctx := context.Background()
 	const ws = "/workspace/search-limit"
 	for i := 0; i < 25; i++ {
-		if err := memStore.AppendTurn(ctx, ws, "user", "repeated marker token appears in every turn"); err != nil {
+		if err := memStore.AppendTurn(ctx, tscope(ws), "user", "repeated marker token appears in every turn"); err != nil {
 			t.Fatalf("AppendTurn %d: %v", i, err)
 		}
 	}
@@ -206,7 +206,7 @@ func TestHandleConn_SearchRequestRoutesThroughRealDispatchNotPromptPath(t *testi
 	memStore, _ := openTestMemoryStore(t)
 	ctx := context.Background()
 	const ws = "/workspace/search-dispatch"
-	if err := memStore.AppendTurn(ctx, ws, "user", "what is a goroutine?"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope(ws), "user", "what is a goroutine?"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 

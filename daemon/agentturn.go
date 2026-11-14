@@ -347,7 +347,7 @@ func (s *Server) runAgentTurn(
 	// Saved BEFORE the Done, as the chat path is (server.go), so the Done can
 	// say where the shared chat now stands.
 	persist := trace.From(ctx).Begin(trace.StagePersist, trace.Tool{}, 0) // TRACE D9
-	before, after := s.persistTurn(promptReq.Prompt, remembered+sources+report+summariseToolActivity(result.ToolNames), result.Incomplete)
+	before, after := s.persistTurn(s.scope(ctx), promptReq.Prompt, remembered+sources+report+summariseToolActivity(result.ToolNames), result.Incomplete)
 	persist.End(trace.StatusOK, trace.ClassNone) // TRACE D9
 	traceDone(ctx, "", result.Incomplete)        // TRACE D9
 

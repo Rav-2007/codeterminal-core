@@ -129,15 +129,26 @@ type Server struct {
 	// request, exactly like embedder/store above.
 	memory *MemoryStore
 
-	// historyMu serialises everything that reads or replaces the current chat
-	// as a whole -- /history save, /history resume, ctrl+n's clear -- with
+	// chats is each surface's lock and replacement count (chatscope.go). The lock
+	// serialises everything that reads or replaces that surface's current chat as
+	// a whole -- /history save, /history resume, ctrl+n's clear -- with
 	// persistTurn's two appends. Without it a save taken while an exchange
-	// finishes could keep its question and not its answer.
-	historyMu sync.Mutex
-	// chatGen counts the times the current chat was replaced or cleared, for
-	// the revisions clients keep up with it by (chatsync.go). Bumped under
-	// historyMu AFTER the write it announces; read without it.
-	chatGen atomic.Uint64
+	// finishes could keep its question and not its answer. The count is the
+	// times the chat was replaced or cleared, for the revisions clients keep up
+	// with it by (chatsync.go); bumped under the lock AFTER the write it
+	// announces, read without it. One pair per surface, so one client's /compact
+	// or ctrl+n does not reach the other's chat.
+	chats sync.Map // "<surface>/<window>" -> *chatState, see chatOf
+	// windowSeen is when each terminal window last connected to THIS daemon
+	// process (unix nanos, by window id); the sweep of idle windows
+	// (chatwindow.go) does not touch a window seen recently, whatever the age of
+	// its newest turn.
+	windowSeen sync.Map
+	// lastSweep is when idle windows were last swept (unix nanos).
+	lastSweep atomic.Int64
+	// archiveOnce runs the saved-chat folder migration (migrateLegacyArchives)
+	// the first time this daemon touches the archive.
+	archiveOnce sync.Once
 
 	// freshness memoises "has the workspace changed since the index was built"
 	// for the status handler (see indexfreshness.go). nil disables the check
@@ -443,6 +454,13 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// WHOSE CHAT THIS CONNECTION IS ABOUT, from the name the client gave
+	// (chatscope.go). Set on ctx here, before anything reads a chat, so the
+	// handshake's own hydration below and every request after it see it.
+	surface := surfaceOf(hsReq.ClientName)
+	ctx = withWindow(withSurface(ctx, surface), windowFor(surface, hsReq.WindowID))
+	s.noteWindowAndSweep(ctx)
+
 	persisted, chatRev := s.loadPersistedHistoryAt(ctx)
 	if err := enc.Encode(protocol.HandshakeResponse{
 		ProtocolVersion:  protocol.ProtocolVersion,
@@ -617,7 +635,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// deleted since must not make starting a new chat fail.
 	if promptReq.Reset {
 		s.count(func(c *counters) { c.resets.Add(1) })
-		rev := s.resetPersistedHistory()
+		rev := s.resetPersistedHistory(s.scope(ctx))
 		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, ChatRevision: rev})
 		return
 	}
@@ -1094,7 +1112,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// the chat rather than racing it there. After the empty-greeting check
 	// above, so what is persisted carries that incomplete reason too.
 	persist := trace.From(ctx).Begin(trace.StagePersist, trace.Tool{}, 0) // TRACE D9
-	before, after := s.persistTurn(promptReq.Prompt, full.String(), incomplete)
+	before, after := s.persistTurn(s.scope(ctx), promptReq.Prompt, full.String(), incomplete)
 	persist.End(trace.StatusOK, trace.ClassNone) // TRACE D9
 	traceDone(ctx, "", incomplete)               // TRACE D9
 	done := protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete,
@@ -1401,7 +1419,7 @@ func (s *Server) handleSearch(ctx context.Context, enc *json.Encoder, req protoc
 		limit = defaultSearchLimit
 	}
 
-	hits, err := s.memory.SearchTurns(ctx, s.workspace, req.Query, limit)
+	hits, err := s.memory.SearchTurns(ctx, s.scope(ctx), req.Query, limit)
 	if err != nil {
 		s.logger.Printf("search: %v", err)
 		enc.Encode(protocol.SearchResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.searchClientError(err, len(req.Query))})
@@ -1467,13 +1485,14 @@ func (s *Server) loadPersistedHistoryAt(ctx context.Context) ([]protocol.Turn, s
 	if s.memory == nil {
 		return nil, ""
 	}
-	gen := s.chatGen.Load()
-	turns, last, err := s.memory.loadRecentTurnsAt(ctx, s.workspace, maxHistoryTurns, s.noScrub())
+	sc := s.scope(ctx)
+	gen := s.chatOf(sc).gen.Load()
+	turns, last, err := s.memory.loadRecentTurnsAt(ctx, sc, maxHistoryTurns, s.noScrub())
 	if err != nil {
 		s.logger.Printf("loading persisted history: %v", err)
 		return nil, ""
 	}
-	rev := chatRevision{epoch: chatEpoch, gen: gen, last: last}.String()
+	rev := chatRevision{epoch: chatEpochFor(sc), gen: gen, last: last}.String()
 	kept := make([]protocol.Turn, 0, len(turns))
 	for _, t := range turns {
 		if validTurn(t) {
@@ -1541,15 +1560,15 @@ func (s *Server) loadPersistedHistoryAt(ctx context.Context) ([]protocol.Turn, s
 // It returns the chat's revision just before and just after the save
 // (chatsync.go), read under historyMu so nothing else lands between them; both
 // are the same when nothing was saved, and empty when memory is unavailable.
-func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.IncompleteInfo) (before, after string) {
+func (s *Server) persistTurn(sc chatScope, prompt, answer string, incomplete *protocol.IncompleteInfo) (before, after string) {
 	if s.memory == nil {
 		return "", ""
 	}
 	if strings.TrimSpace(answer) == "" {
 		s.logger.Print("not persisting turn: the model returned an empty answer")
-		s.historyMu.Lock()
-		defer s.historyMu.Unlock()
-		rev := s.chatRevisionLocked(context.Background())
+		s.chatOf(sc).mu.Lock()
+		defer s.chatOf(sc).mu.Unlock()
+		rev := s.chatRevisionLocked(context.Background(), sc)
 		return rev, rev
 	}
 	if incomplete != nil {
@@ -1579,17 +1598,17 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 	// that must finish once started" are different states and must not share a
 	// cancellation signal.
 	ctx := context.Background()
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
-	before = s.chatRevisionLocked(ctx)
-	if err := s.memory.AppendTurn(ctx, s.workspace, "user", prompt); err != nil {
+	s.chatOf(sc).mu.Lock()
+	defer s.chatOf(sc).mu.Unlock()
+	before = s.chatRevisionLocked(ctx, sc)
+	if err := s.memory.AppendTurn(ctx, sc, "user", prompt); err != nil {
 		s.logger.Printf("persisting user turn: %v", err)
-		return before, s.chatRevisionLocked(ctx)
+		return before, s.chatRevisionLocked(ctx, sc)
 	}
-	if err := s.memory.AppendTurn(ctx, s.workspace, "assistant", answer); err != nil {
+	if err := s.memory.AppendTurn(ctx, sc, "assistant", answer); err != nil {
 		s.logger.Printf("persisting assistant turn: %v", err)
 	}
-	return before, s.chatRevisionLocked(ctx)
+	return before, s.chatRevisionLocked(ctx, sc)
 }
 
 // resetPersistedHistory starts a fresh chat for this daemon's workspace — the
@@ -1600,24 +1619,24 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 //
 // It returns the new chat's revision, so the client that cleared it is level
 // with it at once; empty when memory is unavailable or the clear failed.
-func (s *Server) resetPersistedHistory() string {
+func (s *Server) resetPersistedHistory(sc chatScope) string {
 	if s.memory == nil {
 		return ""
 	}
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
+	s.chatOf(sc).mu.Lock()
+	defer s.chatOf(sc).mu.Unlock()
 	// Not the connection's context, for persistTurn's reason: this is a completed
 	// user action (ctrl+n), and a half-cleared history is worse than a slow one.
 	ctx := context.Background()
-	if err := s.memory.ClearWorkspace(ctx, s.workspace); err != nil {
+	if err := s.memory.ClearWorkspace(ctx, sc); err != nil {
 		s.logger.Printf("clearing persisted history: %v", err)
 		return ""
 	}
-	if root, err := historyRoot(); err == nil {
-		newChatArchive(root, s.workspace).clearLink()
+	if archive, err := s.archiveForScope(sc); err == nil {
+		archive.clearLink()
 	}
-	s.logger.Print("persisted history cleared")
-	return s.chatReplacedLocked(ctx)
+	s.logger.Printf("persisted history cleared (%s)", sc.Surface)
+	return s.chatReplacedLocked(ctx, sc)
 }
 
 // saveChatLocked saves the workspace's current chat -- /history save. A chat
@@ -1639,7 +1658,7 @@ func (s *Server) resetPersistedHistory() string {
 // built from the old copy, and a current chat that does not continue the old
 // copy leaves it where it is.
 func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec, name string) (string, archiveHeader, int, error) {
-	stored, err := s.memory.LoadAllTurns(ctx, s.workspace)
+	stored, err := s.memory.LoadAllTurns(ctx, archive.scope)
 	if err != nil {
 		return "", archiveHeader{}, 0, err
 	}

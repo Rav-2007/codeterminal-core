@@ -349,7 +349,7 @@ func TestASavedRuleReachesTheProviderInEveryLaterChat(t *testing.T) {
 	// A new chat: the old one is cleared (what ctrl+n sends), so nothing of it
 	// is carried into the two questions that follow.
 	runPromptTurn(t, srv, protocol.PromptRequest{Reset: true})
-	if turns, err := memStore.LoadAllTurns(context.Background(), "/workspace/rules"); err != nil || len(turns) != 0 {
+	if turns, err := memStore.LoadAllTurns(context.Background(), tscope("/workspace/rules")); err != nil || len(turns) != 0 {
 		t.Fatalf("the chat was not cleared (%d turns, err %v), so this is not a new chat", len(turns), err)
 	}
 	runPromptTurn(t, srv, protocol.PromptRequest{Prompt: "and how do I lint?"})
@@ -379,7 +379,7 @@ func TestASavedRuleReachesTheProviderInEveryLaterChat(t *testing.T) {
 		}
 	}
 
-	turns, err := memStore.LoadAllTurns(context.Background(), "/workspace/rules")
+	turns, err := memStore.LoadAllTurns(context.Background(), tscope("/workspace/rules"))
 	if err != nil {
 		t.Fatal(err)
 	}
