@@ -398,7 +398,7 @@ func (c *RemoteClient) run(op func(*sdk.ClientSession) error) error {
 	if err == nil {
 		return nil
 	}
-	if !errors.Is(err, sdk.ErrSessionMissing) && !(lost.Load() && errors.Is(err, sdk.ErrConnectionClosed)) {
+	if !errors.Is(err, sdk.ErrSessionMissing) && !(lost != nil && lost.Load() && errors.Is(err, sdk.ErrConnectionClosed)) {
 		return err
 	}
 	session, rerr := c.reconnect(gen)
