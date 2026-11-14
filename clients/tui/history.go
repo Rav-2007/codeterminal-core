@@ -198,8 +198,11 @@ func (m *chatModel) saveChat(name string) string {
 // and, until 2026-10-11, nothing else -- so a chat that had been going for
 // eleven days looked like the dozen turns on screen, and /save then wrote 116.
 // Nothing was hidden on purpose; the number simply had no place it was shown
-// before the moment it was too late to matter. A chat ends only when its user
-// ends it, so the user has to be able to see that one is still open.
+// before the moment it was too late to matter.
+//
+// SINCE 2026-11-14 A LAUNCH STARTS A NEW CHAT (freshchat.go), so this line is
+// now said only when the daemon could not erase the old one: the user then has
+// to be able to see that a chat is still open, and how much of it.
 func (m *chatModel) continuedChatNote(shown int, now time.Time) string {
 	resp, err := sendHistory(m.clientName, protocol.HistoryRequest{
 		Action: protocol.HistoryList, Workspace: m.workspaceRoot, Spec: m.activeSpec,

@@ -32,6 +32,8 @@ type fakeChatDaemon struct {
 	resets  int
 	// saveFails makes every save answer with this error.
 	saveFails string
+	// resetRev is the chat revision a reset answers with.
+	resetRev string
 	// order is every save and reset, in the order they arrived.
 	order []string
 }
@@ -112,7 +114,7 @@ func serveChatDaemon(t *testing.T, current *protocol.HistoryEntry) *fakeChatDaem
 					f.order = append(f.order, "reset")
 					f.current = nil
 				}
-				_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
+				_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, ChatRevision: f.resetRev})
 			}(conn)
 		}
 	}()

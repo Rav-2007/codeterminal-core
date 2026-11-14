@@ -62,7 +62,7 @@ func (m chatModel) canCatchUp() bool {
 	// Nor while "Save or clear?" is waiting for its answer (clear.go): the
 	// question is about the chat on screen, and that chat must not grow, or be
 	// replaced, between the asking and the key that answers it.
-	if m.newChatArmed {
+	if m.newChatArmed || m.quitChatArmed {
 		return false
 	}
 	// Nor while /compact is waiting: its answer IS the chat as it now stands,

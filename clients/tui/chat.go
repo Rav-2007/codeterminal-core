@@ -414,6 +414,11 @@ type chatModel struct {
 	// screen: by /clear or ctrl+n on a chat that is NOT SAVED. The next key
 	// answers it -- s, c, a second ctrl+n -- or cancels it (clear.go).
 	newChatArmed bool
+	// quitChatArmed is set while "This chat is not saved and will be erased. Save
+	// or quit?" is on screen (quitchat.go). Like newChatArmed it is a question
+	// in the prompt's box, answered by one key, and it takes the chat's place in
+	// every key path above the per-state handlers.
+	quitChatArmed bool
 	// resumeArmed is the saved chat a "/resume <n>" was refused for
 	// because the chat on screen is not saved: the same command again goes
 	// ahead (history.go).
@@ -743,6 +748,9 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.quitArmed = false
 	if m.compacting {
 		return m, nil // the chat is about to be replaced: compact.go
+	}
+	if m.quitChatArmed {
+		return m.answerQuitQuestion(msg) // save, quit or stay: quitchat.go
 	}
 	if m.newChatArmed && msg.String() != "ctrl+n" {
 		return m.answerNewChatQuestion(msg) // save, clear or cancel: clear.go
@@ -1808,7 +1816,11 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	case "task":
 		return m.handleTaskCommand(args)
 	case "exit":
-		return m, tea.Quit
+		// An unsaved chat is asked about first (quitchat.go); otherwise out at once.
+		if asked, cmd, ok := m.requestQuit(); ok {
+			return asked, cmd
+		}
+		return m.quitNow(false)
 	default:
 		return m.handleExtraSlash(name, args) // rules.go: the commands added since, and the unknown one
 	}
@@ -1966,8 +1978,10 @@ func (m *chatModel) endStream() {
 // Any other key disarms it (see the Update case above), so the armed state can
 // never survive long enough to surprise anyone. There is no timer: a keypress
 // is a better disarm signal than a clock, and it is deterministic to test.
-// /exit still quits outright for anyone who wants one keystroke's worth of
-// certainty.
+//
+// A CHAT THAT IS NOT SAVED IS ASKED ABOUT FIRST (quitchat.go): since a launch
+// starts a new chat (freshchat.go), leaving erases it, so the first press shows
+// "Save or quit?" instead of arming the footer, and /exit asks the same.
 func (m chatModel) handleCtrlC() (tea.Model, tea.Cmd) {
 	if m.turnInFlight() {
 		m.quitArmed = false
@@ -1977,11 +1991,19 @@ func (m chatModel) handleCtrlC() (tea.Model, tea.Cmd) {
 		m.quitArmed = false
 		return m.answerApproval(protocol.ApprovalCancelTurn)
 	}
+	// The question is showing: a second ctrl+c is "quit", erasing the chat the
+	// question said would be erased (quitchat.go).
+	if m.quitChatArmed {
+		return m.quitNow(true)
+	}
 	if m.quitArmed {
-		if m.streamCancel != nil {
-			m.streamCancel()
-		}
-		return m, tea.Quit
+		return m.quitNow(false)
+	}
+	// FIRST PRESS, nothing to stop. A chat that is not saved is asked about now,
+	// so the warning comes before anything else is armed; every other state arms
+	// the footer's "press ctrl+c again" as it always has.
+	if asked, cmd, ok := m.requestQuit(); ok {
+		return asked, cmd
 	}
 	m.quitArmed = true
 	return m, nil
@@ -3118,6 +3140,9 @@ func (m chatModel) View() string {
 	}
 	if m.newChatArmed {
 		bottomLine, help = m.promptBox(accentStyle.Render(newChatQuestion)), helpStyle.Render(newChatConfirmHelpText)
+	}
+	if m.quitChatArmed {
+		bottomLine, help = m.promptBox(accentStyle.Render(quitChatQuestion)), helpStyle.Render(quitChatHelpText)
 	}
 
 	transcript := m.viewport.View()
