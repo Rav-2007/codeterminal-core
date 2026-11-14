@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -658,5 +659,101 @@ func TestMatrixStructuredAndResourceContentReachTheModel(t *testing.T) {
 	got, err = c.CallTool(context.Background(), "readme", nil)
 	if err != nil || !strings.Contains(got.Content, "SECRET-PAYLOAD-7") || strings.Contains(got.Content, "omitted") {
 		t.Errorf("embedded text resource: %+v, %v", got, err)
+	}
+}
+
+// F4. The bound on a remote server's response is by what the response is.
+
+func connectRawWith(m *rawMCP, limit int) error {
+	ts := httptest.NewServer(m)
+	defer ts.Close()
+	c, err := ConnectRemote(context.Background(), RemoteConfig{
+		Name: "raw", URL: ts.URL, MaxMessageBytes: limit, ConnectTimeout: 10 * time.Second,
+	})
+	if err == nil {
+		_ = c.Close()
+	}
+	return err
+}
+
+// A JSON body is one message however many newlines it holds: 5 MiB padded with a
+// newline every thousand bytes is refused against a 1 MiB limit, like the same
+// 5 MiB on a single line -- and a message under the limit still passes.
+func TestMatrixHTTPJSONBodyIsBoundedWhateverItsNewlines(t *testing.T) {
+	const limit = 1 << 20
+	oneLine := strings.Repeat(" ", 5*limit)
+	manyLines := strings.Repeat(strings.Repeat(" ", 1000)+"\n", 5*limit/1001)
+	for name, pad := range map[string]string{"one line": oneLine, "many lines": manyLines} {
+		t.Run(name, func(t *testing.T) {
+			err := connectRawWith(&rawMCP{pad: pad}, limit)
+			if !errors.Is(err, ErrServerUnavailable) {
+				t.Fatalf("a 5 MiB message against a 1 MiB limit: %v", err)
+			}
+		})
+	}
+	small := strings.Repeat(strings.Repeat(" ", 1000)+"\n", 100) // ~100 KiB, newline-separated
+	if err := connectRawWith(&rawMCP{pad: small}, limit); err != nil {
+		t.Errorf("a message under the limit was refused: %v", err)
+	}
+}
+
+// An event stream is bounded per EVENT: one event spread over many data: lines
+// is counted whole.
+func TestMatrixSSEEventIsBoundedAcrossItsDataLines(t *testing.T) {
+	const limit = 1 << 20
+	many := strings.Repeat(strings.Repeat(" ", 1000)+"\n", 5*limit/1001)
+	err := connectRawWith(&rawMCP{sse: true, pad: many}, limit)
+	if !errors.Is(err, ErrServerUnavailable) {
+		t.Fatalf("a 5 MiB multi-line event against a 1 MiB limit: %v", err)
+	}
+	small := strings.Repeat(strings.Repeat(" ", 1000)+"\n", 100)
+	if err := connectRawWith(&rawMCP{sse: true, pad: small}, limit); err != nil {
+		t.Errorf("a multi-line event under the limit was refused: %v", err)
+	}
+}
+
+// NEGATIVE CONTROL: the stream as a whole is NOT bounded. A call whose reply is
+// preceded by 3000 small events -- about 3 MiB against a 1 MiB limit -- is the
+// ordinary shape of a long-running tool reporting progress, and must succeed.
+func TestMatrixLongSSEStreamOfSmallEventsIsNotKilled(t *testing.T) {
+	const limit = 1 << 20
+	m := &rawMCP{sse: true, noise: 3000}
+	ts := httptest.NewServer(m)
+	defer ts.Close()
+	c, err := ConnectRemote(context.Background(), RemoteConfig{
+		Name: "raw", URL: ts.URL, MaxMessageBytes: limit, ConnectTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	res, err := c.CallTool(context.Background(), "anything", nil)
+	if err != nil || res.Content != "ok" {
+		t.Fatalf("a long stream of small events: %+v, %v", res, err)
+	}
+}
+
+func TestEventLimitReaderCountsPerEvent(t *testing.T) {
+	// 10 events of 100 bytes each, limit 150: fine. One event of 200: refused.
+	ev := "data: " + strings.Repeat("x", 92) + "\n\n" // 100 bytes
+	r := boundedBody(strings.NewReader(strings.Repeat(ev, 10)), "text/event-stream; charset=utf-8", 150, "s")
+	if _, err := io.ReadAll(r); err != nil {
+		t.Errorf("ten small events: %v", err)
+	}
+	big := "data: " + strings.Repeat("x", 192) + "\n\n"
+	r = boundedBody(strings.NewReader(big), "text/event-stream", 150, "s")
+	if _, err := io.ReadAll(r); !errors.Is(err, ErrServerUnavailable) {
+		t.Errorf("one big event: %v", err)
+	}
+	// CRLF framing ends events the same way.
+	crlf := strings.Repeat("data: "+strings.Repeat("x", 90)+"\r\n\r\n", 10)
+	r = boundedBody(strings.NewReader(crlf), "text/event-stream", 150, "s")
+	if _, err := io.ReadAll(r); err != nil {
+		t.Errorf("ten small CRLF events: %v", err)
+	}
+	// Anything else is bounded as a whole.
+	r = boundedBody(strings.NewReader(strings.Repeat(ev, 10)), "application/json", 150, "s")
+	if _, err := io.ReadAll(r); !errors.Is(err, ErrServerUnavailable) {
+		t.Errorf("a 1000-byte JSON body against 150: %v", err)
 	}
 }

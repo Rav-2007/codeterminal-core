@@ -34,8 +34,10 @@ import (
 //   - a request to any other origin is refused, and so is a redirect that
 //     leaves the origin or drops from https to http -- a token must not follow
 //     a server's redirect to a host the user never named;
-//   - one message is bounded the way a subprocess's line is (messageLimitReader),
-//     so a server cannot make this daemon allocate without limit;
+//   - one message is bounded by what a response IS (httpbound.go): the whole body
+//     for a JSON answer, one event for an event stream -- not by counting lines,
+//     which is right for a subprocess and which newlines inside a JSON body
+//     defeat -- so a server cannot make this daemon allocate without limit;
 //   - TLS and the wait for response headers are bounded.
 
 // RemoteConfig is everything needed to reach one remote server.
@@ -186,7 +188,7 @@ func (g *guardedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		release()
 		return resp, err
 	}
-	resp.Body = &limitedBody{r: &messageLimitReader{r: resp.Body, max: g.limit, server: g.server}, c: resp.Body, done: release}
+	resp.Body = &limitedBody{r: boundedBody(resp.Body, resp.Header.Get("Content-Type"), g.limit, g.server), c: resp.Body, done: release}
 	return resp, nil
 }
 

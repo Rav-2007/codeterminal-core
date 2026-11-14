@@ -24,6 +24,14 @@ type rawMCP struct {
 	// object -- or, if rpcErr is not empty, a JSON-RPC error message instead.
 	listFn func(cursor string, n int) (result, rpcErr string)
 
+	// sse answers in text/event-stream framing: the response message is written
+	// as one event, split over one data: line per line of the message (the SDK
+	// joins them again), so a newline-padded message is one big multi-line event.
+	sse bool
+	// noise, in sse mode, sends this many small notification events (about 1 KiB
+	// each) ahead of every tools/call result: a long stream of ordinary events.
+	noise int
+
 	// expired makes every tools/* request answer 404 ("session not found"),
 	// as a server does for a session it has ended, until a client sends a new
 	// initialize -- which clears it, as opening a session does.
@@ -83,7 +91,24 @@ func (m *rawMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		result = `{}`
 	}
-	_, _ = io.WriteString(w, `{`+m.pad+`"jsonrpc":"2.0","id":`+string(req.ID)+`,"result":`+result+`}`)
+	msg := `{` + m.pad + `"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":` + result + `}`
+	if !m.sse {
+		_, _ = io.WriteString(w, msg)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	if req.Method == "tools/call" {
+		note := `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"` +
+			strings.Repeat("n", 1000) + `"}}`
+		for i := 0; i < m.noise; i++ {
+			_, _ = io.WriteString(w, "event: message\ndata: "+note+"\n\n")
+		}
+	}
+	_, _ = io.WriteString(w, "event: message\n")
+	for _, line := range strings.Split(msg, "\n") {
+		_, _ = io.WriteString(w, "data: "+line+"\n")
+	}
+	_, _ = io.WriteString(w, "\n")
 }
 
 func orDefault(s, d string) string {
