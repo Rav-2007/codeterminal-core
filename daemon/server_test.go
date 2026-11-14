@@ -17,17 +17,17 @@ func TestServer_MemoryHelpersAreNoOpsWhenMemoryIsNil(t *testing.T) {
 	if got := srv.loadPersistedHistory(t.Context()); got != nil {
 		t.Errorf("loadPersistedHistory() = %+v, want nil when s.memory is nil", got)
 	}
-	srv.persistTurn("q", "a", nil) // must not panic
-	srv.resetPersistedHistory()    // must not panic
+	srv.persistTurn(srv.testScope(), "q", "a", nil) // must not panic
+	srv.resetPersistedHistory(srv.testScope())      // must not panic
 }
 
 func TestServer_PersistTurnAppendsUserThenAssistant(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	srv := &Server{logger: discardLogger(), workspace: "/workspace/persist", memory: memStore}
 
-	srv.persistTurn("what is a goroutine?", "a lightweight thread", nil)
+	srv.persistTurn(srv.testScope(), "what is a goroutine?", "a lightweight thread", nil)
 
-	got, err := memStore.LoadRecentTurns(context.Background(), "/workspace/persist", 12, false)
+	got, err := memStore.LoadRecentTurns(context.Background(), tscope("/workspace/persist"), 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -49,10 +49,10 @@ func TestServer_LoadPersistedHistoryReflectsWhatWasPersisted(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	ctx := context.Background()
 	const ws = "/workspace/load"
-	if err := memStore.AppendTurn(ctx, ws, "user", "q1"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope(ws), "user", "q1"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
-	if err := memStore.AppendTurn(ctx, ws, "assistant", "a1"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope(ws), "assistant", "a1"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
@@ -66,24 +66,24 @@ func TestServer_LoadPersistedHistoryReflectsWhatWasPersisted(t *testing.T) {
 func TestServer_ResetPersistedHistoryClearsOnlyThisWorkspace(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	ctx := context.Background()
-	if err := memStore.AppendTurn(ctx, "/workspace/x", "user", "q1"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope("/workspace/x"), "user", "q1"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
-	if err := memStore.AppendTurn(ctx, "/workspace/y", "user", "other"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope("/workspace/y"), "user", "other"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
 	srv := &Server{logger: discardLogger(), workspace: "/workspace/x", memory: memStore}
-	srv.resetPersistedHistory()
+	srv.resetPersistedHistory(srv.testScope())
 
-	gotX, err := memStore.LoadRecentTurns(ctx, "/workspace/x", 12, false)
+	gotX, err := memStore.LoadRecentTurns(ctx, tscope("/workspace/x"), 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns x: %v", err)
 	}
 	if len(gotX) != 0 {
 		t.Errorf("workspace x = %+v, want empty after reset", gotX)
 	}
-	gotY, err := memStore.LoadRecentTurns(ctx, "/workspace/y", 12, false)
+	gotY, err := memStore.LoadRecentTurns(ctx, tscope("/workspace/y"), 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns y: %v", err)
 	}
@@ -108,10 +108,10 @@ func TestHandleConn_ResetNeverCallsModelAndClearsPersistedHistory(t *testing.T) 
 	memStore, _ := openTestMemoryStore(t)
 	ctx := context.Background()
 	const ws = "/workspace/reset-integration"
-	if err := memStore.AppendTurn(ctx, ws, "user", "old question"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope(ws), "user", "old question"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
-	if err := memStore.AppendTurn(ctx, ws, "assistant", "old answer"); err != nil {
+	if err := memStore.AppendTurn(ctx, tscope(ws), "assistant", "old answer"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestHandleConn_ResetNeverCallsModelAndClearsPersistedHistory(t *testing.T) 
 
 	<-done
 
-	remaining, err := memStore.LoadRecentTurns(ctx, ws, 12, false)
+	remaining, err := memStore.LoadRecentTurns(ctx, tscope(ws), 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns after reset: %v", err)
 	}

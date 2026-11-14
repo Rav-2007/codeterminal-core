@@ -40,17 +40,18 @@ func TestInstallPathDaemonStartsWithNoShellEnvironment(t *testing.T) {
 
 	workspace := t.TempDir()
 	writeFile(t, filepath.Join(workspace, "a.go"), "package a\n")
+	home := t.TempDir()
 
 	// THE CONTROL COMES FIRST, and it is the difference between this test being
 	// evidence and being a broken harness reporting a defect. If a daemon
 	// cannot be started here even WITH the variable, a failure below says
 	// nothing about the install path.
-	if out, err := startForInstallTest(t, bin, installEnv(runtimeDir, true), workspace); err != nil {
+	if out, err := startForInstallTest(t, bin, installEnv(runtimeDir, home, true), workspace); err != nil {
 		t.Fatalf("CONTROL ARM FAILED: a daemon would not start even with MOCHIII_API_BASE set, "+
 			"so this harness cannot measure the install path at all: %v\nDaemon output:\n%s", err, out)
 	}
 
-	env := installEnv(runtimeDir, false)
+	env := installEnv(runtimeDir, home, false)
 	// Vacuity floor. The whole point is an environment with no MOCHIII_*
 	// in it; if one leaked in from the developer's shell the test would pass by
 	// being handed the very thing it is supposed to prove is unnecessary.
@@ -75,9 +76,17 @@ func TestInstallPathDaemonStartsWithNoShellEnvironment(t *testing.T) {
 //
 // The base is a dead port on purpose, matching daemonEnv's reasoning: these
 // tests never prompt, and pointing it anywhere real would risk spend.
-func installEnv(runtimeDir string, withAPIBase bool) []string {
+//
+// HOME IS A TEMPORARY FOLDER, NOT THE DEVELOPER'S. It was os.Getenv("HOME"), and
+// the daemon this spawns is built from the source under test, so it opened the
+// developer's REAL ~/.local/state/mochiii/memory.db -- harmless while the schema
+// never changed, and the day it did (v6, the split of chat storage by client,
+// 2026-11-14) running this package migrated a live database under a daemon
+// that was still using it. A test that starts a real daemon must not be handed
+// a real state folder, whatever else it is checking.
+func installEnv(runtimeDir, home string, withAPIBase bool) []string {
 	env := []string{
-		"HOME=" + os.Getenv("HOME"),
+		"HOME=" + home,
 		"PATH=" + os.Getenv("PATH"),
 		"XDG_RUNTIME_DIR=" + runtimeDir,
 	}

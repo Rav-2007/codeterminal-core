@@ -92,10 +92,10 @@ func TestServer_AClearedChatIsNotInTheNextSave(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
 	srv := historyServer(t, mem)
 
-	srv.persistTurn("before the clear, one", "answer one", nil)
-	srv.persistTurn("before the clear, two", "answer two", nil)
-	srv.resetPersistedHistory()
-	srv.persistTurn("after the clear", "answer three", nil)
+	srv.persistTurn(srv.testScope(), "before the clear, one", "answer one", nil)
+	srv.persistTurn(srv.testScope(), "before the clear, two", "answer two", nil)
+	srv.resetPersistedHistory(srv.testScope())
+	srv.persistTurn(srv.testScope(), "after the clear", "answer three", nil)
 
 	saved := saveNow(t, srv, "")
 	if saved.Entry.Turns != 2 || saved.Entry.Title != "after the clear" {
@@ -104,7 +104,7 @@ func TestServer_AClearedChatIsNotInTheNextSave(t *testing.T) {
 	if back := srv.loadPersistedHistory(context.Background()); len(back) != 2 {
 		t.Errorf("a relaunch would show %d turns, want the 2 after the clear: %+v", len(back), back)
 	}
-	srv.resetPersistedHistory()
+	srv.resetPersistedHistory(srv.testScope())
 	resumed := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryResume, ID: saved.Entry.ID})
 	if len(resumed.Turns) != 2 || resumed.Turns[0].Content != "after the clear" {
 		t.Errorf("resume = %+v, want only the exchange after the clear", resumed.Turns)
@@ -126,7 +126,7 @@ func TestServer_SavingAResumedOldChatKeepsEveryTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive := newChatArchive(root, srv.workspace)
+	archive := newChatArchive(root, tscope(srv.workspace))
 
 	then := time.Now().Add(-40 * 24 * time.Hour).UTC()
 	var old []storedTurn
@@ -144,8 +144,8 @@ func TestServer_SavingAResumedOldChatKeepsEveryTurn(t *testing.T) {
 		t.Fatalf("resume = %+v", resp)
 	}
 
-	srv.persistTurn("one new question", "one new answer", nil)
-	if now, _ := mem.LoadAllTurns(context.Background(), srv.workspace); len(now) != 22 {
+	srv.persistTurn(srv.testScope(), "one new question", "one new answer", nil)
+	if now, _ := mem.LoadAllTurns(context.Background(), tscope(srv.workspace)); len(now) != 22 {
 		t.Errorf("after one new exchange the stored chat holds %d turns, want 22", len(now))
 	}
 	again := saveNow(t, srv, "")
@@ -170,20 +170,20 @@ func TestServer_SavingAgainKeepsTurnsTheStoreHasDropped(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
 	srv := historyServer(t, mem)
 
-	srv.persistTurn("first", "a1", nil)
-	srv.persistTurn("second", "a2", nil)
-	srv.persistTurn("third", "a3", nil)
+	srv.persistTurn(srv.testScope(), "first", "a1", nil)
+	srv.persistTurn(srv.testScope(), "second", "a2", nil)
+	srv.persistTurn(srv.testScope(), "third", "a3", nil)
 	saveNow(t, srv, "long chat")
 
 	dropOldestTurns(t, mem, srv.workspace, 2)
-	srv.persistTurn("fourth", "a4", nil)
+	srv.persistTurn(srv.testScope(), "fourth", "a4", nil)
 	again := saveNow(t, srv, "")
 
 	if again.Entry.Turns != 8 || again.Entry.Title != "long chat" {
 		t.Fatalf("saving again = %+v, want 8 turns, still named", again.Entry)
 	}
 	root, _ := historyRoot()
-	_, turns, err := newChatArchive(root, srv.workspace).loadStored(again.Entry.ID)
+	_, turns, err := newChatArchive(root, tscope(srv.workspace)).loadStored(again.Entry.ID)
 	if err != nil || contentsOf(turns) != "first a1 second a2 third a3 fourth a4" {
 		t.Errorf("the updated copy = %q (%v), want every turn ever saved, then the new one", contentsOf(turns), err)
 	}
@@ -207,21 +207,21 @@ func TestServer_AChatThatDoesNotContinueItsCopyIsSavedBesideIt(t *testing.T) {
 	srv := historyServer(t, mem)
 	ctx := context.Background()
 
-	srv.persistTurn("chat A", "answer A", nil)
+	srv.persistTurn(srv.testScope(), "chat A", "answer A", nil)
 	first := saveNow(t, srv, "named A")
 
 	// The store is replaced behind the link's back.
-	if err := mem.ClearWorkspace(ctx, srv.workspace); err != nil {
+	if err := mem.ClearWorkspace(ctx, tscope(srv.workspace)); err != nil {
 		t.Fatal(err)
 	}
-	srv.persistTurn("chat B", "answer B", nil)
+	srv.persistTurn(srv.testScope(), "chat B", "answer B", nil)
 	second := saveNow(t, srv, "")
 
 	if second.Entry.ID == first.Entry.ID || second.Entry.Turns != 2 || second.Entry.Title != "chat B" {
 		t.Errorf("the second save = %+v, want chat B alone, not under chat A's name", second.Entry)
 	}
 	root, _ := historyRoot()
-	h, turns, err := newChatArchive(root, srv.workspace).loadStored(first.Entry.ID)
+	h, turns, err := newChatArchive(root, tscope(srv.workspace)).loadStored(first.Entry.ID)
 	if err != nil || h.Name != "named A" || contentsOf(turns) != "chat A answer A" {
 		t.Errorf("chat A's copy = %q, %q (%v), want it untouched", h.Name, contentsOf(turns), err)
 	}
@@ -242,18 +242,18 @@ func TestServer_ARowThatCannotBeReadBackDoesNotBreakUpdating(t *testing.T) {
 	srv := historyServer(t, mem)
 	ctx := context.Background()
 
-	srv.persistTurn("first", "a1", nil)
+	srv.persistTurn(srv.testScope(), "first", "a1", nil)
 	// An empty answer from before the write-side guard existed (persistTurn).
 	if _, err := mem.db.ExecContext(ctx,
-		`INSERT INTO turns (workspace, role, content, created_at) VALUES (?, 'assistant', '', ?)`,
+		`INSERT INTO turns (workspace, surface, window_id, role, content, created_at) VALUES (?, 'other', '', 'assistant', '', ?)`,
 		srv.workspace, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	srv.persistTurn("second", "a2", nil)
+	srv.persistTurn(srv.testScope(), "second", "a2", nil)
 	if first := saveNow(t, srv, ""); first.Entry.Turns != 4 {
 		t.Errorf("the first save = %d turns, want the 4 that can be read back", first.Entry.Turns)
 	}
-	srv.persistTurn("third", "a3", nil)
+	srv.persistTurn(srv.testScope(), "third", "a3", nil)
 	again := saveNow(t, srv, "")
 
 	if again.Entry.Turns != 6 || len(savedFiles(t)) != 1 {
@@ -297,19 +297,19 @@ func TestServer_AnUpdateTooLargeForOneFileIsSavedBesideTheCopy(t *testing.T) {
 	srv := historyServer(t, mem)
 	half := strings.Repeat("x", maxArchiveBytes*5/8)
 
-	srv.persistTurn("first", half, nil)
-	srv.persistTurn("second", "a2", nil)
+	srv.persistTurn(srv.testScope(), "first", half, nil)
+	srv.persistTurn(srv.testScope(), "second", "a2", nil)
 	first := saveNow(t, srv, "big")
 
 	dropOldestTurns(t, mem, srv.workspace, 2)
-	srv.persistTurn("third", half, nil)
+	srv.persistTurn(srv.testScope(), "third", half, nil)
 	second := saveNow(t, srv, "")
 
 	if second.Entry.ID == first.Entry.ID || second.Entry.Turns != 4 {
 		t.Fatalf("the second save = %+v, want the current 4 turns as their own copy", second.Entry)
 	}
 	root, _ := historyRoot()
-	archive := newChatArchive(root, srv.workspace)
+	archive := newChatArchive(root, tscope(srv.workspace))
 	if _, turns, err := archive.loadStored(first.Entry.ID); err != nil || len(turns) != 4 || turns[0].Content != "first" {
 		t.Errorf("the first copy: %d turns, %v; want it kept whole", len(turns), err)
 	}

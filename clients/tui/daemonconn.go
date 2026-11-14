@@ -137,6 +137,8 @@ func connectToDaemon(clientName string, capabilities ...string) (*daemonSession,
 		// promise, so it is passed in by the caller that can keep it rather than
 		// hardcoded for every caller that shares this function.
 		Capabilities: capabilities,
+		// This window's id, on every connection it makes (window.go).
+		WindowID: daemonWindowID,
 	}); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sending handshake: %w", err)

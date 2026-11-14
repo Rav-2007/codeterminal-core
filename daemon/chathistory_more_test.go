@@ -18,10 +18,10 @@ import (
 func appendExchange(t *testing.T, mem *MemoryStore, ws, q, a string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := mem.AppendTurn(ctx, ws, "user", q); err != nil {
+	if err := mem.AppendTurn(ctx, tscope(ws), "user", q); err != nil {
 		t.Fatal(err)
 	}
-	if err := mem.AppendTurn(ctx, ws, "assistant", a); err != nil {
+	if err := mem.AppendTurn(ctx, tscope(ws), "assistant", a); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -105,7 +105,7 @@ func TestHistory_SearchMatchesWhatWasSaid(t *testing.T) {
 	srv := historyServer(t, mem)
 	appendExchange(t, mem, srv.workspace, "read my certificate", "It is a UDYAM registration certificate.")
 	saveNow(t, srv, "")
-	srv.resetPersistedHistory()
+	srv.resetPersistedHistory(srv.testScope())
 	appendExchange(t, mem, srv.workspace, "plan the launch", "here is a plan")
 
 	resp := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList, Query: "udyam"})
@@ -165,7 +165,7 @@ func TestHistory_CompactSummarisesTheOlderTurnsAndSavesTheWholeChat(t *testing.T
 	if len(list.Entries) != 2 || !list.Entries[0].Current || !list.Entries[0].Unsaved || list.Entries[1].Turns != 10 {
 		t.Errorf("list after compact = %+v", list.Entries)
 	}
-	if now, _ := mem.LoadAllTurns(context.Background(), srv.workspace); len(now) != 6 {
+	if now, _ := mem.LoadAllTurns(context.Background(), tscope(srv.workspace)); len(now) != 6 {
 		t.Errorf("memory holds %d turns, want 6", len(now))
 	}
 }
@@ -249,7 +249,7 @@ func TestHistory_CompactSaysWhyTheModelFailed(t *testing.T) {
 	if strings.Contains(resp.Error, "daemon log") || strings.Contains(resp.Error, "org_secret_detail") {
 		t.Errorf("error = %q: it must say why, without the provider's own text", resp.Error)
 	}
-	if now, _ := mem.LoadAllTurns(context.Background(), srv.workspace); len(now) != 10 {
+	if now, _ := mem.LoadAllTurns(context.Background(), tscope(srv.workspace)); len(now) != 10 {
 		t.Errorf("a failed compact changed the chat: %d turns, want 10", len(now))
 	}
 }

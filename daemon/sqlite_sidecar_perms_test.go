@@ -34,7 +34,7 @@ func TestMemoryStore_SidecarsAreNotWorldReadable(t *testing.T) {
 	defer store.Close()
 
 	const secretTurn = "PRIVATE-TRANSCRIPT-CONTENT"
-	if err := store.AppendTurn(context.Background(), "/ws", "user", secretTurn); err != nil {
+	if err := store.AppendTurn(context.Background(), tscope("/ws"), "user", secretTurn); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 

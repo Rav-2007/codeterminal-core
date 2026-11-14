@@ -246,7 +246,7 @@ func TestLoadPersistedHistory_BoundsTotalBytes(t *testing.T) {
 	const turnCount = 6
 	for i := range turnCount {
 		turn := bigTurn("user", "PERSISTED", turnSize)
-		if err := memStore.AppendTurn(ctx, ws, turn.Role, turn.Content); err != nil {
+		if err := memStore.AppendTurn(ctx, tscope(ws), turn.Role, turn.Content); err != nil {
 			t.Fatalf("AppendTurn %d: %v", i, err)
 		}
 	}

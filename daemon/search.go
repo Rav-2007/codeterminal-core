@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,9 +17,13 @@ import (
 // external-content column-mapping rules entirely. At this store's write
 // volume (one row per conversation turn) that tradeoff is a non-issue.
 //
-// workspace is stored as an UNINDEXED column (carried alongside each row,
-// never tokenized) so SearchTurns can filter to one workspace as part of the
-// FTS scan itself rather than a separate pass.
+// workspace, surface and window_id are stored as UNINDEXED columns (carried
+// alongside each row, never tokenized) so SearchTurns can filter to one chat -- one
+// workspace, one kind of client, one terminal window -- as part of the FTS scan
+// itself rather than a separate pass. surface and window_id joined workspace in
+// schema v6 (chatscope.go); an external-content
+// table's columns must be the content table's, so adding it meant rebuilding the
+// index (migrateToScopedTurns), not altering it.
 //
 // turns_fts.rowid is always kept EQUAL to the source turns.id (see the
 // insert trigger below), which is what lets SearchTurns join back to turns
@@ -29,6 +32,8 @@ const turnsFTSTableDDL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
 	content,
 	workspace UNINDEXED,
+	surface UNINDEXED,
+	window_id UNINDEXED,
 	tokenize='trigram',
 	content='turns',
 	content_rowid='id'
@@ -50,7 +55,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
 // TestAppendTurn_WorksEvenWithoutSearchIndexOrTriggers in search_test.go).
 const turnsFTSInsertTriggerDDL = `
 CREATE TRIGGER IF NOT EXISTS turns_ai AFTER INSERT ON turns BEGIN
-	INSERT INTO turns_fts(rowid, content, workspace) VALUES (new.id, new.content, new.workspace);
+	INSERT INTO turns_fts(rowid, content, workspace, surface, window_id) VALUES (new.id, new.content, new.workspace, new.surface, new.window_id);
 END`
 
 // turnsFTSDeleteTriggerDDL mirrors turns' only other mutation --
@@ -61,13 +66,13 @@ END`
 // deletes) -- add one if that ever changes.
 const turnsFTSDeleteTriggerDDL = `
 CREATE TRIGGER IF NOT EXISTS turns_ad AFTER DELETE ON turns BEGIN
-	INSERT INTO turns_fts(turns_fts, rowid, content, workspace) VALUES ('delete', old.id, old.content, old.workspace);
+	INSERT INTO turns_fts(turns_fts, rowid, content, workspace, surface, window_id) VALUES ('delete', old.id, old.content, old.workspace, old.surface, old.window_id);
 END`
 
 // createSearchIndex creates turns_fts and its sync triggers if they don't
 // already exist. Safe to call on every startup (see ensureMemorySchema in
 // memory.go) -- IF NOT EXISTS on all three statements makes it idempotent.
-func createSearchIndex(db *sql.DB) error {
+func createSearchIndex(db sqlExecer) error {
 	if _, err := db.Exec(turnsFTSTableDDL); err != nil {
 		return fmt.Errorf("creating turns_fts: %w", err)
 	}
@@ -84,10 +89,10 @@ func createSearchIndex(db *sql.DB) error {
 // Needed because a newly-created FTS5 table starts empty even on a
 // pre-existing, already-populated memory.db -- the insert trigger only
 // covers turns written AFTER turns_fts existed. Called exactly once, from
-// ensureMemorySchema's version<2 migration branch, which itself only ever
-// runs once per database (guarded by schema_meta.version) -- so this needs no
-// separate "already ran" check of its own.
-func backfillSearchIndex(db *sql.DB) error {
+// migrateToScopedTurns (the v6 rebuild), which itself only ever runs once per
+// database (guarded by schema_meta.version, inside its own transaction) -- so
+// this needs no separate "already ran" check of its own.
+func backfillSearchIndex(db sqlExecer) error {
 	if _, err := db.Exec(`INSERT INTO turns_fts(turns_fts) VALUES ('rebuild')`); err != nil {
 		return fmt.Errorf("backfilling turns_fts: %w", err)
 	}
@@ -113,7 +118,8 @@ type SearchHit struct {
 }
 
 // SearchTurns performs a lexical (FTS5 MATCH) keyword/substring search over
-// workspace's stored turns, most-relevant match first (FTS5's built-in bm25
+// one chat's stored turns (one workspace, one surface -- a client never finds
+// the other kind of client's conversation), most-relevant match first (FTS5's built-in bm25
 // rank), capped at limit. This complements the existing RAG/embedding
 // retrieval rather than replacing it -- it never touches the vector store,
 // and does something entirely different: exact lexical matching over what
@@ -135,7 +141,10 @@ type SearchHit struct {
 // errQueryHasNUL is returned for a query carrying a NUL byte. See SearchTurns.
 var errQueryHasNUL = errors.New("query contains a NUL byte")
 
-func (s *MemoryStore) SearchTurns(ctx context.Context, workspace, query string, limit int) ([]SearchHit, error) {
+func (s *MemoryStore) SearchTurns(ctx context.Context, sc chatScope, query string, limit int) ([]SearchHit, error) {
+	if err := sc.check(); err != nil {
+		return nil, err
+	}
 	// Bounded before the phrase is built. Unlike the retrieval path, which
 	// silently drops to semantic-only, this is a search the USER asked for, so
 	// handleSearch turns this error into a message naming the limit rather than
@@ -168,10 +177,10 @@ func (s *MemoryStore) SearchTurns(ctx context.Context, workspace, query string, 
 		`SELECT t.role, snippet(turns_fts, 0, '[', ']', '...', ?), t.created_at
 		 FROM turns_fts
 		 JOIN turns t ON t.id = turns_fts.rowid
-		 WHERE turns_fts MATCH ? AND turns_fts.workspace = ?
+		 WHERE turns_fts MATCH ? AND turns_fts.workspace = ? AND turns_fts.surface = ? AND turns_fts.window_id = ?
 		 ORDER BY rank
 		 LIMIT ?`,
-		searchSnippetTokenBudget, phrase, workspace, limit,
+		searchSnippetTokenBudget, phrase, sc.Workspace, string(sc.Surface), sc.Window, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("searching turns: %w", err)

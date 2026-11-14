@@ -67,10 +67,10 @@ func (s *Server) compactChat(ctx context.Context, archive *chatArchive, spec, ti
 	// Held throughout, model call included: an exchange finishing meanwhile must
 	// not be appended to a chat that is about to be replaced. The client holds
 	// its input while this runs, and the call is one short completion.
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
+	s.chatOf(archive.scope).mu.Lock()
+	defer s.chatOf(archive.scope).mu.Unlock()
 
-	turns, err := s.memory.LoadAllTurns(ctx, s.workspace)
+	turns, err := s.memory.LoadAllTurns(ctx, archive.scope)
 	if err != nil {
 		return protocol.HistoryEntry{}, nil, 0, "", err
 	}
@@ -103,11 +103,11 @@ func (s *Server) compactChat(ctx context.Context, archive *chatArchive, spec, ti
 			"summarised by /compact; the full chat is saved in history):\n\n" + summary},
 	}
 	compacted = append(compacted, turns[cut:]...)
-	if err := s.memory.ReplaceWorkspace(ctx, s.workspace, compacted); err != nil {
+	if err := s.memory.ReplaceWorkspace(ctx, archive.scope, compacted); err != nil {
 		return protocol.HistoryEntry{}, nil, 0, "", fmt.Errorf("replacing the chat with its summary: %w", err)
 	}
 	archive.clearLink()
-	rev := s.chatReplacedLocked(ctx)
+	rev := s.chatReplacedLocked(ctx, archive.scope)
 
 	out := make([]protocol.Turn, len(compacted))
 	for i, t := range compacted {

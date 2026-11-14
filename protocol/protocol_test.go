@@ -28,7 +28,7 @@ func TestWireTags(t *testing.T) {
 		v    any
 		want []string
 	}{
-		{"HandshakeRequest", HandshakeRequest{}, []string{"protocol_version", "client_name", "capabilities"}},
+		{"HandshakeRequest", HandshakeRequest{}, []string{"protocol_version", "client_name", "capabilities", "window_id"}},
 		{"PromptRequest", PromptRequest{}, []string{"protocol_version", "prompt", "workspace", "history", "reset", "prompt_kind",
 			"session", "budget_action"}},
 		{"SpendStatus", SpendStatus{}, []string{"session", "day", "notice", "reached"}},

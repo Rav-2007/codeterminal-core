@@ -684,7 +684,9 @@ so in one line: when it began, how many turns it holds, how many of them are on 
 whether it is saved. Everything stays on this machine:
 
 - **Where:** saved chats live in `~/.local/state/mochiii/history/`, one gzipped file per
-  chat, never inside the project.
+  chat, never inside the project. Under it each workspace has one folder per kind of
+  client (`terminal`, `vscode`), so the terminal's `/history` and the editor's are
+  separate lists. Chats saved before the split were copied into both.
 - **Which chat:** `/resume`, `/history` and `/history delete` take the chat's number
   in the list or the name it was saved under (`/save test1`, later `/resume test1`).
   Case does not count, and the start of a name is enough to read or resume when it
@@ -1412,8 +1414,8 @@ measured).
 
 ### Conversation memory
 
-The daemon keeps cross-session memory per workspace and delivers recent turns to
-the client in the `HandshakeResponse`. Because the protocol is one prompt per
+The daemon keeps cross-session memory per workspace **and per kind of client**
+(below) and delivers recent turns to the client in the `HandshakeResponse`. Because the protocol is one prompt per
 connection, the daemon cannot tell "fresh session" from "next prompt", so it
 populates this on **every** handshake — acting on it is the client's job, and
 only a startup connection should hydrate a transcript from it. The terminal client
@@ -1424,12 +1426,35 @@ History sent to the model is re-validated and capped server-side: `user` and
 `assistant` roles only, oldest first, inserted between the system message and the
 final prompt. Retrieved context always lands in the final user message.
 
-**The chat is shared by every client of the workspace.** One daemon serves the
-terminal client and the VS Code panel alike, so both write to the same
-conversation, and each keeps up with what the other added:
+**Each kind of client has its own chat.** One daemon serves the terminal client
+and the VS Code panel for a workspace, but they do not share a conversation (they
+did until schema v6). The daemon derives a *surface* from the handshake's
+`client_name` — `terminal` for `mochiii-tui`, `vscode` for `mochiii-vscode`, and
+`other`, a chat of its own, for any other name — and everything below is that
+surface's: the hydrated turns and `chat_revision`, `/history` and its saved chats,
+`/search`, the history sent to the model, and a new chat (ctrl+n, or the
+terminal's fresh start on launch), which leaves the other surface's chat alone.
+Nothing on the wire carries the surface. The code index, saved rules, spend
+and tasks are project-level and are shared by every client.
+
+**Each terminal window has its own chat too.** The terminal app makes a random id
+when it starts and sends it as `window_id` in every handshake it makes (optional;
+8 to 32 lowercase hex digits; nothing else is honoured, and only the terminal's is).
+The daemon keeps a chat for each id, so two terminals on one folder do not see each
+other's turns, and a new chat in one leaves the other alone. A terminal that sends
+none — one-shot `mochiii -prompt`, or an older terminal — has the terminal's shared
+chat. Saved chats stay the terminal's, shared by its windows; only the link saying
+which saved chat a window's live chat is belongs to the window. A window that was
+closed leaves a chat nobody can reach, and the daemon removes it once nothing has
+been said in it for seven days (the shared chats are never swept).
+
+Clients of the **same** chat — two VS Code windows on one folder, which share the
+editor's — still keep up with what the other added:
 
 - The handshake carries a `chat_revision` alongside the hydrated turns. It is
-  opaque to clients, which compare it and send it back.
+  opaque to clients, which compare it and send it back. It names its surface (and a
+  terminal window), so a revision taken from one chat is never accepted as
+  another's.
 - `{"chats":true,"action":"current","since":<revision>}` returns what the chat
   gained since that revision (`append: true`), or the whole chat after a new
   chat, a resume or a compact.

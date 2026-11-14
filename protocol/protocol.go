@@ -140,11 +140,22 @@ const (
 // send, and an unknown slug is inert. A client that omits the field gets
 // exactly the behaviour it got before the field existed, which is the point:
 // every capability must be safe to not have.
+//
+// WindowID is optional and additive too: an opaque id, 8 to 32 lowercase hex
+// digits, that one WINDOW of a client that can have several (the terminal app)
+// sends on every connection it makes, so the daemon keeps a chat for each window
+// instead of one for the client. Empty -- every client that does not send it, and
+// the terminal's one-shot mode -- is the client's shared chat, exactly as before.
+// The daemon honours it only for the terminal; the editor's windows share one
+// chat on purpose. An id that is not 8 to 32 lowercase hex digits is ignored, so
+// it can never name a path. It is not a credential and says nothing about who is
+// connecting. It is NOT PromptRequest.Session, which names a spending session.
 type HandshakeRequest struct {
 	ProtocolVersion int      `json:"protocol_version"`
 	ClientName      string   `json:"client_name"`
 	Capabilities    []string `json:"capabilities,omitempty"`
 	BearerToken     string   `json:"bearer_token,omitempty"`
+	WindowID        string   `json:"window_id,omitempty"`
 }
 
 // HasCapability reports whether the client declared the given capability slug.

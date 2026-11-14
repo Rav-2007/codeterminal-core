@@ -60,7 +60,7 @@ const cteCancelAfter = 500 * time.Millisecond
 
 func TestSQLiteCancellation_ACancelledContextStopsASearchBeforeItRuns(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
-	if err := mem.AppendTurn(t.Context(), "/ws", "user", "hello goroutines"); err != nil {
+	if err := mem.AppendTurn(t.Context(), tscope("/ws"), "user", "hello goroutines"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -70,7 +70,7 @@ func TestSQLiteCancellation_ACancelledContextStopsASearchBeforeItRuns(t *testing
 	// context is ever consulted, which would make this pass without the
 	// cancellation it claims to test.
 	start := time.Now()
-	_, err := mem.SearchTurns(ctx, "/ws", strings.Repeat("x", maxLexicalQueryChars/2), 5)
+	_, err := mem.SearchTurns(ctx, tscope("/ws"), strings.Repeat("x", maxLexicalQueryChars/2), 5)
 	elapsed := time.Since(start)
 
 	if errors.Is(err, errLexicalQueryTooLong) {
@@ -192,7 +192,7 @@ func TestSQLiteCancellation_DoesNotReachAnFTS5PhraseMatch(t *testing.T) {
 	}
 	mem, _ := openTestMemoryStore(t)
 	for i := range 50 {
-		if err := mem.AppendTurn(t.Context(), "/ws", "user",
+		if err := mem.AppendTurn(t.Context(), tscope("/ws"), "user",
 			fmt.Sprintf("turn %d about goroutines and channels", i)); err != nil {
 			t.Fatal(err)
 		}
@@ -282,7 +282,7 @@ func TestSQLiteCancellation_DoesNotReachAnFTS5PhraseMatch(t *testing.T) {
 // connection's context now, so a daemon shutting down does not wait on a search.
 func TestHandleSearch_UsesTheContextItIsGiven(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
-	if err := mem.AppendTurn(t.Context(), "/ws", "user", "hello"); err != nil {
+	if err := mem.AppendTurn(t.Context(), tscope("/ws"), "user", "hello"); err != nil {
 		t.Fatal(err)
 	}
 	srv := &Server{workspace: "/ws", memory: mem, logger: discardLogger()}

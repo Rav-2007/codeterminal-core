@@ -41,10 +41,10 @@ func TestMemorySchema_PurgesPreFixTurnsOnUpgrade(t *testing.T) {
 	const secret = "AKIAIOSFODNN7EXAMPLE"
 	// Written the way a pre-fix daemon wrote them: straight to the store, no
 	// scrub anywhere in the path.
-	if err := store.AppendTurn(ctx, ws, "user", "deploy with "+secret); err != nil {
+	if err := store.AppendTurn(ctx, tscope(ws), "user", "deploy with "+secret); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
-	if err := store.AppendTurn(ctx, ws, "assistant", "done"); err != nil {
+	if err := store.AppendTurn(ctx, tscope(ws), "assistant", "done"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestMemorySchema_PurgesPreFixTurnsOnUpgrade(t *testing.T) {
 	}
 	defer func() { _ = reopened.Close() }()
 
-	turns, err := reopened.LoadRecentTurns(ctx, ws, 10, true)
+	turns, err := reopened.LoadRecentTurns(ctx, tscope(ws), 10, true)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestMemorySchema_PurgeRunsOnceAndNotOnFreshDatabases(t *testing.T) {
 	}
 	ctx := t.Context()
 	const ws = "/workspace/post-fix"
-	if err := store.AppendTurn(ctx, ws, "user", "hello"); err != nil {
+	if err := store.AppendTurn(ctx, tscope(ws), "user", "hello"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -129,7 +129,7 @@ func TestMemorySchema_PurgeRunsOnceAndNotOnFreshDatabases(t *testing.T) {
 		t.Fatalf("reopening: %v", err)
 	}
 	defer func() { _ = reopened.Close() }()
-	turns, err := reopened.LoadRecentTurns(ctx, ws, 10, false)
+	turns, err := reopened.LoadRecentTurns(ctx, tscope(ws), 10, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}

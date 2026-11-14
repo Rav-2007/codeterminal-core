@@ -205,7 +205,7 @@ func TestLexicalBound_ThePromptPathDoesNotPayTheCostEither(t *testing.T) {
 // actual length, and what to do instead.
 func TestSearchRequest_OverTheBoundIsRefusedActionably(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
-	if err := mem.AppendTurn(t.Context(), "/ws", "user", "hello goroutines"); err != nil {
+	if err := mem.AppendTurn(t.Context(), tscope("/ws"), "user", "hello goroutines"); err != nil {
 		t.Fatal(err)
 	}
 	srv := &Server{workspace: "/ws", memory: mem, logger: discardLogger()}
@@ -237,7 +237,7 @@ func TestSearchRequest_OverTheBoundIsRefusedActionably(t *testing.T) {
 // own syntax error. Refused now, so the claim is true again.
 func TestSearchRequest_NULIsRefusedAndTheEngineErrorNeverReachesTheClient(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
-	if err := mem.AppendTurn(t.Context(), "/ws", "user", "hello"); err != nil {
+	if err := mem.AppendTurn(t.Context(), tscope("/ws"), "user", "hello"); err != nil {
 		t.Fatal(err)
 	}
 	srv := &Server{workspace: "/ws", memory: mem, logger: discardLogger()}

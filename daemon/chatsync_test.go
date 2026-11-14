@@ -137,7 +137,7 @@ func turnTexts(turns []protocol.Turn) string {
 // becomes the whole chat with Append false, and the first check fails.
 func TestChatSync_WhatOneClientAddedReachesTheOther(t *testing.T) {
 	d := newSyncDaemon(t)
-	d.srv.persistTurn("asked in the terminal earlier", "earlier answer", nil)
+	d.srv.persistTurn(d.srv.testScope(), "asked in the terminal earlier", "earlier answer", nil)
 
 	_, terminal := d.start(t)
 	_, editor := d.start(t)
@@ -230,14 +230,14 @@ func TestChatSync_ALevelOrOlderClientsHistoryIsUsedAsSent(t *testing.T) {
 // nothing changed (append, no turns) while the chat is a different one.
 func TestChatSync_AReplacedChatIsSentWhole(t *testing.T) {
 	d := newSyncDaemon(t)
-	d.srv.persistTurn("old question", "old answer", nil)
+	d.srv.persistTurn(d.srv.testScope(), "old question", "old answer", nil)
 	_, stale := d.start(t)
 
 	reset := d.ask(t, protocol.PromptRequest{Reset: true})
 	if reset.ChatRevision == "" || reset.ChatRevision == stale {
 		t.Fatalf("ctrl+n's Done carries revision %q, want a new one", reset.ChatRevision)
 	}
-	d.srv.persistTurn("new question", "new answer", nil)
+	d.srv.persistTurn(d.srv.testScope(), "new question", "new answer", nil)
 
 	got := d.current(t, stale)
 	if got.Append || turnTexts(got.Turns) != "user: new question | assistant: new answer" {
@@ -252,7 +252,7 @@ func TestChatSync_AReplacedChatIsSentWhole(t *testing.T) {
 
 	// Resume replaces it too, and the client that resumed is level with it.
 	id := saveNow(t, d.srv, "kept").Entry.ID
-	d.srv.persistTurn("one more", "and its answer", nil)
+	d.srv.persistTurn(d.srv.testScope(), "one more", "and its answer", nil)
 	beforeResume := d.current(t, "").ChatRevision
 	resumed := askHistory(t, d.srv, protocol.HistoryRequest{Action: protocol.HistoryResume, ID: id})
 	if resumed.ChatRevision == "" || resumed.ChatRevision == beforeResume {
@@ -273,7 +273,7 @@ func TestChatSync_DoneSaysBehindWhenAnotherClientWroteDuringTheTurn(t *testing.T
 	_, rev := d.start(t)
 	// Written after this client's revision was read and before its turn is
 	// saved: the same position as an answer finishing in the other window.
-	d.srv.persistTurn("from the other window", "its answer", nil)
+	d.srv.persistTurn(d.srv.testScope(), "from the other window", "its answer", nil)
 	done := d.ask(t, protocol.PromptRequest{Prompt: "mine", ChatRevision: rev})
 	if !done.ChatBehind {
 		t.Error("Done.ChatBehind = false although another client's exchange landed first")
@@ -292,7 +292,7 @@ func TestChatSync_TheTurnIsSavedBeforeItsDone(t *testing.T) {
 	d := newSyncDaemon(t)
 	_, rev := d.start(t)
 	done := d.ask(t, protocol.PromptRequest{Prompt: "saved first", ChatRevision: rev})
-	turns, err := d.srv.memory.LoadAllTurns(context.Background(), d.srv.workspace)
+	turns, err := d.srv.memory.LoadAllTurns(context.Background(), tscope(d.srv.workspace))
 	if err != nil || len(turns) != 2 {
 		t.Fatalf("when the Done arrived the chat held %d turns (err %v), want the exchange", len(turns), err)
 	}
@@ -317,7 +317,7 @@ func TestChatSync_NoMemoryMeansNoRevision(t *testing.T) {
 // or anything malformed, means "has seen nothing" and gets the whole chat.
 func TestChatSync_AForeignOrMalformedRevisionGetsTheWholeChat(t *testing.T) {
 	d := newSyncDaemon(t)
-	d.srv.persistTurn("q", "a", nil)
+	d.srv.persistTurn(d.srv.testScope(), "q", "a", nil)
 	_, rev := d.start(t)
 	r, ok := parseChatRevision(rev)
 	if !ok {
@@ -336,7 +336,7 @@ func TestChatSync_AForeignOrMalformedRevisionGetsTheWholeChat(t *testing.T) {
 func TestChatSync_TheHandshakeRevisionMatchesItsTurns(t *testing.T) {
 	d := newSyncDaemon(t)
 	for i := 1; i <= 8; i++ { // more than maxHistoryTurns, so the handshake is a tail
-		d.srv.persistTurn(fmt.Sprintf("q%d", i), fmt.Sprintf("a%d", i), nil)
+		d.srv.persistTurn(d.srv.testScope(), fmt.Sprintf("q%d", i), fmt.Sprintf("a%d", i), nil)
 	}
 	turns, rev := d.start(t)
 	if len(turns) == 0 || turns[len(turns)-1].Content != "a8" {
