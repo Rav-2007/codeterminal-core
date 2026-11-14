@@ -129,33 +129,49 @@ func quits(cmd tea.Cmd) bool {
 // The stop key worked and the turn ended; the next ctrl+c, pressed a beat later
 // out of the same habit, quit the program. One press must never end the session
 // -- not the one that stops a turn, and not the one after it.
+//
+// RUN FOR BOTH KINDS OF CHAT. A chat that is not saved is asked about on that
+// second press (quitchat.go) and one that is saved arms the footer; neither may
+// quit on it, and in both the press after is the confirmation.
 func TestNoSingleCtrlCEverQuits(t *testing.T) {
-	m, ctx := startedTurn(t)
+	for name, current := range map[string]*protocol.HistoryEntry{
+		"unsaved": unsavedChat(),
+		"saved":   {Current: true, Turns: 2, SavedAs: "20261114T100000Z-0000aaaa"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			serveChatDaemon(t, current) // the quit looks at the stored chat, and may erase it
+			m, ctx := startedTurn(t)
 
-	m, cmd := pressCtrlC(m) // 1: stops the turn
-	if ctx.Err() == nil {
-		t.Error("the first ctrl+c did not cancel the request context")
-	}
-	if quits(cmd) {
-		t.Fatal("the ctrl+c that stopped the turn also quit")
-	}
-	if m.state != stateIdle {
-		t.Fatalf("state = %v, want stateIdle after the stop", m.state)
-	}
+			m, cmd := pressCtrlC(m) // 1: stops the turn
+			if ctx.Err() == nil {
+				t.Error("the first ctrl+c did not cancel the request context")
+			}
+			if quits(cmd) {
+				t.Fatal("the ctrl+c that stopped the turn also quit")
+			}
+			if m.state != stateIdle {
+				t.Fatalf("state = %v, want stateIdle after the stop", m.state)
+			}
 
-	m, cmd = pressCtrlC(m) // 2: nothing left to stop, so it only asks
-	if quits(cmd) {
-		t.Fatal("a single ctrl+c with nothing to stop quit without asking")
-	}
-	if !m.quitArmed {
-		t.Fatal("the press neither quit nor armed a quit, so ctrl+c did nothing at all")
-	}
-	if view := m.View(); !strings.Contains(view, "press ctrl+c again") {
-		t.Errorf("the footer does not say a second press quits:\n%s", view)
-	}
+			m, cmd = pressCtrlC(m) // 2: nothing left to stop, so it only asks
+			if quits(cmd) {
+				t.Fatal("a single ctrl+c with nothing to stop quit without asking")
+			}
+			if !m.quitArmed && !m.quitChatArmed {
+				t.Fatal("the press neither quit nor asked, so ctrl+c did nothing at all")
+			}
+			ask := "press ctrl+c again"
+			if current.Unsaved {
+				ask = quitChatQuestion
+			}
+			if view := plainScreen(m); !strings.Contains(view, ask) {
+				t.Errorf("the screen does not ask (%q):\n%s", ask, view)
+			}
 
-	if _, cmd = pressCtrlC(m); !quits(cmd) { // 3: confirmed
-		t.Error("a second consecutive ctrl+c did not quit")
+			if _, cmd = pressCtrlC(m); !quits(cmd) { // 3: confirmed
+				t.Error("a second consecutive ctrl+c did not quit")
+			}
+		})
 	}
 }
 

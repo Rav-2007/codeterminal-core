@@ -131,6 +131,13 @@ func runChat(workspace string, launch launchOptions) {
 	// sites in this client -- see the note on daemonSession.Close.
 	_ = preflight.Close()
 
+	// A LAUNCH STARTS A NEW CHAT (freshchat.go): what the daemon was still
+	// holding -- a chat nobody saved or ended on purpose -- is erased here, and
+	// the screen opens empty. Saved chats stay in /history.
+	if daemonSavesChats {
+		persistedHistory, chatRev = startFresh("mochiii-tui", persistedHistory, chatRev)
+	}
+
 	absWorkspace, err := filepath.Abs(workspace)
 	if err != nil {
 		absWorkspace = workspace // best-effort label; still sent as-is

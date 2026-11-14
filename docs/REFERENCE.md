@@ -671,10 +671,17 @@ discard the current one: it leaves the screen, it is no longer sent to the model
 later `/save` will not write it. On a chat that is not saved, either one asks first, in
 the prompt's box — **"This chat is not saved. Save or clear?"** — and one key answers:
 `s` saves the chat and then starts the new one, `c` clears without saving, Esc keeps the
-chat. If the save fails, nothing is cleared. Relaunching continues where you left off, and
-says so in one line: when the chat began, how many turns it holds, how many of them are
-on screen, and whether it is saved. A chat goes on until you end it, however long ago
-it began. Everything stays on this machine:
+chat. If the save fails, nothing is cleared. **Every launch starts a new chat.** Before the
+screen opens, Mochiii erases the chat it was holding for the folder, so the prompt is
+empty; only a chat you saved is kept, and `/resume` brings it back. Leaving on purpose asks
+first when the chat is not saved — **"This chat is not saved and will be erased. Save or
+quit?"** — `s` saves and then quits, `q` quits and erases it, Esc stays, and ctrl+c again
+quits and erases. ctrl+c and `/exit` ask the same. Closing the terminal window cannot ask,
+so a chat left that way is erased by the next launch. The chat is shared with the VS Code
+panel for the same folder, so a new launch starts a new chat there too. If the daemon does
+not answer when the old chat is to be erased, the launch shows that chat as it was and says
+so in one line: when it began, how many turns it holds, how many of them are on screen, and
+whether it is saved. Everything stays on this machine:
 
 - **Where:** saved chats live in `~/.local/state/mochiii/history/`, one gzipped file per
   chat, never inside the project.
@@ -1409,7 +1416,9 @@ The daemon keeps cross-session memory per workspace and delivers recent turns to
 the client in the `HandshakeResponse`. Because the protocol is one prompt per
 connection, the daemon cannot tell "fresh session" from "next prompt", so it
 populates this on **every** handshake — acting on it is the client's job, and
-only a startup connection should hydrate a transcript from it.
+only a startup connection should hydrate a transcript from it. The terminal client
+resets the chat at startup (a launch starts a new chat), so it hydrates from this only
+when that reset fails.
 
 History sent to the model is re-validated and capped server-side: `user` and
 `assistant` roles only, oldest first, inserted between the system message and the
