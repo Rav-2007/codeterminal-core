@@ -1,6 +1,6 @@
 # Documentation index
 
-**91 documents: 80 in `docs/`, 3 in `docs/ARCHIVE/`, and 8 at the repository root.**
+**92 documents: 81 in `docs/`, 3 in `docs/ARCHIVE/`, and 8 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -121,6 +121,7 @@ a refactor or fails loudly; a line number silently points at something else.
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | The project is proprietary (see `../LICENSE`); each commit carries a DCO 1.1 sign-off (text included). The check is advisory until an owner makes it required. |
 | [`MCP_MASTER.md`](MCP_MASTER.md) | Front door for agent mode / MCP; links to its own evidence. |
 | [`MCP_DEBUG_PLAYBOOK.md`](MCP_DEBUG_PLAYBOOK.md) | Operational: diagnosing a misbehaving MCP server. |
+| [`MCP_CONNECTION_FLAWS_2026-11-14.md`](MCP_CONNECTION_FLAWS_2026-11-14.md) | The MCP host's connection path run against public servers: six defects (paged tool lists, structured and resource results, the HTTP size bound, a forgotten session, a cold `npx` start), each reproduced by a test and fixed, with the evidence. |
 | [`MCP_LANE_B_THREAT_MODEL.md`](MCP_LANE_B_THREAT_MODEL.md) | Why Lane B is **unconfined**, stated plainly. Read before touching agent mode. |
 | [`GITHUB_THREAT_MODEL.md`](GITHUB_THREAT_MODEL.md) | What Mochiii's GitHub connection holds, reads and sends: the bot token, the one host, text anyone can write. Grows with each phase. Coderefs-enforced. |
 | [`MIGRATION_RUNBOOK_0000_0004.md`](MIGRATION_RUNBOOK_0000_0004.md) | Applying Supabase migrations by hand. Needs dashboard access. |

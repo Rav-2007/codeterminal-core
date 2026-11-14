@@ -5,19 +5,18 @@ model (`daemon/mcp/`: `stdioclient.go`, `remoteclient.go`, `session.go`,
 `registry.go`). Docs were not considered, only code and behaviour.
 
 Method: read the code, then wrote tests that fail when the behaviour is wrong.
-Every flaw below is **reproduced by a test**, not inferred. SDK: go-sdk v1.7.0.
+Every flaw below was **reproduced by a test**, not inferred. SDK: go-sdk v1.7.0.
 
-Run them:
+**Status (2026-11-14, branch `fix/mcp-connection-hardening`): F1 to F6 are fixed**, each
+in its own commit with regression tests. F7 is scope, left open. The flaw tests that
+reproduced them were turned into regression tests and the `MCP_FLAWS` gate removed.
 
 ```
 cd daemon/mcp
-go test -race -run TestMatrix .                      # connection matrix, offline, all pass
-MCP_FLAWS=1 go test -run TestFlaw .                  # the flaws below, each fails for real
-MCP_LIVE_PUBLIC=1 go test -v -run TestLivePublic .   # real public servers (internet)
+go test -race -run 'TestMatrix|TestRender|TestFlatten|TestEventLimit' .   # connection matrix, offline
+MCP_LIVE_PUBLIC=1 go test -v -run TestLivePublic .                          # real public servers (internet)
+MCP_INTEROP=1 go test -v -run TestInterop .                                 # the reference server over npx
 ```
-
-Without `MCP_FLAWS=1` the flaw tests are skipped with their id, so `make check`
-stays green and the flaw stays visible in `go test -v`.
 
 ## Verdict: does it connect?
 
@@ -45,7 +44,18 @@ that does.
 Test `TestFlawF1`: server offers 5 tools in pages of 2; the host sees 2. No log
 line, no notice. (By reading the code, `find_tools` searches only tools the
 daemon already listed, so these should be unreachable there too; not tested.)
-Fix: loop on `NextCursor` (or use `session.Tools`), with an upper bound on pages.
+
+**FIXED** (`0e0aabb`). The loop is ours, not `session.Tools`: that SDK iterator follows
+cursors with no limit, so a server answering every page with another cursor would keep
+it going for ever. It stops at 20 pages, 1000 tools or 8 MiB of listed text, on a
+repeated cursor, or when a later page fails; names repeated across pages keep the
+first. A list that stops short is **kept and reported** (`ErrToolListIncomplete`): the
+Registry offers the tools and carries the error in `ListOutcome`, and the server's
+status row stays running with the shortfall in `ToolsError`. Tests:
+`TestMatrixPagedToolListIsFollowed`, `...EndlessCursorsStopAtThePageLimit`,
+`...RepeatedCursorStopsTheList`, `...ToolCountIsBounded`, `...LaterPageFailureKeepsEarlierTools`,
+`...DuplicateToolNamesAcrossPagesAreOne`, `...RegistryKeepsAnIncompleteList`,
+`TestListedOutcomesBecomeServerStates`.
 
 ### F2 (low to medium): a result with only `structuredContent` reaches the model as ""
 `callSessionTool` returns `flattenContent(res.Content)` and never reads
@@ -56,12 +66,28 @@ so impact depends on the server, but the daemon labels an empty third-party
 result "this call succeeded and returned nothing" (`toolresult.go:243,252`), so the
 model is told a real answer was empty. (An earlier draft said this also feeds stall
 detection; it does not: third-party tools weigh 0 in `stall.go`.)
-Fix: if `Content` is empty and `StructuredContent` is set, render it as JSON.
+
+**FIXED** (`9742724`). When no block carries text for the model, the structured value
+is rendered as JSON, never beside text that is already there (a conforming server sends
+both). It is rendered with HTML escaping off: `json.Marshal` writes `<` as a unicode
+escape that the delimiter defence does not match and the model still reads as a tag.
+Everything goes into `Result.Content`, which is what makes it safe: that one string is
+truncated, scrubbed, delimiter-defused and control-stripped by `renderToolResult`.
+`PreNeutralized` is not touched. Tests: `TestRenderCallResult*`,
+`TestRenderStructuredDoesNotEscapeHTML`, `TestMatrixStructuredAndResourceContentReachTheModel`,
+and `TestForgedEnvelopeTagThroughEveryContentPath` (package `main`), which drives a
+forged closing tag through every content path with a real client.
 
 ### F3 (low to medium): embedded text resources are reported as omitted
 `flattenContent` handles only `*TextContent`. An `EmbeddedResource` carrying text
 becomes `[*mcp.EmbeddedResource content omitted: ...]` although the text is in the
 result. Test `TestFlawF3`. Same fix area as F2. Binary blobs may stay omitted.
+
+**FIXED** (`9742724`, with F2). An embedded text resource is shown under a one-line
+header (address and type cut to 256 bytes, control characters turned into spaces).
+Blobs, images, audio and links stay omitted but are named by kind and by what the
+server said ("image content omitted: ... (image/png, 12 bytes)"), never by a Go type.
+Tests: `TestFlattenContent*`, `TestCapFieldCutsOnACharacterBoundary`.
 
 ### F4 (medium to low): the HTTP message-size bound can be bypassed with newlines
 `messageLimitReader` counts bytes since the last newline. That is exact for stdio
@@ -73,7 +99,15 @@ and the same message with a newline every 1000 bytes is accepted.
 Not measured: how far past the limit it goes, or the memory cost. The bound is
 5x exceeded at least, so the claim "a server cannot make this daemon allocate
 without limit" (comment in `remoteclient.go`) does not hold for remote servers.
-Fix: for HTTP, bound total bytes per response body, not bytes per line.
+
+**FIXED** (`f11b67f`). An HTTP response is bounded by what it is (`httpbound.go`):
+`text/event-stream` per EVENT (an event ends at an empty line, as the SDK's own parser
+ends it, so a message over many `data:` lines is counted whole and a long session of
+small events is never killed); anything else, the whole body. The stdio bound is
+untouched. Tests: `TestMatrixHTTPJSONBodyIsBoundedWhateverItsNewlines`,
+`...SSEEventIsBoundedAcrossItsDataLines`, the negative control
+`...LongSSEStreamOfSmallEventsIsNotKilled` (3000 events, about 3x the limit, succeeds),
+and `TestEventLimitReaderCountsPerEvent` (LF and CRLF).
 
 ### F5 (low to medium): losing a remote session is not classified as "unavailable"
 When a remote server answers a later request with 404 (session forgotten) the
@@ -85,8 +119,19 @@ sentinel is lost from the error chain even where it would be recognised.
 Test `TestFlawF5`. Effect: the loop cannot tell "this server is gone" from "this
 tool failed", so the user may not get the degraded-server notice. The downstream
 effect in the loop was not traced.
-Fix: classify the SDK's session-not-found / failed-to-connect errors as
-unavailable, and reconnect once if the transport allows it.
+
+**FIXED** (`dd8d671`). `isTransportDeath` knows `sdk.ErrSessionMissing` and
+`sdk.ErrConnectionClosed`, and the call and list paths wrap the cause with `%w`. A
+remote client keeps its config and, on a forgotten session, opens **one** new session
+(single-flight) and retries once: a 404 means the server never acted on the request, so
+the retry cannot repeat a side effect. A concurrent caller whose call fails with
+"connection closed" because a neighbour got the 404 is recognised by a per-session
+`lost` flag raised in the guarded transport, before the SDK reacts (found by a test
+that failed under `-race` with 20 concurrent callers). A closed connection **without**
+that flag is not retried (it may be a network drop after the request ran), and a stdio
+server is never reconnected. Tests: `TestMatrixLostSession*`,
+`TestMatrixConcurrentLossOpensOneSession`, `TestMatrixClosedConnectionIsNotRetriedUnlessSessionWasLost`,
+`TestIsTransportDeathRecognisesTheSDKsSentinels`.
 
 ### F6 (medium, evidence is one run): the default connect timeout is shorter than a cold `npx` start
 `DefaultConnectTimeout` is 20 s and the budget default resolves to 0, so 20 s
@@ -97,8 +142,19 @@ first time can therefore see it fail, and succeed on the next try once npm has
 cached the package.
 A per-server `connect_timeout_seconds` exists (cap 120), but nothing sets it for a
 first run. Not tested end to end; one measurement, machine and network dependent.
-Fix: warm start (a longer first-run bound, or retry once on timeout), or say
-"first run can take a minute" in the add flow.
+
+**FIXED** (`2c87b46`), **not re-measured end to end**. `connectTimeout` is the one
+resolver every path uses (a turn, the check, the list/trial deadline): the server's own
+setting, else the budget's, else, for a launcher (`npx uvx bunx pnpx docker`, by program
+name, ignoring a path and a `.exe`/`.cmd`/`.bat` suffix), **90 s**, else 20 s. Plain
+programs and remote servers are unchanged. A launcher that still runs out of time on
+`add` is told it is "still starting" instead of "fix the command". Trade-off: a launcher
+that really hangs now holds its first start for up to 90 s; connects run in parallel and
+neither client times the request out. Tests: `TestConnectTimeout*`,
+`TestEveryPathAgreesOnALaunchersBound`, `TestTimeoutHintNamesTheBoundThatRanOut`,
+`TestAnAddedLauncherThatIsStillDownloadingSaysSoNotFixTheCommand`. What was not done: a
+real cold-cache `npx` add through the daemon, whose confirm prompt is the user's to
+answer.
 
 ### F7 (scope, not a bug): only the tools surface of MCP is used
 No calls for resources, prompts, sampling or roots anywhere in `daemon/`. Servers
@@ -126,6 +182,8 @@ wrapping a live server.
 
 ## Files
 
-- `daemon/mcp/connect_matrix_test.go`: offline connection matrix (passes)
-- `daemon/mcp/connect_flaws_test.go`: F1 to F5 as tests (skipped unless `MCP_FLAWS=1`)
+- `daemon/mcp/connect_matrix_test.go`: offline connection matrix and the regression tests above
+- `daemon/mcp/rawmcp_test.go`: a scriptable bare-JSON/SSE MCP server (expired sessions, scripted pages, padding, event streams)
+- `daemon/mcp/content_render_test.go`, `daemon/mcpforgedcontent_test.go`: what the model is shown, and that no content path can close the envelope
+- `daemon/mcpstatelist_test.go`, `daemon/mcplaunchtimeout_test.go`: status rows for an incomplete list; the launcher bound
 - `daemon/mcp/connect_public_live_test.go`: opt-in live public-server test
