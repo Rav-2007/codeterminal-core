@@ -141,6 +141,10 @@ func TestMatrixUnreachableRemoteIsUnavailable(t *testing.T) {
 	}))
 	t.Cleanup(teapot.Close)
 
+	// The wait given to the handshake. Every case below fails at once -- a
+	// refused connection, a 404, a page that is not MCP -- so what is checked is
+	// that none of them SITS OUT the wait: giving up takes well under it.
+	const handshakeWait = 5 * time.Second
 	for name, url := range map[string]string{
 		"connection refused": closedURL,
 		"404":                notFound.URL,
@@ -150,7 +154,7 @@ func TestMatrixUnreachableRemoteIsUnavailable(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			start := time.Now()
 			c, err := ConnectRemote(context.Background(), RemoteConfig{
-				Name: "dead", URL: url, ConnectTimeout: 5 * time.Second,
+				Name: "dead", URL: url, ConnectTimeout: handshakeWait,
 			})
 			if err == nil {
 				_ = c.Close()
@@ -159,8 +163,8 @@ func TestMatrixUnreachableRemoteIsUnavailable(t *testing.T) {
 			if !errors.Is(err, ErrServerUnavailable) {
 				t.Errorf("error is not ErrServerUnavailable: %v", err)
 			}
-			if d := time.Since(start); d > 8*time.Second {
-				t.Errorf("took %s to give up", d)
+			if d := time.Since(start); d > handshakeWait {
+				t.Errorf("took %s to give up; it waited out the %s handshake", d, handshakeWait)
 			}
 		})
 	}
@@ -316,15 +320,19 @@ func TestMatrixCancelledCallReturns(t *testing.T) {
 	}
 	defer func() { _ = c.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	// The server never answers on its own (it waits for release or for the
+	// call's context), so a call that ends at all ended because of the cancel.
+	// "Promptly" is a multiple of the cancel's own delay, not a clock reading.
+	const cancelAfter = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), cancelAfter)
 	defer cancel()
 	start := time.Now()
 	_, err = c.CallTool(ctx, "stall", nil)
 	if err == nil {
 		t.Fatal("a cancelled call returned a result")
 	}
-	if d := time.Since(start); d > 3*time.Second {
-		t.Errorf("cancel took %s to take effect", d)
+	if d := time.Since(start); d > 10*cancelAfter {
+		t.Errorf("cancel took %s to take effect; it was asked for after %s", d, cancelAfter)
 	}
 }
 

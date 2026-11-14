@@ -91,6 +91,10 @@ func TestLivePublicOAuthServerWithoutSignInFailsFast(t *testing.T) {
 	if os.Getenv("MCP_LIVE_PUBLIC") == "" {
 		t.Skip("set MCP_LIVE_PUBLIC=1 to connect to real public MCP servers")
 	}
+	// What the handshake is given. A server that wants a sign-in says so on the
+	// first request, so refusing takes a fraction of this; the check is that it
+	// does not run it out.
+	const signInProbeWait = 20 * time.Second
 	for name, url := range map[string]string{
 		"notion": "https://mcp.notion.com/mcp",
 		"sentry": "https://mcp.sentry.dev/mcp",
@@ -98,7 +102,7 @@ func TestLivePublicOAuthServerWithoutSignInFailsFast(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			start := time.Now()
 			c, err := ConnectRemote(context.Background(), RemoteConfig{
-				Name: name, URL: url, ConnectTimeout: 20 * time.Second,
+				Name: name, URL: url, ConnectTimeout: signInProbeWait,
 			})
 			if err == nil {
 				_ = c.Close()
@@ -108,8 +112,8 @@ func TestLivePublicOAuthServerWithoutSignInFailsFast(t *testing.T) {
 				t.Errorf("error is not ErrServerUnavailable: %v", err)
 			}
 			t.Logf("refused in %s: %v", time.Since(start).Round(time.Millisecond), err)
-			if time.Since(start) > 25*time.Second {
-				t.Errorf("took too long to give up")
+			if time.Since(start) > signInProbeWait {
+				t.Errorf("waited out the whole %s handshake instead of refusing at the first answer", signInProbeWait)
 			}
 		})
 	}
