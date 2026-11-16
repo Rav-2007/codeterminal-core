@@ -351,7 +351,10 @@ func TestAServerDyingMidCallIsReportedAsAnUnavailableServer(t *testing.T) {
 	if failed == nil {
 		t.Fatal("no failed tool activity was reported for a server that exited mid-call")
 	}
-	if !strings.Contains(failed.Detail, "server is unavailable") {
+	// The loop's words come from the error (mcpfailure.go): the call the server
+	// died under is "stopped while running", and says whether it came back. This
+	// mode exits on every call, so the one restart is used by the next one.
+	if !strings.Contains(failed.Detail, "stopped while running the tool") {
 		t.Errorf("the user and the model were told %q. A dead server is not the same fact as a "+
 			"failed tool, and only one of the two is worth retrying", failed.Detail)
 	}

@@ -214,8 +214,14 @@ func TestMatrixResultFlattening(t *testing.T) {
 	if err != nil || !got.IsError || got.Content != "bad input" {
 		t.Errorf("tool-level error: %+v, %v", got, err)
 	}
-	if _, err = c.CallTool(context.Background(), "no_such_tool", nil); err == nil {
-		t.Error("calling a tool the server does not have must fail")
+	// A tool the server does not have is refused at the protocol level. That is
+	// still a failure -- and now one the model can read: the server's own code and
+	// message come back as a failed result (session.go protocolErrorResult), where
+	// they used to be dropped.
+	got, err = c.CallTool(context.Background(), "no_such_tool", nil)
+	if err != nil || !got.IsError || !strings.Contains(got.Content, "protocol error (code -32602)") ||
+		!strings.Contains(got.Content, "no_such_tool") {
+		t.Errorf("calling a tool the server does not have must fail, with the server's reason: %+v, %v", got, err)
 	}
 }
 

@@ -16,6 +16,10 @@
 //   - PROTOCOL-VIOLATING (hang-initialize): hand-rolled stdio, because the SDK
 //     will not let a server misbehave at the handshake and that is exactly the
 //     case worth testing.
+//   - SCRIPTED (scripted): hand-rolled stdio too, because the tests of a failed
+//     call need to control the exact bytes of a reply -- an id after a huge
+//     result, a JSON-RPC error, a process that dies once and not again -- and
+//     the SDK's server does not let a handler do any of those.
 //
 // Under testdata/ so `go build ./...`, vet and the coverage ratchet ignore it,
 // the same treatment echoserver and agentbench get. The tests build it by
@@ -23,7 +27,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -58,6 +64,10 @@ func main() {
 
 	if mode == "hang-initialize" {
 		hangInitialize()
+		return
+	}
+	if mode == "scripted" {
+		scripted()
 		return
 	}
 
@@ -341,4 +351,120 @@ func addEvilDescription(s *mcp.Server) {
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ran"}}}, nil, nil
 	})
+}
+
+// scripted is a small hand-rolled stdio server for the tests of what happens
+// when ONE call goes wrong. Its tools:
+//
+//	small                 a short answer, with this process's pid
+//	pid                   the pid alone
+//	read      {bytes}     bytes of text, the reply written the way the TypeScript SDK
+//	                      writes it -- {"result":...,"jsonrpc":"2.0","id":N}, the id LAST
+//	readfirst {bytes}     the same, with the id first
+//	garbage   {bytes}     bytes of a line that is not a JSON-RPC message at all
+//	chatty    {bytes}     a notification of that size, then a short answer
+//	die                   exits the process while the call is in flight; with
+//	                      BADSERVER_DIE_ONCE_FILE set it only does so when that file
+//	                      does not exist yet (and creates it), so a restarted
+//	                      process survives
+//	rpcerror              a JSON-RPC error: code -32602, a message naming the path
+//	rpcerrorlong          the same with a 5000 character message
+//
+// BADSERVER_HANG_LIST_ON_RESTART, if set, makes a process started after the
+// die-once marker exists answer initialize but never tools/list.
+//
+// BADSERVER_START_LOG, if set, gets one line appended per process start, so a
+// test can count how many times the server was started.
+func scripted() {
+	if path := os.Getenv("BADSERVER_START_LOG"); path != "" {
+		if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			_, _ = fmt.Fprintf(f, "start pid=%d\n", os.Getpid())
+			_ = f.Close()
+		}
+	}
+	in := bufio.NewReaderSize(os.Stdin, 1<<20)
+	out := bufio.NewWriterSize(os.Stdout, 1<<20)
+	send := func(line string) {
+		_, _ = out.WriteString(line)
+		_ = out.WriteByte('\n')
+		_ = out.Flush()
+	}
+	text := func(s string) string {
+		b, _ := json.Marshal(map[string]any{"content": []map[string]string{{"type": "text", "text": s}}})
+		return string(b)
+	}
+	for {
+		line, err := in.ReadBytes('\n')
+		if len(strings.TrimSpace(string(line))) > 0 {
+			var req struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+				Params struct {
+					ProtocolVersion string `json:"protocolVersion"`
+					Name            string `json:"name"`
+					Arguments       struct {
+						Bytes int `json:"bytes"`
+					} `json:"arguments"`
+				} `json:"params"`
+			}
+			if json.Unmarshal(line, &req) == nil && len(req.ID) > 0 {
+				id := string(req.ID)
+				switch req.Method {
+				case "initialize":
+					send(`{"jsonrpc":"2.0","id":` + id + `,"result":{"protocolVersion":` + strconv.Quote(req.Params.ProtocolVersion) +
+						`,"capabilities":{"tools":{}},"serverInfo":{"name":"scripted","version":"v0"}}}`)
+				case "tools/list":
+					// A restarted process (the die-once marker exists) that never lists.
+					if os.Getenv("BADSERVER_HANG_LIST_ON_RESTART") != "" {
+						if _, statErr := os.Stat(os.Getenv("BADSERVER_DIE_ONCE_FILE")); statErr == nil {
+							select {}
+						}
+					}
+					var tools []string
+					for _, n := range []string{"small", "pid", "read", "readfirst", "garbage", "chatty", "die", "rpcerror", "rpcerrorlong"} {
+						tools = append(tools, `{"name":"`+n+`","description":"scripted `+n+`","inputSchema":{"type":"object"}}`)
+					}
+					send(`{"jsonrpc":"2.0","id":` + id + `,"result":{"tools":[` + strings.Join(tools, ",") + `]}}`)
+				case "tools/call":
+					n := req.Params.Arguments.Bytes
+					switch req.Params.Name {
+					case "small":
+						send(`{"jsonrpc":"2.0","id":` + id + `,"result":` + text(fmt.Sprintf("small from pid %d", os.Getpid())) + `}`)
+					case "pid":
+						send(`{"jsonrpc":"2.0","id":` + id + `,"result":` + text(strconv.Itoa(os.Getpid())) + `}`)
+					case "read":
+						send(`{"result":` + text(strings.Repeat("R", n)) + `,"jsonrpc":"2.0","id":` + id + `}`)
+					case "readfirst":
+						send(`{"jsonrpc":"2.0","id":` + id + `,"result":` + text(strings.Repeat("R", n)) + `}`)
+					case "garbage":
+						send(strings.Repeat("G", n))
+					case "chatty":
+						send(`{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"` + strings.Repeat("n", n) + `"}}`)
+						send(`{"jsonrpc":"2.0","id":` + id + `,"result":` + text("after the noise") + `}`)
+					case "die":
+						marker := os.Getenv("BADSERVER_DIE_ONCE_FILE")
+						if marker == "" {
+							os.Exit(3)
+						}
+						if _, statErr := os.Stat(marker); statErr != nil {
+							_ = os.WriteFile(marker, []byte("died"), 0o600)
+							os.Exit(3)
+						}
+						send(`{"jsonrpc":"2.0","id":` + id + `,"result":` + text("survived: this is a restarted process") + `}`)
+					case "rpcerror":
+						send(`{"jsonrpc":"2.0","id":` + id + `,"error":{"code":-32602,"message":"Invalid params: path /etc/shadow is outside the allowed directories"}}`)
+					case "rpcerrorlong":
+						send(`{"jsonrpc":"2.0","id":` + id + `,"error":{"code":-32603,"message":"` + strings.Repeat("e", 5000) + `"}}`)
+					default:
+						send(`{"jsonrpc":"2.0","id":` + id + `,"error":{"code":-32602,"message":"unknown tool"}}`)
+					}
+				default:
+					send(`{"jsonrpc":"2.0","id":` + id + `,"result":{}}`)
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }

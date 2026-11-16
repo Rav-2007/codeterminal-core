@@ -243,9 +243,11 @@ func TestFailedEmptyAndFoundResultsAreToldApart(t *testing.T) {
 		{"projects found", func(json.RawMessage) (mcp.Result, error) {
 			return mcp.Result{Content: `[{"id":"` + testRef + `"}]`}, nil
 		}, testRef, []string{"FAILED", "returned nothing"}},
+		// Said as an unavailable server (mcpfailure.go), by name, and as a tool that
+		// is there -- never as one that is missing or as an empty answer.
 		{"server unreachable", func(json.RawMessage) (mcp.Result, error) {
 			return mcp.Result{}, errors.Join(mcp.ErrServerUnavailable, errors.New("EOF"))
-		}, "the tool's server is unavailable", []string{"returned nothing"}},
+		}, `the server \"supabase\" is unavailable`, []string{"returned nothing", "no tool called"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base, _, bodies := agentUpstream(t,

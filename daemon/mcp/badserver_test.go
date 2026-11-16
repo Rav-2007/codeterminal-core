@@ -190,12 +190,18 @@ func TestAFloodedToolListIsRefusedBeforeItIsAllocated(t *testing.T) {
 	}
 }
 
-// M1b -- an over-long tool result is refused at the transport.
+// M1b -- an over-long tool result is refused at the transport, and costs that
+// call, not the server.
 //
 // renderToolResult's cap (32 KiB by default) is real and correct, and it is
 // applied to a string already resident: it bounds what leaves the machine, not
 // what the machine had to hold to send it. Those are different properties and
 // only one of them was enforced.
+//
+// THE BOUND IS ON ALLOCATION and is checked as such (peak heap), and the
+// refusal is checked to be a refusal OF THE CALL: it used to end the connection,
+// so a single large read lost the server for the rest of the turn. The same
+// connection must serve the next call.
 func TestAFloodedToolResultIsRefused(t *testing.T) {
 	if testing.Short() {
 		t.Skip("allocates several MiB by design")
@@ -205,18 +211,46 @@ func TestAFloodedToolResultIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
+	proc := currentProc(client)
 
+	// GROWTH over what the process already held, not the absolute heap: the
+	// test binary's own earlier tests leave a baseline of several MiB, which made
+	// an absolute ceiling pass or fail by what ran before (found under -count).
+	var base runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&base)
+	stopPeak := samplePeakHeap()
 	res, err := client.CallTool(context.Background(), "firehose", nil)
-	t.Logf("M1b: a %d MiB tool result against a %d byte message limit: err=%v, content=%d bytes",
-		mib, DefaultMaxMessageBytes, err, len(res.Content))
+	peakHeap := stopPeak()
+	var grew uint64
+	if peakHeap > base.HeapAlloc {
+		grew = peakHeap - base.HeapAlloc
+	}
+	t.Logf("M1b: a %d MiB tool result against a %d byte message limit: err=%v, content=%d bytes, heap grew by %d bytes",
+		mib, DefaultMaxMessageBytes, err, len(res.Content), grew)
 
 	if err == nil {
 		t.Fatalf("a %d MiB result was read in full. max_tool_result_bytes caps what goes to the "+
 			"MODEL (32768 by default) and is applied to a string already resident, so it bounds "+
 			"egress and not memory", mib)
 	}
-	if !errors.Is(err, ErrServerUnavailable) {
-		t.Errorf("an over-long result should degrade the server, not fail in some other way: %v", err)
+	if !errors.Is(err, ErrResultTooLarge) {
+		t.Errorf("an over-long result should fail that call as too large: %v", err)
+	}
+	// 6x the limit. What this separates is bounded from unbounded: an 8 MiB
+	// reply read whole peaked at 101 MB (12x the message, measured before the
+	// limit existed); a reply that is dropped as it arrives holds a line's worth
+	// and its garbage.
+	if ceiling := uint64(6 * DefaultMaxMessageBytes); grew > ceiling {
+		t.Errorf("the heap grew by %d bytes (ceiling %d) while refusing an over-long result; the limit did not "+
+			"bound what was actually allocated", grew, ceiling)
+	}
+	// The connection is intact: the next request on it is answered.
+	if currentProc(client) != proc {
+		t.Error("the connection was replaced after one oversized result")
+	}
+	if tools, err := client.ListTools(context.Background()); err != nil || len(tools) != 1 {
+		t.Errorf("the server was not usable after the oversized result: %d tools, %v", len(tools), err)
 	}
 }
 
