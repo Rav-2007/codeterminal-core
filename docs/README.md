@@ -1,6 +1,6 @@
 # Documentation index
 
-**92 documents: 81 in `docs/`, 3 in `docs/ARCHIVE/`, and 8 at the repository root.**
+**93 documents: 82 in `docs/`, 3 in `docs/ARCHIVE/`, and 8 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
