@@ -20,7 +20,7 @@ permissions:
   contents: write # creating the GitHub Release
 
 env:
-  GO_VERSION: "1.26.10"
+  GO_VERSION: "1.26.11"
 
 jobs:
   # ---------------------------------------------------------------------------
