@@ -1490,7 +1490,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	}
 	// A "/mcp-server add" is waiting for the server's name: this line is the
 	// answer to that question and nothing else (mcpserver.go).
-	if m.pendingMCPAdd != nil {
+	if m.pendingMCPAdd != nil || addKeys.sending {
 		return m.answerMCPAdd(raw)
 	}
 	// A key typed after /connect is refused below, and must not wait in the

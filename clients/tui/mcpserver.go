@@ -295,7 +295,7 @@ func (m chatModel) handleMCPServerCommand(args string) (tea.Model, tea.Cmd) {
 		}
 		// No acknowledgement yet: the daemon stores nothing and answers with
 		// what this server would be able to do (handleMCPResult asks for the name).
-		return m, submitMCP(m.clientName, req)
+		return m.submitMCPAdd(req)
 	case "remove", "rm":
 		if len(words) != 2 {
 			say("mcp-server: remove takes the name of one server.\n\n" + mcpServerUsage)
@@ -406,6 +406,15 @@ func (m chatModel) handleMCPResult(msg mcpResultMsg) (tea.Model, tea.Cmd) {
 	// The list the panel asked for is the panel's, and only the panel's.
 	if msg.req.Action == protocol.MCPActionServers {
 		return m.handleMCPPanelServers(msg)
+	}
+	// The add (or its key) this screen was waiting on is back: the box is
+	// the user's again, and whatever was typed into it meanwhile is dropped
+	// unsent -- it may be the key, typed before its prompt (submitMCPAdd).
+	if addKeys.sending && mcpAddAnswer(msg.req) {
+		addKeys.sending = false
+		m.input.SetValue("")
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.Placeholder = defaultInputPlaceholder
 	}
 	// A question already open in the box -- a name to agree to, a hidden key --
 	// keeps its words in the panel over an answer that arrives meanwhile.
@@ -523,6 +532,62 @@ var addKeys struct {
 	stored  bool     // a value was kept: start the server again once all are answered
 	// checking is the server started again with its keys, until it answers.
 	checking string
+	// sending: an add, or a key for one, is on its way to the daemon and its
+	// answer may open a question in the box. Until it is back nothing typed
+	// is sent to the model (submitMCPAdd). sendingName is the server's name.
+	sending     bool
+	sendingName string
+}
+
+// submitMCPAdd sends an add -- or the line that answers one of its questions --
+// whose answer may open a question in the box: the server's name to agree to,
+// or a hidden key.
+//
+// FOUND 2026-11-17 (custom-MCP test): the add starts the server before its key
+// is asked for, which takes seconds, and the box was ordinary input meanwhile.
+// A key typed in that gap, before its hidden prompt was on screen, went to the
+// model provider as a chat message; a slash command typed then was stored as
+// the key. Asking for the key first is not possible here: which keys are
+// missing is known only once the daemon has the server (a value may be stored
+// already, or passed through from the daemon's environment). So until the
+// answer is back the box is HIDDEN and SENDS NOTHING: enter refuses with one
+// line (refuseWhileAdding), and the answer clears what was typed, unsent.
+func (m chatModel) submitMCPAdd(req protocol.MCPRequest) (tea.Model, tea.Cmd) {
+	addKeys.sending, addKeys.sendingName = true, req.Name
+	m.input.SetValue("")
+	m.input.EchoMode = textinput.EchoPassword
+	m.input.Placeholder = "adding " + sanitizeText(req.Name) + "… wait for its question; nothing typed here is sent"
+	return m, submitMCP(m.clientName, req)
+}
+
+// mcpAddAnswer says whether req is the kind submitMCPAdd sends, so its answer
+// ends the wait.
+func mcpAddAnswer(req protocol.MCPRequest) bool {
+	switch req.Action {
+	case protocol.MCPActionAdd, protocol.MCPActionAddJSON, protocol.MCPActionUpdate, protocol.MCPActionApprove,
+		protocol.MCPActionSetEnv:
+		return req.Name == addKeys.sendingName
+	}
+	return false
+}
+
+// refuseWhileAdding is enter while an add is on its way: nothing is sent, and
+// what was typed is dropped, since it may be the key typed early.
+func (m chatModel) refuseWhileAdding() (tea.Model, tea.Cmd) {
+	m.input.SetValue("")
+	m.sayMCP("Not sent: Mochiii is still adding "+sanitizeText(addKeys.sendingName)+". Wait for its question, and "+
+		"type a key only in its hidden prompt; what you typed was discarded.", false)
+	return m, nil
+}
+
+// looksLikeCommand says whether a line typed into a hidden key prompt is one
+// of this client's commands rather than a value. A value may start with "/"
+// (a path), so only a command this client knows counts.
+func looksLikeCommand(raw string) bool {
+	if _, isModel := parseModelCommand(raw); isModel {
+		return true
+	}
+	return !parseSlash(raw).RawPassthrough || strings.HasPrefix(raw, commandTeam) || strings.HasPrefix(raw, commandTeamShape)
 }
 
 // addKey is one value a just-added server has none for: a variable, or -- for
@@ -662,10 +727,21 @@ func userServerNames(servers []protocol.MCPServerInfo) []string {
 // text back, because the likeliest "anything else" is the user's next question,
 // typed without noticing a confirmation was open.
 func (m chatModel) answerMCPAdd(raw string) (tea.Model, tea.Cmd) {
+	if m.pendingMCPAdd == nil {
+		return m.refuseWhileAdding() // startTurn: an add is on its way, no question is open yet
+	}
 	req := *m.pendingMCPAdd
 	addKey := askingAddKey(req)
 	if raw == "" && !addKey {
 		return m, nil // as before: an empty line answers nothing
+	}
+	// The hidden prompt takes the value and nothing else: a command typed there
+	// is neither stored nor run, and the prompt stays open.
+	if addKey && looksLikeCommand(raw) {
+		m.input.SetValue("")
+		m.sayMCP("That is a command, not the value of "+sanitizeText(addKeys.pending[0].String())+": nothing was stored. "+
+			"Type the value, or press enter on its own to skip it.", false)
+		return m, nil
 	}
 	m.endMCPConfirm()
 	if addKey && raw == "" {
@@ -683,6 +759,9 @@ func (m chatModel) answerMCPAdd(raw string) (tea.Model, tea.Cmd) {
 			what = "the " + req.HeaderName + " header"
 		}
 		m.sayMCP("saving the value of "+sanitizeText(what)+"…", false)
+		if addKey {
+			return m.submitMCPAdd(req) // the next key's prompt opens with the answer
+		}
 		return m, submitMCP(m.clientName, req)
 	}
 	if raw != req.Name {
@@ -698,7 +777,7 @@ func (m chatModel) answerMCPAdd(raw string) (tea.Model, tea.Cmd) {
 	if m.mcpPanel != nil {
 		m.mcpPanel.loading = true
 	}
-	return m, submitMCP(m.clientName, req)
+	return m.submitMCPAdd(req)
 }
 
 // cancelMCPAdd is esc while an add waits for its confirmation.
