@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"mochiii/protocol"
@@ -240,6 +241,17 @@ func callSessionTool(ctx context.Context, session *sdk.ClientSession, server, na
 
 	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: decoded})
 	if err != nil {
+		// THE SERVER ANSWERED, WITH AN ERROR. That is a reply, not a dead
+		// connection, and it carries the one thing that says what to change. Two
+		// kinds: the daemon's own answer for a message it dropped as too large
+		// (frameReader), and whatever the server itself refused with.
+		var werr *jsonrpc.Error
+		if errors.As(err, &werr) && !fromTheConnection(werr.Code) {
+			if werr.Code == codeResultTooLarge {
+				return Result{}, tooLargeFrom(werr, server, name)
+			}
+			return protocolErrorResult(werr), nil
+		}
 		// A SERVER THAT DIED MID-CALL IS AN UNAVAILABLE SERVER, and it must say
 		// so in a way the caller can branch on: the SDK reports a closed stream
 		// as a bare io.EOF wrapped in prose, and passed through unclassified

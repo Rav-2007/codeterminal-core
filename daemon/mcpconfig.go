@@ -508,6 +508,10 @@ type MCPBudgetConfig struct {
 	// daemon hold as much memory as it feels like -- and tools/list is read
 	// before any approval prompt exists, so no consent step stands in front of
 	// it. See mcp.DefaultMaxMessageBytes for the measurement.
+	//
+	// A message over it costs the one call waiting for it, not the server: the
+	// message is dropped unread, the call fails with a "too large" result that
+	// names this limit, and the connection carries on (mcp/framereader.go).
 	MaxMessageBytes int `json:"max_message_bytes,omitempty"`
 
 	// ConnectTimeoutSeconds bounds ONE server's initialize handshake.

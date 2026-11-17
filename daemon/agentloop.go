@@ -1277,11 +1277,10 @@ func (s *Server) dispatchToolCall(
 		// Full detail to the local log; a client-safe summary to the model and
 		// the user. Same split socketSafeError makes, for the same reason.
 		s.logger.Printf("agent: tool %q failed: %v", decision.tool.QualifiedName(), err)
-		detail := "the tool failed to run"
-		if errors.Is(err, mcp.ErrServerUnavailable) {
-			detail = "the tool's server is unavailable"
-		}
-		report(protocol.ToolPhaseFailed, detail, 0, elapsed)
+		// What went wrong, in the words the error itself carries (mcpfailure.go):
+		// the model gets all of it, the row on the user's screen its first line.
+		detail := callFailureText(decision.tool, err)
+		report(protocol.ToolPhaseFailed, toolFailureReason(detail), 0, elapsed)
 		audit.Outcome = auditOutcomeError
 		if run != nil { // TRACE D7: the same split as the detail above
 			run.End(traceToolOutcome(err))
@@ -1544,6 +1543,18 @@ func (s *Server) resolveExecutable(
 	spec, policy, err := lookupForTurn(ctx, registry, qualified) // localhandler.go
 	traceToolRequested(ctx, spec)                                // TRACE D5: spec is the registry's answer, zero when it had none
 	if err != nil {
+		// A tool on a server that is not answering is NOT a tool that does not
+		// exist, and a model told it does not stops using a server that is, at
+		// worst, down for one turn. Said as what it is (mcpfailure.go).
+		if text, down := lookupFailureText(qualified, err); down {
+			s.logger.Printf("agent: %q cannot run: %v", qualified, err)
+			return toolDecision{
+				policy: mcp.PolicyDeny,
+				source: auditDeniedConfig,
+				cause:  denyByNoChannel,
+				reason: text,
+			}
+		}
 		// The model named something that does not exist. Told plainly so it can
 		// pick a real tool rather than retry the same wrong name.
 		reason := fmt.Sprintf("there is no tool called %q available in this turn", qualified)

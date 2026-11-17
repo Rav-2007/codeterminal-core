@@ -224,7 +224,7 @@ func TestCloseReapsTheSubprocess(t *testing.T) {
 	}
 
 	client.mu.Lock()
-	pid := client.cmd.Process.Pid
+	pid := client.proc.cmd.Process.Pid
 	client.mu.Unlock()
 	if pid <= 0 {
 		t.Fatal("no process handle after Connect -- we cannot enforce our own teardown")

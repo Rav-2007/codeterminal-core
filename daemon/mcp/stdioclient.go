@@ -1,9 +1,9 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -59,6 +60,10 @@ const (
 	// a server and typed one prompt has already taken it, having authorised
 	// nothing.
 	//
+	// A message over the limit is dropped, not read (frameReader): the call that
+	// was waiting for it fails with ResultTooLargeError and the connection
+	// stays up.
+	//
 	// 2 MiB is twice maxMaxToolResultBytes -- the largest single result the
 	// daemon will ever forward -- which leaves room for JSON envelope and
 	// escaping while keeping the worst case around 25 MB of heap rather than
@@ -66,20 +71,51 @@ const (
 	DefaultMaxMessageBytes = 2 * 1024 * 1024
 )
 
+// maxStdioRestarts is how many times one StdioClient starts its server again.
+// A client lives for one agent turn, so this is "once per turn": a server that
+// dies a second time in the same turn is left down.
+const maxStdioRestarts = 1
+
+// stdioEndedGrace is how long a call that failed like a dead connection waits
+// for the SDK to confirm the connection has ended before it is treated as an
+// ordinary failure. The confirmation follows the end of the stream by a few
+// microseconds; this only bounds a wrong guess.
+const stdioEndedGrace = 2 * time.Second
+
 // StdioClient is a Lane B MCP server: a subprocess spoken to over stdio.
+//
+// IT STARTS THE PROCESS AGAIN, ONCE, if it dies (see replace): a server that
+// exits while a call is in flight fails that call and is then started anew, so
+// the calls after it can work. A call is never repeated on the new process: the
+// server may have acted before it died, and doing it twice could repeat a side
+// effect. A second death leaves the server down.
 type StdioClient struct {
 	name string
 	logf func(format string, args ...any)
 
-	mu      sync.Mutex
+	// cfg and parent are what a restart needs: the same command, environment and
+	// limits, and a context that ends when the turn's does.
+	cfg    LaunchConfig
+	parent context.Context
+
+	mu       sync.Mutex
+	proc     *stdioProc // nil when closed, or when the server is down
+	closed   bool
+	restarts int    // restarts used so far, at most maxStdioRestarts
+	down     string // why the server was left down, in words for the model; "" while it is up
+}
+
+// stdioProc is one running instance of the server.
+type stdioProc struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	session *sdk.ClientSession
-	closed  bool
-
 	// group contains the server's whole process TREE, not just its process.
 	// See procgroup.go for what that stops and why the two backends differ.
 	group processGroup
+	// ended is closed when the SDK reports the connection over: the process
+	// closed its output, or Close was called.
+	ended chan struct{}
 }
 
 // logf is nil-safe: a client built without a logger discards its diagnostics
@@ -157,7 +193,17 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	if strings.TrimSpace(cfg.Command) == "" {
 		return nil, fmt.Errorf("server %s has no command to run", cfg.Name)
 	}
+	p, err := startProc(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &StdioClient{name: cfg.Name, logf: cfg.Logf, cfg: cfg, parent: ctx, proc: p}, nil
+}
 
+// startProc starts one instance of the server and completes the handshake. It
+// is the whole of launching, kept apart from Connect's validation so that a
+// restart can repeat it without repeating the checks.
+func startProc(ctx context.Context, cfg LaunchConfig) (*stdioProc, error) {
 	execCmd, execArgs, err := WrapCommand(cfg.Command, cfg.Args, cfg.Sandbox)
 	if err != nil {
 		return nil, fmt.Errorf("server %s sandbox preparation error: %w", cfg.Name, err)
@@ -178,7 +224,7 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	// only match shapes, mangling the assistant's own key-format examples while
 	// still missing the credential that does not look like one.
 	//
-	// Every launch goes through Connect, so a new call site cannot skip it.
+	// Every launch goes through startProc, so a new call site cannot skip it.
 	cmd.Stderr = newRedactingStderr(cfg.Stderr, cmd.Env, cfg.EnvAllow)
 
 	// ITS OWN PROCESS TREE CONTAINER, so teardown can reach what it spawned.
@@ -190,8 +236,8 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	// The mechanism is per-platform (process group on POSIX, Job Object on
 	// Windows) and lives in procgroup.go, which also explains why adopt below
 	// is a separate step rather than folded in here.
-	var group processGroup
-	group.prepare(cmd)
+	p := &stdioProc{cmd: cmd, ended: make(chan struct{})}
+	p.group.prepare(cmd)
 
 	// THE PIPES ARE OURS, WHICH IS THE WHOLE POINT OF NOT USING
 	// sdk.CommandTransport HERE.
@@ -203,7 +249,7 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	// subprocess can make this daemon allocate. It also puts cmd.Start on this
 	// side of the call, which is what lets the process group be set (see Close).
 	//
-	// The trade is that reaping the process is now ours too. Close does it.
+	// The trade is that reaping the process is now ours too. stop does it.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("%w: server %s: %v", ErrServerUnavailable, cfg.Name, err)
@@ -213,17 +259,18 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 		return nil, fmt.Errorf("%w: server %s: %v", ErrServerUnavailable, cfg.Name, err)
 	}
 	if err := cmd.Start(); err != nil {
-		group.release()
+		p.group.release()
 		return nil, fmt.Errorf("%w: server %s failed to start: %v", ErrServerUnavailable, cfg.Name, err)
 	}
+	p.stdin = stdin
 	// Finish containing the tree. A failure here is fatal rather than
 	// survivable: running an unconfined third-party subprocess whose
 	// descendants cannot be reaped is precisely the state M4 was filed about,
 	// and a working server is not worth it.
-	if err := group.adopt(cmd); err != nil {
+	if err := p.group.adopt(cmd); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		group.release()
+		p.group.release()
 		return nil, fmt.Errorf("%w: server %s failed to start: %v", ErrServerUnavailable, cfg.Name, err)
 	}
 
@@ -231,7 +278,7 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	if limit <= 0 {
 		limit = DefaultMaxMessageBytes
 	}
-	bounded := &messageLimitReader{r: stdout, max: limit, server: cfg.Name}
+	bounded := newFrameReader(stdout, limit, cfg.Name, cfg.Logf)
 
 	client := sdk.NewClient(&sdk.Implementation{
 		Name:    "mochiii",
@@ -245,96 +292,151 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	connectCtx, cancel := context.WithTimeout(ctx, handshake)
 	defer cancel()
 
-	c := &StdioClient{name: cfg.Name, logf: cfg.Logf, cmd: cmd, stdin: stdin, group: group}
-
 	session, err := client.Connect(connectCtx,
 		&sdk.IOTransport{Reader: io.NopCloser(bounded), Writer: stdin}, nil)
 	if err != nil {
 		// The process is already running at this point, so a failed handshake
-		// must not leave it behind. Close is idempotent and does the reaping.
-		_ = c.Close()
+		// must not leave it behind. stop is what does the reaping.
+		_ = p.stop(cfg.Name)
 		return nil, fmt.Errorf("%w: server %s failed to start: %v", ErrServerUnavailable, cfg.Name, err)
 	}
+	p.session = session
+	go func() {
+		_ = session.Wait()
+		close(p.ended)
+	}()
+	return p, nil
+}
 
+// current is the live process, or why there is none.
+func (c *StdioClient) current(tool string) (*stdioProc, error) {
 	c.mu.Lock()
-	c.session = session
-	c.mu.Unlock()
-	return c, nil
-}
-
-// messageLimitReader fails the stream when a SINGLE newline-delimited message
-// exceeds max bytes.
-//
-// PER MESSAGE, NOT PER STREAM, and the distinction is the whole design. An
-// io.LimitReader over the connection would cap the total bytes a server may
-// ever send, which would kill a long and perfectly well-behaved session after
-// enough legitimate traffic. What needs bounding is one allocation: the SDK
-// decodes each message into a single json.RawMessage, so the size of one
-// message is the size of one buffer.
-//
-// Counting from the last newline is exact rather than approximate here: the
-// transport is newline-delimited JSON by definition (both IOTransport and
-// StdioTransport say so), so bytes-since-newline IS the length of the message
-// being accumulated.
-//
-// Once tripped it stays tripped. A stream that has already produced an
-// over-long message is not one to keep reading from hoping for a short one.
-type messageLimitReader struct {
-	r       io.Reader
-	max     int
-	server  string
-	sinceNL int
-	tripped bool
-}
-
-func (l *messageLimitReader) Read(p []byte) (int, error) {
-	if l.tripped {
-		return 0, l.err()
+	defer c.mu.Unlock()
+	switch {
+	case c.closed:
+		return nil, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
+	case c.down != "":
+		return nil, &ServerFailure{Server: c.name, Tool: tool, Why: c.down}
+	case c.proc == nil || c.proc.session == nil:
+		return nil, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
 	}
-	n, err := l.r.Read(p)
-	if n > 0 {
-		if i := bytes.LastIndexByte(p[:n], '\n'); i >= 0 {
-			l.sinceNL = n - i - 1
-		} else {
-			l.sinceNL += n
-		}
-		if l.sinceNL > l.max {
-			l.tripped = true
-			return 0, l.err()
-		}
-	}
-	return n, err
-}
-
-func (l *messageLimitReader) err() error {
-	return fmt.Errorf("%w: server %s sent a single message larger than the %d byte limit; "+
-		"reading it in full is how an unconfined subprocess exhausts this daemon's memory",
-		ErrServerUnavailable, l.server, l.max)
+	return c.proc, nil
 }
 
 // ListTools returns the server's advertised tools, translated into this
 // package's Tool (session.go: the translation every transport shares).
+//
+// A server found dead here -- it exited between calls -- is started again and
+// asked again, once: a listing changes nothing, so asking twice is safe.
 func (c *StdioClient) ListTools(ctx context.Context) ([]Tool, error) {
-	c.mu.Lock()
-	session := c.session
-	closed := c.closed
-	c.mu.Unlock()
-	if closed || session == nil {
-		return nil, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
+	p, err := c.current("")
+	if err != nil {
+		return nil, err
 	}
-	return listSessionTools(ctx, session, c.name, "", c.logfSafe)
+	tools, err := listSessionTools(ctx, p.session, c.name, "", c.logfSafe)
+	if err == nil || errors.Is(err, ErrToolListIncomplete) || ctx.Err() != nil || !p.diedWith(err) {
+		return tools, err
+	}
+	if back, why := c.replace(p); !back {
+		return nil, &ServerFailure{Server: c.name, Why: why}
+	}
+	p, err = c.current("")
+	if err != nil {
+		return nil, err
+	}
+	return listSessionTools(ctx, p.session, c.name, "", c.logfSafe)
 }
 
 // CallTool invokes one tool and flattens its content into text for the model.
+//
+// If the server dies under the call, the call fails with a ServerFailure and the
+// server is started again if the turn's one restart is still unused. The call is
+// not retried.
 func (c *StdioClient) CallTool(ctx context.Context, name string, args json.RawMessage) (Result, error) {
-	c.mu.Lock()
-	session := c.session
-	closed := c.closed
-	c.mu.Unlock()
-	if closed || session == nil {
-		return Result{}, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
+	p, err := c.current(name)
+	if err != nil {
+		return Result{}, err
 	}
-	return callSessionTool(ctx, session, c.name, name, args)
+	res, err := callSessionTool(ctx, p.session, c.name, name, args)
+	if err == nil || ctx.Err() != nil || !p.diedWith(err) {
+		return res, err
+	}
+	back, why := c.replace(p)
+	return Result{}, &ServerFailure{Server: c.name, Tool: name, Stopped: true, Back: back, Why: why}
+}
+
+// diedWith reports whether err means this process's connection is over, as
+// distinct from a call that failed on a server that is still there. An error the
+// server itself answered with never is one; a connection-shaped error is, once
+// the SDK confirms the connection ended (fromTheConnection: the SDK's own codes).
+func (p *stdioProc) diedWith(err error) bool {
+	var werr *jsonrpc.Error
+	if errors.As(err, &werr) {
+		if !fromTheConnection(werr.Code) {
+			return false
+		}
+	} else if !isTransportDeath(err) {
+		return false
+	}
+	select {
+	case <-p.ended:
+		return true
+	case <-time.After(stdioEndedGrace):
+		return false
+	}
+}
+
+// replace deals with a process found dead: it is reaped, and -- if the turn's
+// restart is unused -- a new one is started and asked for its tools. back says
+// the server answers again; when it does not, why is the reason it stays down,
+// and every later call is refused with it.
+//
+// Single-flight, by comparing p with the current process: calls that were all in
+// flight when the server died come here together, and the first replaces it; the
+// others find it already replaced and report that.
+func (c *StdioClient) replace(p *stdioProc) (back bool, why string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return false, whyNotRestarted
+	}
+	if c.proc != p {
+		return c.down == "", c.down
+	}
+	c.proc = nil
+	if err := p.stop(c.name); err != nil {
+		c.logfSafe("mcp: reaping server %s after it stopped: %v", c.name, err)
+	}
+	if c.restarts >= maxStdioRestarts {
+		c.down = whySecondStop
+		c.logfSafe("mcp: server %s stopped again; it was already restarted once this turn, so it stays down", c.name)
+		return false, c.down
+	}
+	c.restarts++
+	np, err := startProc(c.parent, c.cfg)
+	if err != nil {
+		c.down = whyNotRestarted
+		c.logfSafe("mcp: server %s stopped and could not be restarted: %v", c.name, err)
+		return false, c.down
+	}
+	// Ask it for its tools: a server that starts and cannot list is not back.
+	// Bounded by the same time a first start is.
+	wait := c.cfg.ConnectTimeout
+	if wait <= 0 {
+		wait = DefaultConnectTimeout
+	}
+	lctx, cancel := context.WithTimeout(c.parent, wait)
+	_, lerr := listSessionTools(lctx, np.session, c.name, "", c.logfSafe)
+	cancel()
+	if lerr != nil && !errors.Is(lerr, ErrToolListIncomplete) {
+		_ = np.stop(c.name)
+		c.down = whyNoToolListing
+		c.logfSafe("mcp: server %s was restarted but did not list its tools: %v", c.name, lerr)
+		return false, c.down
+	}
+	c.proc = np
+	c.logfSafe("mcp: server %s stopped and was restarted (restart %d of %d this turn)", c.name, c.restarts, maxStdioRestarts)
+	return true, ""
 }
 
 // Close shuts the server down and confirms it is gone.
@@ -347,7 +449,7 @@ func (c *StdioClient) CallTool(ctx context.Context, name string, args json.RawMe
 // allow. So Close mirrors helperproc.go's Stop: ask, wait a bounded grace, then
 // make certain.
 //
-// Since Connect owns cmd.Start, Close owns the reaping: it closes stdin (the
+// Since startProc owns cmd.Start, stop owns the reaping: it closes stdin (the
 // spec's shutdown sequence), waits, escalates, and calls Wait so the child does
 // not stay a zombie. Nothing else calls Wait, so this is the only place it can
 // happen.
@@ -360,19 +462,27 @@ func (c *StdioClient) Close() error {
 		return nil
 	}
 	c.closed = true
-	session, cmd, stdin := c.session, c.cmd, c.stdin
-	c.session, c.cmd, c.stdin = nil, nil, nil
+	p := c.proc
+	c.proc = nil
 	c.mu.Unlock()
+	if p == nil {
+		return nil
+	}
+	return p.stop(c.name)
+}
 
+// stop ends one process and its tree, and waits until it is gone.
+func (p *stdioProc) stop(name string) error {
 	var closeErr error
-	if session != nil {
-		closeErr = session.Close()
+	if p.session != nil {
+		closeErr = p.session.Close()
 	}
 	// "The client SHOULD initiate shutdown by first closing the input stream to
 	// the child process" -- and a well-behaved server exits on that alone.
-	if stdin != nil {
-		_ = stdin.Close()
+	if p.stdin != nil {
+		_ = p.stdin.Close()
 	}
+	cmd := p.cmd
 	if cmd == nil || cmd.Process == nil {
 		return closeErr
 	}
@@ -401,13 +511,13 @@ func (c *StdioClient) Close() error {
 		// kill is not negotiable with a process that ignored that.
 		killProcess(pid)
 		if !waitGone(pid, stopGrace) {
-			c.group.killAll(pid)
-			c.group.release()
-			return fmt.Errorf("mcp server %s (pid %d) survived being killed", c.name, pid)
+			p.group.killAll(pid)
+			p.group.release()
+			return fmt.Errorf("mcp server %s (pid %d) survived being killed", name, pid)
 		}
 	}
-	c.group.killAll(pid)
-	c.group.release()
+	p.group.killAll(pid)
+	p.group.release()
 	<-waited
 	return closeErr
 }

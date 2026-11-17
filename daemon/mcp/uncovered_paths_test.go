@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -241,17 +242,20 @@ func TestAdvertisedOmitsDeniedTools(t *testing.T) {
 
 var errTestListing = errors.New("listing failed")
 
-// A message-limit reader that has already tripped stays tripped: once a server
-// has overrun the cap, every later read reports the same refusal instead of
-// resuming mid-message.
-func TestMessageLimitReaderStaysTrippedOnceItHas(t *testing.T) {
-	l := &messageLimitReader{r: strings.NewReader("anything"), max: 4, server: "s", tripped: true}
-	n, err := l.Read(make([]byte, 8))
+// A frame reader that has given up on a message it could not answer stays
+// given up: every later read reports the same refusal instead of resuming
+// mid-stream. (The tests of what it does answer are in serverfailure_test.go.)
+func TestFrameReaderStaysFailedOnceItHas(t *testing.T) {
+	fr := newFrameReader(strings.NewReader(strings.Repeat("G", 64)+"\nmore\n"), 4, "s", nil)
+	if _, err := io.ReadAll(fr); err == nil {
+		t.Fatal("an oversized line that is not a message was passed on")
+	}
+	n, err := fr.Read(make([]byte, 8))
 	if n != 0 || err == nil {
-		t.Errorf("a tripped reader returned (%d, %v), want (0, error)", n, err)
+		t.Errorf("a failed reader returned (%d, %v), want (0, error)", n, err)
 	}
 	// And the error names the server, so the message is actionable.
-	if !strings.Contains(err.Error(), "s") {
+	if !strings.Contains(err.Error(), "server s ") {
 		t.Errorf("the refusal does not name the server: %v", err)
 	}
 }
