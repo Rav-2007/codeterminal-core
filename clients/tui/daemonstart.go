@@ -130,6 +130,13 @@ func daemonAnswers() bool {
 // own install, upgraded underneath it, and it restarts the daemon. A daemon
 // from anywhere else -- VS Code's own copy, another install -- is not its to
 // stop, and it only says which version is answering.
+//
+// A DEV BUILD USED TO COMPARE NOTHING (2026-11-17). A client whose version is
+// "dev" used any running daemon, silently. In a real run a dev build was
+// answered by an installed 1.5.1 daemon and said nothing, so every question
+// was served by 1.5.1 while the person believed they were testing the build in
+// front of them. A dev client now compares what it can -- the file, then the
+// version -- and is silent only where nothing differs that it can see.
 
 // servingKind is what a running daemon is to this client.
 type servingKind int
@@ -140,23 +147,63 @@ const (
 	servingForeign                     // another program's, another version: use it, say so
 )
 
+// devVersion is the version of a build without a release number (version.go).
+const devVersion = "dev"
+
 // classifyServing decides servingKind for a daemon of version serving started
-// from program, seen by a client of version mine running from self. With no
-// version to compare (a "dev" build, or a daemon that does not say) it is
-// usable as it is; a lockfile that names no program, as before 1.2.0, is
-// another install's.
+// from program, seen by a client of version mine running from self. A release
+// client with no version to compare (a daemon that does not say) uses it as it
+// is; a lockfile that names no program, as before 1.2.0, is another install's.
+// A dev client is classifyServingAsDev's.
 func classifyServing(serving, program, mine, self, goos string) servingKind {
-	if serving == "" || mine == "" || mine == "dev" || serving == mine {
+	if mine == devVersion {
+		return classifyServingAsDev(serving, program, self, goos)
+	}
+	if serving == "" || mine == "" || serving == mine {
 		return servingUsable
 	}
 	if program == "" || self == "" {
 		return servingForeign
 	}
-	a, b := filepath.Clean(program), filepath.Clean(self)
-	if a == b || (goos == "windows" && strings.EqualFold(a, b)) {
+	if sameProgram(program, self, goos) {
 		return servingUpgraded
 	}
 	return servingForeign
+}
+
+// classifyServingAsDev is classifyServing for a dev client. It has no release
+// number, so the file decides first:
+//
+//	daemon's file      daemon's version     kind
+//	another file       any, dev included    servingForeign: say so, use it
+//	this file          a release            servingUpgraded: restart onto this build
+//	this file          dev, or none         servingUsable: quietly
+//	not named          a release            servingForeign: say so, use it
+//	not named          dev, or none         servingUsable: quietly
+//
+// A dev daemon from this very file is used quietly although it may be an
+// older dev build: the two report the same version, so nothing tells them
+// apart, and a developer rebuilding in place would otherwise pay a restart on
+// every run.
+func classifyServingAsDev(serving, program, self, goos string) servingKind {
+	named := program != "" && self != ""
+	if named && !sameProgram(program, self, goos) {
+		return servingForeign
+	}
+	if serving == "" || serving == devVersion {
+		return servingUsable
+	}
+	if named {
+		return servingUpgraded
+	}
+	return servingForeign
+}
+
+// sameProgram reports whether two program paths name one file: compared
+// cleaned, and without case on Windows.
+func sameProgram(a, b, goos string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	return a == b || (goos == "windows" && strings.EqualFold(a, b))
 }
 
 // probeServing completes one handshake with the daemon serving this folder and
@@ -186,7 +233,11 @@ func useRunningDaemon(self string, status io.Writer, stop func() error) bool {
 	}
 	switch classifyServing(serving, program, Version, self, runtime.GOOS) {
 	case servingUpgraded:
-		say(status, "Mochiii was upgraded from %s to %s: restarting its background service for this folder.\n", serving, Version)
+		if Version == devVersion {
+			say(status, "This dev build replaced Mochiii %s: restarting its background service for this folder.\n", serving)
+		} else {
+			say(status, "Mochiii was upgraded from %s to %s: restarting its background service for this folder.\n", serving, Version)
+		}
 		if err := stop(); err != nil && !errors.Is(err, errNoDaemonRunning) {
 			say(status, "Could not stop the %s service (%v); carrying on with it.\n", serving, err)
 			return true
