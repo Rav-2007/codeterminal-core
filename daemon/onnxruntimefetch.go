@@ -22,6 +22,12 @@ import (
 // an older one does not.
 const onnxRuntimeVersion = "1.26.0"
 
+// onnxRuntimeCopies is this project's release holding byte-identical copies of
+// Microsoft's archives, tried only when Microsoft's own address fails (FOUND
+// 2026-11-19: github.com/microsoft/onnxruntime answered 404; modelmirror.go).
+// The pins below decide: a copy that is not Microsoft's file is refused.
+const onnxRuntimeCopies = "https://github.com/Rav-2007/codeterminal-core/releases/download/onnxruntime-" + onnxRuntimeVersion + "/"
+
 // onnxRuntimePlatform pins one platform's onnxruntime release archive
 // (verified by downloading and hashing it directly, same as bgeModelAssets)
 // plus where the shared library lives once extracted.
@@ -50,6 +56,7 @@ var onnxRuntimePlatforms = []onnxRuntimePlatform{
 			url:       "https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-x64-1.26.0.tgz",
 			size:      8590023,
 			sha256Hex: "1254da24fb389cf39dc0ff3451ab48301740ffbfcbaf646849df92f80ee92c57",
+			mirrors:   []string{onnxRuntimeCopies + "onnxruntime-linux-x64-1.26.0.tgz"},
 		},
 		libPathInArchive: "onnxruntime-linux-x64-1.26.0/lib/libonnxruntime.so.1.26.0",
 		libFileName:      "libonnxruntime.so",
@@ -65,6 +72,7 @@ var onnxRuntimePlatforms = []onnxRuntimePlatform{
 			url:       "https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-aarch64-1.26.0.tgz",
 			size:      7608947,
 			sha256Hex: "34ff1c2d0f12e2cf3d33a0c5f82e39792e1d581fbd6968fd7c30d173654be01a",
+			mirrors:   []string{onnxRuntimeCopies + "onnxruntime-linux-aarch64-1.26.0.tgz"},
 		},
 		libPathInArchive: "onnxruntime-linux-aarch64-1.26.0/lib/libonnxruntime.so.1.26.0",
 		libFileName:      "libonnxruntime.so",
@@ -77,6 +85,7 @@ var onnxRuntimePlatforms = []onnxRuntimePlatform{
 			url:       "https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-osx-arm64-1.26.0.tgz",
 			size:      31717869,
 			sha256Hex: "7a1280bbb1701ea514f71828765237e7896e0f2e1cd332f1f70dbd5c3e33aca3",
+			mirrors:   []string{onnxRuntimeCopies + "onnxruntime-osx-arm64-1.26.0.tgz"},
 		},
 		libPathInArchive: "onnxruntime-osx-arm64-1.26.0/lib/libonnxruntime.1.26.0.dylib",
 		libFileName:      "libonnxruntime.dylib",

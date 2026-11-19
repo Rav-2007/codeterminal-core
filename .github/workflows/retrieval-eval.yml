@@ -217,6 +217,33 @@ jobs:
         run: go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery|TestEvalGroundTruthResolvesWithoutTheModel' -v ./
         working-directory: daemon
 
+      # THE RUNTIME, FROM WHEREVER IT CAN STILL BE HAD. FOUND 2026-11-19:
+      # github.com/microsoft/onnxruntime answered 404, and the base below -- a
+      # tree from before daemon/modelmirror.go, with no copy to fall back to --
+      # could not build its corpus, so every PR's job went red for something no
+      # PR did. This puts the pinned archive where both evals look for it, from
+      # Microsoft's address or else this project's copy. It is NOT a cache: it is
+      # downloaded fresh every run and must match the pin in
+      # daemon/onnxruntimefetch.go byte for byte, and a verified file there makes
+      # the evals skip their own download. If no source gives the pinned bytes,
+      # nothing is placed and the evals report the failure themselves.
+      - name: ONNX Runtime archive, checked against its pin
+        run: |
+          src=daemon/onnxruntimefetch.go
+          version=$(grep -o 'onnxRuntimeVersion = "[0-9.]*"' "$src" | grep -o '[0-9][0-9.]*')
+          name="onnxruntime-linux-$(uname -m | sed 's/x86_64/x64/')-${version}.tgz"
+          pin=$(grep -A4 "name: *\"$name\"" "$src" | grep -o '[0-9a-f]\{64\}' | head -1)
+          dir="$HOME/.mochiii/models/onnxruntime-${version}"
+          mkdir -p "$dir"
+          for url in "https://github.com/microsoft/onnxruntime/releases/download/v${version}/${name}" \
+                     "https://github.com/${GITHUB_REPOSITORY}/releases/download/onnxruntime-${version}/${name}"; do
+            if curl -fsSL --retry 2 -o "$dir/$name" "$url" && echo "$pin  $dir/$name" | sha256sum -c --status -; then
+              echo "$name from $url matches its pin ($pin)"; exit 0
+            fi
+            echo "$url did not give the pinned $name"; rm -f "$dir/$name"
+          done
+          echo "no source gave the pinned $name; the evals will report it"
+
       # Scoped to the two retrieval-QUALITY evals.
       #
       # TestEvalRetrievalQuality (8 files, 22 chunks) is kept for the fast
