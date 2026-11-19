@@ -98,6 +98,7 @@ var onnxRuntimePlatforms = []onnxRuntimePlatform{
 			url:       "https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-win-x64-1.26.0.zip",
 			size:      75675381,
 			sha256Hex: "6ebe99b5564bf4d029b6e93eac9ff423682b6212eade769e9ca3f685eaf500b4",
+			mirrors:   []string{onnxRuntimeCopies + "onnxruntime-win-x64-1.26.0.zip"},
 		},
 		libPathInArchive: "onnxruntime-win-x64-1.26.0/lib/onnxruntime.dll",
 		libFileName:      "onnxruntime.dll",

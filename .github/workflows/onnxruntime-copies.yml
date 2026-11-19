@@ -1,0 +1,54 @@
+name: onnxruntime copies
+
+# WHY THIS EXISTS. On 2026-11-19 github.com/microsoft/onnxruntime started
+# answering 404, and a new install could not build its code-search index: the
+# ONNX Runtime archive it downloads lived only there. Since then every pinned
+# archive also has a copy on this repository's release onnxruntime-<version>,
+# tried when Microsoft's address fails (daemon/modelmirror.go).
+#
+# A unit test can only see that the code NAMES a copy. This job fetches each
+# copy alone, with the code a first index runs, and checks it against its pin.
+# It goes red when a copy is missing (a version bump whose copies were never
+# uploaded) or is no longer the pinned file. Read-only: it uploads nothing.
+# A new copy is uploaded by hand to the onnxruntime-<version> release, kept a
+# pre-release and never "Latest" (install.sh reads releases/latest), after its
+# size and SHA-256 are checked against the pin.
+
+on:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC
+  pull_request:
+    branches: [main]
+    paths:
+      - daemon/onnxruntimefetch.go
+      - daemon/modelmirror.go
+      - .github/workflows/onnxruntime-copies.yml
+  push:
+    branches: [main]
+    paths:
+      - daemon/onnxruntimefetch.go
+      - daemon/modelmirror.go
+      - .github/workflows/onnxruntime-copies.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.11"
+
+jobs:
+  copies:
+    name: ONNX Runtime copies match their pins
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+      - name: Every copy, fetched alone, is its pinned file
+        env:
+          MOCHIII_CHECK_COPIES: "1"
+        run: go test -count=1 -v -run '^TestEveryONNXRuntimeCopyServesItsPinnedFile$' ./daemon
