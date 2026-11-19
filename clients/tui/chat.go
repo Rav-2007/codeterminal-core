@@ -3061,14 +3061,14 @@ func approvalQuestion(req protocol.ToolApprovalRequest) string {
 			}
 		}
 	}
-	switch {
+	switch own := req.Server == "" || req.Server == "builtin"; { // a server's tool is named below
 	case req.OutsidePath != "":
 		return "Read outside this project: " + sanitizeText(req.OutsidePath) + " ?"
-	case str("command") != "":
+	case own && str("command") != "":
 		return "Run command: " + str("command") + " ?"
-	case req.ReachesNetwork && str("query") != "":
+	case own && req.ReachesNetwork && str("query") != "":
 		return "Search the web for: " + str("query") + " ?"
-	case req.ReachesNetwork && str("url") != "":
+	case own && req.ReachesNetwork && str("url") != "":
 		return "Open web page: " + str("url") + " ?"
 	}
 	// A third-party tool is named WITH its server: which program is being
