@@ -659,8 +659,8 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 				return fmt.Sprintf("%s %s, but it was still starting when the wait ran out: %v. It is saved, and "+
 					"its command is likely fine. %s", done, name, err, hint), notes
 			}
-			return fmt.Sprintf("%s %s, but it did NOT start when tried: %v. It is saved; fix the command "+
-				"(`/mcp-server remove %s`, then add it again) or see the daemon log.", done, name, err, name), notes
+			// In its own words when it left any (mcpfailreason.go): a Node too old is not a wrong command.
+			return failedStartText(done, name, err, s.mcpStates.get(name).detail), notes
 		}
 	}
 	tools, listErrs := registry.Advertised(tctx)

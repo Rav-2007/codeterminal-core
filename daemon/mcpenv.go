@@ -291,19 +291,19 @@ type mcpStateBook struct {
 	mu sync.Mutex
 	// states is keyed by server name.
 	states map[string]mcpServerState
-	// lastLine is the last line each server wrote to stderr: the reason a
-	// server gives when it exits ("Error: X is required") is what a person
-	// needs, and the connect error only says the pipe closed.
-	lastLine map[string]string
+	// lastLine is each server's last stderr lines: the reason a server gives
+	// when it exits ("Error: X is required") is what a person needs, and the
+	// connect error only says the pipe closed (failureReason picks it).
+	lastLine map[string][]string
 }
 
 func (b *mcpStateBook) noteLine(name, line string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.lastLine == nil {
-		b.lastLine = map[string]string{}
+		b.lastLine = map[string][]string{}
 	}
-	b.lastLine[name] = line
+	b.lastLine[name] = appendRecent(b.lastLine[name], line)
 }
 
 // started records a start: err nil is running.
@@ -326,7 +326,7 @@ func (b *mcpStateBook) started(name string, err error) {
 		b.states[name] = mcpServerState{state: protocol.MCPStateNeedsAuth, detail: "it needs you to sign in"}
 		return
 	}
-	detail := b.lastLine[name]
+	detail := failureReason(b.lastLine[name])
 	if detail == "" {
 		detail = err.Error()
 	}
