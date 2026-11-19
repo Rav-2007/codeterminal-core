@@ -422,11 +422,11 @@ func setUpProvider(ctx context.Context, client *http.Client, apiBase, apiKey str
 		return setup
 	}
 
-	// EVERY MODEL THAT ANSWERED AT ALL SAID THE KEY IS BAD. One model saying so
-	// can be about that model -- a provider answers 403 for a model an account
-	// may not use -- which is why one refusal ends nothing. All of them saying
-	// so is about the key...
-	if refusedKey > 0 && refusedKey == setup.Tried {
+	// EVERY MODEL THAT JUDGED THE KEY SAID IT IS BAD. One saying so can be about
+	// that model (403 for a model an account may not use), so one refusal ends
+	// nothing; all of them is about the key. A missing model (404) judges nothing:
+	// NVIDIA said 404 to a junk key, and counting it stored that key (2026-11-19)...
+	if refusedKey > 0 && refusedKey == setup.Tried-setup.Unavailable {
 		// ...UNLESS THE PROVIDER HAS ALREADY SHOWN IT KNOWS THIS KEY. Where the
 		// model list is refused to a made-up key and was served to this one, the
 		// key is real, and the refusals are models this account may not use --
