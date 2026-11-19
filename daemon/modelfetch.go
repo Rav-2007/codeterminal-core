@@ -62,6 +62,10 @@ type modelAsset struct {
 	url       string // full source URL
 	size      int64  // expected size in bytes
 	sha256Hex string // expected sha256, lowercase hex
+	// mirrors are copies of the same bytes, tried in order only when url
+	// fails (modelmirror.go). The size and sha256 above decide, wherever the
+	// bytes came from.
+	mirrors []string
 }
 
 // bgeModelAssets are the exact files required to run BAAI/bge-small-en-v1.5
@@ -133,13 +137,11 @@ func EnsureModelFiles(ctx context.Context, cacheDir string, assets []modelAsset,
 		}
 
 		logger.Printf("model cache: downloading %s (~%s)...", asset.name, humanSize(asset.size))
-		if err := downloadAsset(ctx, path, asset, logger); err != nil {
+		// From its own address, then from each copy (modelmirror.go). A file
+		// that fails verification is removed before the next source is tried,
+		// so a corrupt or mismatched file is never left cached.
+		if err := fetchVerified(ctx, path, asset, logger); err != nil {
 			return "", fmt.Errorf("fetching %s: %w", asset.name, err)
-		}
-
-		if err := verifyAsset(path, asset); err != nil {
-			os.Remove(path) // never leave a corrupt or mismatched file cached
-			return "", fmt.Errorf("verifying %s after download: %w", asset.name, err)
 		}
 		logger.Printf("model cache: %s verified (size + sha256 match)", asset.name)
 	}
