@@ -1,0 +1,49 @@
+# The code that decides what code search finds and what the model receives.
+# A change to any of these is held to the locate eval: retrieval-eval.yml's
+# GATE role measures it against its base, and a net loss blocks the merge.
+# Every other change is measured by the ADVISORY role and blocks nothing.
+# Read by scripts/eval-scope.sh; it is the only copy of this list. An exact
+# path matches that file; `dir/**` matches everything under dir/.
+#
+# Moved here from retrieval-eval.yml's push filter on 2026-11-20. Why each
+# group is here is recorded in that file's history (git log -S on the name).
+
+# What gets indexed, how it is embedded, searched, ranked and cut.
+daemon/chunker.go
+daemon/chunkmerge.go
+daemon/chunkscrub.go
+# What the model RECEIVES: delivery expansion, construct heuristics, the
+# workspace map in the same budget (added 2026-08-30, after a 33 -> 39 change
+# fired nothing).
+daemon/chunkcontext.go
+daemon/chunkexpand.go
+daemon/repomap.go
+daemon/rerank.go
+daemon/embedder.go
+daemon/bge_embedder.go
+daemon/embedderstamp.go
+daemon/context.go
+daemon/retrieval_setup.go
+daemon/vectorstore.go
+daemon/lexicalstore.go
+daemon/search.go
+daemon/fileclass.go
+# defaultK.
+daemon/index_cmd.go
+# defaultContextBudgetChars: the single biggest lever on what the model gets.
+daemon/config.go
+# The embedding helper (tokenizer, sequence cap: every vector), and the
+# daemon's side of it: how each call is batched, deadlined and restarted.
+helper/**
+daemon/helperproc.go
+# The evals, their corpus and their answer key.
+daemon/eval_test.go
+daemon/rerank_eval_test.go
+daemon/evalcorpus_test.go
+testdata/evalset/**
+testdata/queries.json
+# What decides the gate itself.
+.github/workflows/retrieval-eval.yml
+scripts/retrieval-paths.txt
+scripts/eval-scope.sh
+scripts/eval-delta.sh

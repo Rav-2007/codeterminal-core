@@ -106,6 +106,7 @@ release-signing-guard.sh|both|
 release-branch-guard.sh|both|
 release-version-guard.sh|both|
 eval-delta.sh|both|
+eval-scope.sh|both|
 target-parity.sh|both|
 debt-markers.sh|both|
 supply-chain.sh|both|
@@ -163,7 +164,7 @@ vet|local|CI runs `go vet ./...` per module in build.yml's go and cross jobs, wh
 trace-test|both|
 race|local|CI runs `go test -race` per module in build.yml's go job. Same invariant, per-module rather than whole-tree, so the target name never appears in a workflow.
 hookcheck|local|It verifies that this clone's git hooks are installed. There are no hooks on a CI runner and nothing for it to assert there; running it in CI would be a check that cannot fail.
-evalguard|covered|Its one script, eval-delta.sh, runs its self-test in gates.yml's offline gates. The two eval-guard tests it runs inline are asserted directly in gates.yml's `corpus holds no answer key` job, by running the tests rather than the target.
+evalguard|covered|Its two scripts, eval-delta.sh and eval-scope.sh, run their self-tests in gates.yml's offline gates. The two eval-guard tests it runs inline are asserted directly in gates.yml's `corpus holds no answer key` job, by running the tests rather than the target.
 webview|local|It checks the VS Code webview bundle; build.yml's `vscode extension` job builds and tests the extension itself, which subsumes it.
 reach|local|In `make check` and deliberately NOT in CI -- a CI runner's clone has no local branches, so its checks would examine almost nothing. The scripts/reach.sh entry above carries the full reason.
 TARGETS

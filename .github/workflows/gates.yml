@@ -58,6 +58,7 @@ jobs:
           ./scripts/docs-claims.sh --self-test
           ./scripts/go-toolchain-pinned.sh --self-test
           ./scripts/eval-delta.sh --self-test
+          ./scripts/eval-scope.sh --self-test
 
       # THE ONE-LINE INSTALLERS, on every push (2026-10-17). install.sh runs on
       # dash, bash and macOS's sh through `curl | sh`, so it is linted as POSIX
