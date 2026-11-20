@@ -41,6 +41,9 @@ type fakeProvider struct {
 	// silent models accept the request and never send a byte -- what NVIDIA did
 	// for most of the well-known models on its list (measured 2026-10-05).
 	silent map[string]bool
+	// gone models answer 404 to ANY key, before the key is looked at: what NVIDIA
+	// did for one model when sent a 6-character key nobody issued (2026-11-19).
+	gone map[string]bool
 
 	mu   sync.Mutex
 	chat []map[string]any // every chat body received, authenticated or not
@@ -69,6 +72,11 @@ func (f *fakeProvider) start(t *testing.T) *fakeProvider {
 		f.chat = append(f.chat, req)
 		f.mu.Unlock()
 
+		if model, _ := req["model"].(string); f.gone[model] {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"status":404,"title":"Not Found","detail":"Function not found for account"}`)
+			return
+		}
 		if !f.authorized(r) {
 			status := f.badKeyStatus
 			if status == 0 {
@@ -751,6 +759,34 @@ func TestSetUpProviderRefusesAKeyNoModelWillAccept(t *testing.T) {
 	}
 	if got.DefaultModel != "" || got.Models != nil {
 		t.Errorf("a refused key still chose a model: %q", got.DefaultModel)
+	}
+}
+
+// A MODEL THAT IS NOT THERE SAYS NOTHING ABOUT THE KEY. FOUND 2026-11-19: a
+// 6-character fragment typed into the key prompt was tried on 17 NVIDIA models;
+// 16 refused it and one answered 404. 16 != 17, so it was kept as "unverified"
+// and stored over the owner's working key -- while the prompt promised "nothing
+// is stored if the key is refused".
+//
+// Neuter check: compare refusedKey with setup.Tried again in setUpProvider.
+func TestSetUpProviderRefusesAKeyWhenTheOnlyOtherAnswerIsAMissingModel(t *testing.T) {
+	p := (&fakeProvider{models: fakeModels, openModels: true, goodKey: nvidiaKey, badKeyStatus: http.StatusForbidden,
+		gone: map[string]bool{fakeModelFlash: true}}).start(t)
+	knownAs(t, p.url(), nvidiaLike)
+
+	got := setUpProvider(context.Background(), http.DefaultClient, p.url(), "Using", t.Logf)
+	if got.Check.Outcome != verifyRejected {
+		t.Fatalf("outcome = %v (%s), want rejected: every model that judged the key refused it", got.Check.Outcome, got.Check.Detail)
+	}
+	if got.DefaultModel != "" || got.Models != nil {
+		t.Errorf("a refused key still chose a model: %q", got.DefaultModel)
+	}
+
+	// The same provider still keeps a GOOD key when a model is missing: the
+	// missing one is skipped, the next one answers.
+	good := setUpProvider(context.Background(), http.DefaultClient, p.url(), nvidiaKey, t.Logf)
+	if good.Check.Outcome != verifyAccepted {
+		t.Fatalf("good key: outcome = %v (%s), want accepted", good.Check.Outcome, good.Check.Detail)
 	}
 }
 
