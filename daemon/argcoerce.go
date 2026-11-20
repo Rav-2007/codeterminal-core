@@ -119,5 +119,6 @@ func (s *Server) coercedArguments(ctx context.Context, registry *mcp.Registry, c
 			call.Function.Name, n)
 		call.Function.Arguments = fixed
 	}
+	s.scrubLaneBCall(spec, call) // mcpargscrub.go: a secret the model wrote is not shown or sent to a third party
 	return call.Function.Arguments
 }

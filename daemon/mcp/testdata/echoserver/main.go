@@ -8,6 +8,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -179,6 +181,22 @@ func main() {
 		}, func(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("%s has %d bytes", name, len(os.Getenv(name)))}},
+			}, nil, nil
+		})
+	}
+
+	// WHAT THIS SERVER RECEIVED, in a form the daemon's scrub of tool OUTPUT
+	// cannot change on the way back: a digest of the text. An echo cannot prove
+	// a secret was kept from the server, because the reply is scrubbed too.
+	// Offered only when asked for (mcpargscrub_test.go).
+	if len(os.Args) > 1 && os.Args[1] == "--digest" {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "digest",
+			Description: "Return the SHA-256 of the supplied text.",
+		}, func(_ context.Context, _ *mcp.CallToolRequest, args echoArgs) (*mcp.CallToolResult, any, error) {
+			sum := sha256.Sum256([]byte(args.Text))
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "sha256 " + hex.EncodeToString(sum[:])}},
 			}, nil, nil
 		})
 	}
