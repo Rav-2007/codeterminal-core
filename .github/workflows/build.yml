@@ -65,8 +65,13 @@ on:
 # Cancel a run that a newer push to the same ref has already superseded. Pushing
 # three times in a minute should cost one run's minutes, not three -- this repo
 # is private on a free plan, where Actions minutes are a finite monthly budget.
+# A SCHEDULED RUN IS NEVER CANCELLED BY A MERGE (2026-11-20, issue #4). With
+# one group per ref, a push to main cancelled the Monday run on main: lost on
+# 2026-11-02 (a merge six seconds after it started) and 2026-11-09 (four
+# minutes after), every job "cancelled", nothing reported. The event is part of
+# the group, so pushes still supersede pushes and the weekly run stands alone.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 # There is no root Go module -- only go.work -- so `./...` from the repo root

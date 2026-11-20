@@ -42,6 +42,7 @@ exts=""
 enforced_docs=0
 unenforced_refs=0
 unenforced_docs=0
+marked_empty=()
 
 # RESOLVED AGAINST TRACKED FILES, NOT THE WORKING TREE.
 #
@@ -90,7 +91,17 @@ for doc in docs/*.md docs/**/*.md *.md; do
   # The extension must START WITH A LETTER, which is what keeps `10.0.0.1:8080`
   # and `v1.2.3:4` out. Resolution is unchanged: tracked files only.
   refs=$(grep -ohE '`[A-Za-z0-9_./-]+\.[A-Za-z][A-Za-z0-9]*:[0-9]+(-[0-9]+)?`' "$doc" 2>/dev/null | tr -d '`' | sort -u)
-  [ -n "$refs" ] || continue
+  # A MARKED DOCUMENT WITH NO CITATION LEFT used to be skipped here, before the
+  # marker was looked at, and so counted nowhere: reformat a document's
+  # citations and it went dark while this gate kept passing (issue #16). It is
+  # now a third, REPORTED category -- not a failure, which would fail five
+  # documents at birth -- so going dark is visible in the banner.
+  if [ -z "$refs" ]; then
+    if grep -q '<!-- coderefs: enforced -->' "$doc"; then
+      marked_empty+=("$doc")
+    fi
+    continue
+  fi
 
   if ! grep -q '<!-- coderefs: enforced -->' "$doc"; then
     unenforced_docs=$((unenforced_docs + 1))
@@ -158,4 +169,7 @@ echo "docs-coderefs: $checked reference(s) resolve, across $enforced_docs enforc
 # The extension set is DERIVED, so print it: a gate whose scope is invisible is
 # how this one checked only .go for its whole life without anyone noticing.
 echo "docs-coderefs: extensions checked (derived from the citations themselves): ${ext_list:-none}"
+if [ "${#marked_empty[@]}" -gt 0 ]; then
+  echo "docs-coderefs: ${#marked_empty[@]} document(s) carry the enforcement marker and cite nothing this gate reads (reported, not failed): ${marked_empty[*]}"
+fi
 echo "docs-coderefs: NOT checked -- prose, anchors, section numbers, and any citation written without a :line suffix"
