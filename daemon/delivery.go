@@ -43,7 +43,7 @@ func deliverWithinBudget(direct, hits []Chunk, root string, policy expandPolicy,
 			DirectSpans: fused.DirectSpans,
 		}
 	}
-	return packHitsFirst(direct, hits, widenHits(hits, root, policy), policy.WidenFirst, k, budget, scrubDisabled)
+	return packHitsFirst(direct, hits, widenHits(hits, root, policy), gapFiller(root, policy.GapFill), policy.WidenFirst, k, budget, scrubDisabled)
 }
 
 // packHitsFirst spends the budget in a different order from the one-pass
@@ -60,7 +60,7 @@ func deliverWithinBudget(direct, hits []Chunk, root string, policy expandPolicy,
 // Each step is accepted only if the merged result still fits; one that does
 // not is skipped and the next is tried, as truncateToBudget skips rather than
 // stops. The first thing placed is always kept, as there.
-func packHitsFirst(direct, hits []Chunk, wid [][]Chunk, widenFirst, k, budget int, scrubDisabled bool) delivery {
+func packHitsFirst(direct, hits []Chunk, wid [][]Chunk, gaps func(placed []Chunk) [][]Chunk, widenFirst, k, budget int, scrubDisabled bool) delivery {
 	type step struct {
 		chunks []Chunk
 		direct bool
@@ -142,6 +142,11 @@ func packHitsFirst(direct, hits []Chunk, wid [][]Chunk, widenFirst, k, budget in
 		selDirect, selSimilar = nd, ns
 		if st.places >= 0 {
 			placed[st.places] = true
+		}
+	}
+	for _, g := range gaps(selSimilar) { // gapfill.go: last, in what room is left
+		if ns := append(slices.Clone(selSimilar), g...); fits(selDirect, ns) {
+			selSimilar = ns
 		}
 	}
 

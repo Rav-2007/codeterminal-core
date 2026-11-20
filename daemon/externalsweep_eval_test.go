@@ -21,8 +21,16 @@
 // must reproduce TestRerankEvalRetrievalRanking, EVALHELDOUT and EVALEXTERNAL
 // on the same tree.
 //
-//	scripts/fetch-eval-repos.sh
-//	go test -tags eval -count=1 -timeout 150m -v -run TestExternalLeverSweep ./
+//   - 2026-11-20: GAP30, GAP60 and GAP90 (gapfill.go), for locate question 40,
+//     under the rule pre-registered that day. Only those arms and SHIPPED:
+//     MOCHIII_SWEEP_ARMS=GAP below.
+//
+//     scripts/fetch-eval-repos.sh
+//     go test -tags eval -count=1 -timeout 150m -v -run TestExternalLeverSweep ./
+//
+// MOCHIII_SWEEP_ARMS, a comma-separated list of name prefixes, runs SHIPPED and
+// only the arms it names; the cross-encoder is then started only if one of them
+// needs it.
 package main
 
 import (
@@ -42,7 +50,7 @@ type leverArm struct {
 	rank   rankPolicy
 	expand expandPolicy
 	ce     *crossEncoderPolicy // nil: no cross-encoder
-	kind   string              // "lever" (may ship by the rule) or "reranker" (may only be recommended)
+	kind   string              // "lever" or "gap" (may ship by its rule), "reranker" (may only be recommended)
 }
 
 // sweepQuery is one question with everything that does not depend on the arm
@@ -120,7 +128,6 @@ func TestExternalLeverSweep(t *testing.T) {
 		t.Skip("skipping eval test in -short mode")
 	}
 	ctx := context.Background()
-	ce := crossEncoderHelper(t)
 
 	var units []sweepQuery
 	add := func(set, repo string, c *evalCorpus, qs []rerankEvalQuery) {
@@ -145,7 +152,7 @@ func TestExternalLeverSweep(t *testing.T) {
 				t.Fatalf("Search(%q): %v", q.query, err)
 			}
 			units = append(units, sweepQuery{set, repo, i + 1, q.query, exact[i], c.RepoRoot, sem, kw,
-				&cachedScorer{real: ce, scores: map[string]float32{}}})
+				&cachedScorer{scores: map[string]float32{}}})
 		}
 	}
 
@@ -180,12 +187,38 @@ func TestExternalLeverSweep(t *testing.T) {
 		{"CE top30 blend", defaultRankPolicy, defaultExpandPolicy, ce30b, "reranker"},
 		{"L1+L2c+CE30b", l1, nestedNoGo, ce30b, "reference"},
 	}
+	for _, n := range []int{30, 60, 90} {
+		g := defaultExpandPolicy
+		g.GapFill = n
+		arms = append(arms, leverArm{fmt.Sprintf("GAP%d", n), defaultRankPolicy, g, nil, "gap"})
+	}
+	if only := os.Getenv("MOCHIII_SWEEP_ARMS"); only != "" {
+		kept := arms[:1] // SHIPPED, the reference every verdict is read against
+		for _, a := range arms[1:] {
+			for _, p := range strings.Split(only, ",") {
+				if p = strings.TrimSpace(p); p != "" && strings.HasPrefix(a.name, p) {
+					kept = append(kept, a)
+					break
+				}
+			}
+		}
+		arms = kept
+	}
+	if slices.ContainsFunc(arms, func(a leverArm) bool { return a.ce != nil }) {
+		ce := crossEncoderHelper(t)
+		for _, u := range units {
+			u.ce.real = ce
+		}
+	}
 
-	type result struct{ retrieved, delivered map[string]bool }
+	type result struct {
+		retrieved, delivered map[string]bool
+		chars                int // rendered context over every question, the budget price of an arm
+	}
 	key := func(u sweepQuery) string { return fmt.Sprintf("%s/%s#%d", u.set, u.repo, u.index) }
 	results := make([]result, len(arms))
 	for ai, a := range arms {
-		res := result{map[string]bool{}, map[string]bool{}}
+		res := result{retrieved: map[string]bool{}, delivered: map[string]bool{}}
 		for _, u := range units {
 			fused := fuseRRF(u.sem, u.kw, rrfK)
 			var hits []Chunk
@@ -202,6 +235,9 @@ func TestExternalLeverSweep(t *testing.T) {
 			res.retrieved[key(u)] = rankOfChunk(hits, u.exact) != 0
 			kept := deliverWithinBudget(nil, hits, u.root, a.expand, defaultK, defaultContextBudgetChars, false).Chunks
 			res.delivered[key(u)] = rankOfChunk(kept, u.exact) != 0
+			for _, c := range kept {
+				res.chars += len(renderChunk(1, c, false))
+			}
 		}
 		results[ai] = res
 	}
@@ -285,6 +321,19 @@ func TestExternalLeverSweep(t *testing.T) {
 			} else {
 				verdict = "fails"
 			}
+		case "gap":
+			// PRE-REGISTERED 2026-11-20 (docs/RETRIEVAL_EVAL_TREND.md): in49 up
+			// by 2 or more with no in49 question lost; in28, ext40+ext20 and
+			// fresh60 each no lower; no repository down by more than 1; context
+			// at most 5% larger. The smallest passing gap ships.
+			lostIn49 := strings.TrimSuffix(strings.SplitN(diff(ref.delivered, r.delivered, "in49"), "-[", 2)[1], "]") != ""
+			if count(r.delivered, "in49", "") >= count(ref.delivered, "in49", "")+2 && !lostIn49 &&
+				count(r.delivered, "in28", "") >= count(ref.delivered, "in28", "") &&
+				ext60 >= refExt60 && fresh >= refFresh && repoOK && r.chars*100 <= ref.chars*105 {
+				verdict = "SHIPS"
+			} else {
+				verdict = "fails"
+			}
 		case "reranker":
 			if fresh >= refFresh+3 && ext60 >= refExt60+3 && inOK && p95 <= 400*time.Millisecond {
 				verdict = "RECOMMEND"
@@ -305,6 +354,10 @@ func TestExternalLeverSweep(t *testing.T) {
 	fmt.Println("rules (pre-registered): a lever SHIPS if fresh60 >= SHIPPED+2, ext40+ext20 and in49, in28 no lower, " +
 		"no repository down by more than 1; a reranker is RECOMMENDED if fresh60 >= +3, ext40+ext20 >= +3, " +
 		"in-repo no lower, p95 <= 400ms")
+	for ai, a := range arms {
+		fmt.Printf("context %-17s %d chars over %d questions (%+.1f%% vs SHIPPED)\n", a.name, results[ai].chars, len(units),
+			100*(float64(results[ai].chars)/float64(max(ref.chars, 1))-1))
+	}
 	fmt.Printf("SHIPPED: in49 %d, in28 %d, ext40 %d, ext20 %d, fresh60 %d -- must match TestRerankEvalRetrievalRanking, "+
 		"EVALHELDOUT and EVALEXTERNAL on the same tree.\n",
 		count(ref.delivered, "in49", ""), count(ref.delivered, "in28", ""),

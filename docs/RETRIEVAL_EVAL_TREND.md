@@ -487,3 +487,62 @@ NET LOSS were merged: #77, #87, #100, #101, #106 and #110. The eval is not a
 required check, so its verdict was advice. None of the six touched retrieval code;
 each added code that competes for the same top ten. Winning 37 and 40 back is
 ranker or budget work, with these two as its first cases.
+
+### 2026-11-20 — PRE-REGISTERED: gap fill for question 40, and question 37's ground truth
+
+Written before anything below was measured. Results are appended under it
+afterwards, whatever they are.
+
+**Question 37 is a ground-truth correction, not a lever.** "How is the
+interrupt behaviour of the chat client tested" accepted only the first test in
+`clients/tui/interrupt_test.go`. Every test in that file tests interrupt
+behaviour, and retrieval was returning three of them while being scored a miss.
+The other five tests are now accepted answers. The old number is still printed
+on every run (`supersededGroundTruth`, entry 36), so this can never be counted as
+a retrieval win, and no floor moves because of it.
+
+**Question 40 gets one lever, GapFill** (`daemon/gapfill.go`; OFF by default).
+In two-pass delivery, after every hit is placed and widened, two delivered spans
+of one file at most N lines apart are joined with the chunks between them, in
+the budget that is left. Three arms, N = 30, 60 and 90, in
+`TestExternalLeverSweep` (run with `MOCHIII_SWEEP_ARMS=GAP`), one index build per
+corpus.
+
+**The rule.** An arm SHIPS only if all of these hold against SHIPPED on the same
+run:
+
+- the 49 tuning questions (in49) gain 2 or more, and lose none;
+- the 28 held-out (in28), the 60 outside (ext40 + ext20) and the 60 fresh
+  outside questions (fresh60) are each no lower;
+- no outside repository is down by more than 1;
+- the context delivered over every question is at most 5% larger.
+
+The smallest passing N ships. If none passes, all three are recorded here as
+rejected with their numbers, GapFill stays OFF, and question 40 stays a ranker
+question.
+
+#### Result, 2026-11-20 (measured after the entry above was committed as 8cb995c)
+
+`TestExternalLeverSweep` with `MOCHIII_SWEEP_ARMS=GAP`, on a `git archive` copy
+of 8cb995c, this laptop, one build per corpus, 197 questions, 25 minutes:
+
+| arm | in49 | in28 | ext40 | ext20 | fresh60 | context | verdict |
+|---|---|---|---|---|---|---|---|
+| SHIPPED | 35 | 24 | 33 | 14 | 53 | 5,472,498 chars | — |
+| GAP30 | 35 | 24 | 33 | 14 | 53 | +0.4% | fails |
+| GAP60 | 35 | 24 | 34 | 15 | 53 | +0.8% | fails |
+| GAP90 | 35 | 24 | 34 | 15 | 53 | +1.3% | fails |
+
+**Rejected: GapFill stays OFF.** No arm gained a tuning question, so none met
+"in49 +2", and question 40 was not won back at any gap size. It was not
+diagnosed further, inside the plan's one-day box. The likeliest reason, not
+verified: gap steps come after every widening, and the budget is spent by then.
+
+GAP60 and GAP90 did deliver two more outside questions (flask #2 held-out,
+gson #2) and lost nothing anywhere, for 0.8% more context. That is recorded,
+not banked: the rule was written before the measurement, and shipping on a
+gain it did not ask for is the thing pre-registration exists to prevent. A
+later round may pre-register GapFill against FRESH outside questions.
+
+Question 37's correction is in the SHIPPED row (35 on this laptop). The old
+number is printed beside it on every run, and no floor moves for it.

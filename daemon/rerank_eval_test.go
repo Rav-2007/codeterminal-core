@@ -557,9 +557,18 @@ var rerankEvalQueries = []rerankEvalQuery{
 	// Test-seeking, and deliberately about a client rather than the daemon:
 	// the paired guard for rerank.go's FileClassTest down-weight has to hold
 	// outside the one package the down-weight was tuned against.
+	//
+	// GROUND TRUTH CORRECTED 2026-11-20 -- was the first test alone. Every test
+	// in interrupt_test.go tests interrupt behaviour (esc stops a turn, a
+	// stopped answer goes back marked, ctrl+c never quits on one press, ...),
+	// and retrieval had been returning three of them in the right file while
+	// being scored a miss. The pre-correction number is still reported -- see
+	// supersededGroundTruth -- so this is never counted as a retrieval win.
 	{"how is the interrupt behaviour of the chat client tested",
 		[]string{"clients/tui/interrupt_test.go"},
-		[]string{"func TestEscStopsTheTurnAndKeepsTheSession"}, shapeTest},
+		[]string{"func TestEscStopsTheTurnAndKeepsTheSession", "func TestAnInterruptedAnswerTravelsBackAsUserCancelled",
+			"func TestStoppingBeforeAnyTokenMarksNoAnswer", "func TestNoSingleCtrlCEverQuits",
+			"func TestAnyOtherKeyDisarmsTheQuit", "func TestStoppingATurnDoesNotLeaveAQuitArmed"}, shapeTest},
 
 	{"what test proves a lane B server is never reported as confined",
 		[]string{"daemon/mcp/mcp_test.go"},
@@ -670,6 +679,11 @@ var supersededGroundTruth = map[int]struct {
 		[]string{"daemon/agentloop.go"}, []string{"maxTurnIterations"},
 		"named the budget field, which now appears in four chunks (its definition, its " +
 			"resolution, the build-mode budget, the stop); the stop is the answer",
+	},
+	36: {
+		[]string{"clients/tui/interrupt_test.go"}, []string{"func TestEscStopsTheTurnAndKeepsTheSession"},
+		"declared only the file's first test; every test in interrupt_test.go answers how interrupt " +
+			"behaviour is tested, and retrieval returned three of them",
 	},
 	39: {
 		[]string{"daemon/counters.go"}, []string{"func (c *counters)"},
