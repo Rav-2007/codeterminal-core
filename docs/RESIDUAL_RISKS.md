@@ -112,6 +112,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.26 helper is outside every cross-platform check, and cannot join one | **FIXED 2026-10-19 — the structural cause is gone** | Opened 2026-09-09: `helper` linked `onnxruntime_go`, which is CGO-only, so `GOOS=windows go vet` reported "build constraints exclude all Go files". `helper/internal/ort` now calls ONNX Runtime's C API without cgo; helper is in `CROSSVET_MODULES` and in both arms of `make standalone`, and builds and vets with `CGO_ENABLED=0` for linux, darwin and windows on amd64 and arm64. |
 | R1.27 the sandbox's confinement tests run only where CI relaxed the host | **OPEN — a real reason, stated rather than removed** | Opened 2026-09-12. `build.yml` sets `kernel.apparmor_restrict_unprivileged_userns=0` on its throwaway VM. The REFUSAL path no longer depends on that; the tests that check bwrap actually isolates anything still do, and cannot be stubbed. |
 | R1.28 daemon's timing assertions were inline literals with no guard | **NARROWED 2026-09-12 — not closed** | Task 6 landed: `daemon/timingliterals_test.go` scans the whole workspace and all **17** comparison sites are now derived bounds. What remains is the larger half — the guard checks that a bound *names* something, not that the derivation is right, and it does not make any existing assertion stable. Four residuals stated in the row. |
+| R1.29 an opaque secret the model writes into a third-party tool's arguments | **OPEN — narrowed 2026-11-20, the rest stated** | Opened and narrowed 2026-11-20. A secret Mochiii holds is now refused in any common encoding (`daemon/lanebcred.go`), a known shape is redacted, and a named one (`password`, `DB_PASSWORD=`) is redacted (`daemon/mcpargscrub.go`). An unnamed, shapeless value the daemon does not hold still reaches the approval prompt as text. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -1932,3 +1933,50 @@ files; the measurement found 17 sites across seven files**, including
 `proxy/integration_test.go`, which is a different module and was not considered.
 Right about the instances it named, wrong about the extent, which is the ordinary
 failure of predicting from the files one happens to have read.
+
+## R1.29 — An opaque secret the model writes into a third-party tool's arguments — **OPEN, narrowed 2026-11-20**
+
+**What it is.** A third-party (Lane B) MCP tool receives arguments the model
+wrote. Found live on 2026-11-19: a key the model put there was shown in the
+approval prompt and sent as-is when approved. The owner decided on 2026-11-20
+to close what can be closed, in three layers, each on the arguments before the
+approval prompt, its `ArgumentsSHA256` binding, the audit record and the call:
+
+1. **Shapes** (`daemon/mcpargscrub.go`, `scrub()`): every recognisable key
+   format is redacted, in JSON values and keys alike.
+2. **Exact values** (`daemon/lanebcred.go`): a call carrying a credential this
+   machine holds -- the provider key, an MCP server's stored key, the GitHub
+   token -- raw, base64, hex, url-escaped, reversed or as a long fragment, is
+   REFUSED before anyone is asked, as `web_search` and `web_fetch` already were.
+   Not turned off by `--no-scrub`.
+3. **Names** (`daemon/mcpargscrub.go`, the name rule): a value of 8 or more
+   characters whose own name says it is a secret -- a JSON key or a
+   `NAME=`/`NAME:` in text ending in password, passwd, secret, api key, access
+   token, auth token, private key or credentials -- is redacted. Placeholders are
+   not, and in text only a value with a digit or 16 characters is.
+
+**What is left.** A value with no known shape, that this machine does not hold,
+written without a secret-like name: for example an opaque database password the
+model read from a file that is not secret-named and then quoted in prose. It
+reaches the approval prompt as text, and the prompt is the control. Files named
+like secrets (`.env`, key files) are already refused by the read tools
+(`editapply.MatchesSecretName`), which keeps the commonest source away from the
+model in the first place.
+
+**Why not entropy.** Measured on this repository's chunks and rejected: it fired
+on a third of them with no true positive at any threshold
+(`docs/CHUNK_SCRUB_FIRE_RATE.md`). On a tool's arguments a false positive is a
+broken call -- a redacted pagination token -- so the bar is higher there, not
+lower.
+
+**Pinned by.** `TestAThirdPartyToolNeverSeesASecretTheModelWrote` (shapes, with
+the server's own digest of what it received),
+`TestAThirdPartyCallCarryingThisMachinesKeyIsRefusedBeforeAnyoneIsAsked` (exact
+values, raw and base64, with a key that has no shape), and
+`TestTheNameRuleRedactsNamedSecretsAndNothingElse` (names, and ten arguments it
+must leave byte for byte). Each fails with its layer removed.
+
+**Trigger.** A secret reported leaving through a third-party call, or a tool
+broken by a redaction: the first says the name list is too narrow, the second
+that it is too wide.
+
