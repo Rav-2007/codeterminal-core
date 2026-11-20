@@ -80,8 +80,11 @@ is refused.
   refused when the server is added.
 - **A secret the model writes into a third-party tool's arguments is redacted**
   before you are asked about the call and before it is sent, as web search
-  already did. A tool that needs a key gets it from the key you stored for its
-  server.
+  already did: a recognisable key format, or a value whose name says it is a
+  secret (`password`, `DB_PASSWORD=`). A call that carries one of the keys
+  Mochiii itself holds (your provider key, an MCP server's key, your GitHub
+  token), in any common encoding, is refused outright, and nobody is asked. A
+  tool that needs a key gets it from the key you stored for its server.
 - **One failed call no longer takes a server down.** A reply over the size limit
   fails only that call, and a server that stops during a call is restarted once.
   The model is told what happened in either case.

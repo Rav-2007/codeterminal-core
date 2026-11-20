@@ -98,3 +98,43 @@ func TestScrubbedLaneBArguments(t *testing.T) {
 		}
 	})
 }
+
+// THE NAME RULE (mcpargscrub.go): a value whose own name says it is a secret
+// is redacted from a third-party call's arguments, and nothing that merely
+// looks like one is. The second half is the one that matters for users: a
+// redacted pagination token is a broken tool.
+//
+// Neuter check: make namedSecretKey return false, and redactNamedAssignments
+// return its input.
+func TestTheNameRuleRedactsNamedSecretsAndNothingElse(t *testing.T) {
+	for _, tc := range []struct{ name, args, gone string }{
+		{"a password key", `{"password":"opaque-9f8e7d6c"}`, "opaque-9f8e7d6c"},
+		{"a camelCase client secret, nested", `{"db":{"clientSecret":"Zq8vB2xLmN4pR7tY"}}`, "Zq8vB2xLmN4pR7tY"},
+		{"an assignment in text", `{"text":"connect with DB_PASSWORD=opaque-9f8e7d6c please"}`, "opaque-9f8e7d6c"},
+		{"a long value after a colon", `{"note":"password: correcthorsebatterystaple"}`, "correcthorsebatterystaple"},
+	} {
+		got, kinds := scrubbedLaneBArguments(tc.args, false)
+		if strings.Contains(got, tc.gone) || !strings.Contains(got, namedSecretRedaction) || len(kinds) != 1 {
+			t.Errorf("%s: got %s with kinds %v, want %q redacted once", tc.name, got, kinds, tc.gone)
+		}
+	}
+	if got, _ := scrubbedLaneBArguments(`{"text":"connect with DB_PASSWORD=opaque-9f8e7d6c please"}`, false); !strings.Contains(got, "DB_PASSWORD=") {
+		t.Errorf("the name was redacted with the value: %s", got)
+	}
+	for _, args := range []string{
+		`{"page_token":"CAESBggBEAEYAQ"}`,
+		`{"cursor":"eyJpZCI6MTIzNDU2fQ=="}`,
+		`{"token_count":12345678}`,
+		`{"secret_name":"prod-database-creds"}`,
+		`{"password":"<your-password>"}`,
+		`{"api_key":"${API_KEY}"}`,
+		`{"apiKey":"your-api-key-here"}`,
+		`{"is_secret":true}`,
+		`{"text":"Set the API key: configure it in settings"}`,
+		`{"text":"the secret: implementation details"}`,
+	} {
+		if got, kinds := scrubbedLaneBArguments(args, false); got != args || kinds != nil {
+			t.Errorf("%s was changed to %s (%v); want it byte for byte", args, got, kinds)
+		}
+	}
+}

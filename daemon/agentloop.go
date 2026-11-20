@@ -1628,10 +1628,10 @@ func (s *Server) resolveExecutable(
 		}
 	}
 
-	// Hoisted above the grant check: for a tool that executes code the grant is
-	// keyed on these bytes, so they have to exist before it is consulted. The
-	// launch probe reads them too.
-	arguments := call.Function.Arguments
+	arguments := call.Function.Arguments // hoisted above the grant check: a code-executing tool's grant is keyed on these bytes, and the launch probe reads them
+	if refused, ok := s.laneBCredentialRefusal(spec, arguments); ok {
+		return refused // lanebcred.go: a credential this machine holds never reaches a third party
+	}
 
 	// WHAT THIS CALL WOULD START, decided before anyone is asked (register item
 	// 32). A language server is started once and then cached for the daemon's
