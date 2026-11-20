@@ -487,3 +487,36 @@ NET LOSS were merged: #77, #87, #100, #101, #106 and #110. The eval is not a
 required check, so its verdict was advice. None of the six touched retrieval code;
 each added code that competes for the same top ten. Winning 37 and 40 back is
 ranker or budget work, with these two as its first cases.
+
+### 2026-11-20 — PRE-REGISTERED: gap fill for question 40, and question 37's ground truth
+
+Written before anything below was measured. Results are appended under it
+afterwards, whatever they are.
+
+**Question 37 is a ground-truth correction, not a lever.** "How is the
+interrupt behaviour of the chat client tested" accepted only the first test in
+`clients/tui/interrupt_test.go`. Every test in that file tests interrupt
+behaviour, and retrieval was returning three of them while being scored a miss.
+The other five tests are now accepted answers. The old number is still printed
+on every run (`supersededGroundTruth`, entry 36), so this can never be counted as
+a retrieval win, and no floor moves because of it.
+
+**Question 40 gets one lever, GapFill** (`daemon/gapfill.go`; OFF by default).
+In two-pass delivery, after every hit is placed and widened, two delivered spans
+of one file at most N lines apart are joined with the chunks between them, in
+the budget that is left. Three arms, N = 30, 60 and 90, in
+`TestExternalLeverSweep` (run with `MOCHIII_SWEEP_ARMS=GAP`), one index build per
+corpus.
+
+**The rule.** An arm SHIPS only if all of these hold against SHIPPED on the same
+run:
+
+- the 49 tuning questions (in49) gain 2 or more, and lose none;
+- the 28 held-out (in28), the 60 outside (ext40 + ext20) and the 60 fresh
+  outside questions (fresh60) are each no lower;
+- no outside repository is down by more than 1;
+- the context delivered over every question is at most 5% larger.
+
+The smallest passing N ships. If none passes, all three are recorded here as
+rejected with their numbers, GapFill stays OFF, and question 40 stays a ranker
+question.

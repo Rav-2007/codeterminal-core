@@ -79,6 +79,9 @@ type expandPolicy struct {
 	// as they are placed, before the remaining hits are placed. Zero is the pure
 	// two-pass order.
 	WidenFirst int
+	// GapFill, under TwoPass, joins two delivered spans of one file at most
+	// this many lines apart, budget permitting (gapfill.go). 0 is off.
+	GapFill int
 	// NestedConstructs widens a hit to the method around it when the only
 	// top-level construct around it is over ConstructCap -- a Java or Python
 	// class, a Rust impl block -- or when no top-level construct is found at
