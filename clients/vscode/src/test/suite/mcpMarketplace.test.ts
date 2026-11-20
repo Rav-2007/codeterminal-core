@@ -234,6 +234,15 @@ async function startMCPDaemon(opts: { asks?: boolean; features?: string[] } = {}
   const stub = new StubDaemon();
   stub.handshakeExtra = { features: opts.features ?? ['mcp_admin', 'mcp_manage'] };
   await stub.start((req, socket) => {
+    // ONLY AN ADD IS AN ADD. The extension is live in this host, and its MCP
+    // servers view retries `servers` while its daemon starts (mcpServersView.ts);
+    // a retry that lands while this stub is up was taken for an add and crashed
+    // on `req.args.join` (CI, 2026-11-19). It is answered and not counted.
+    if (req.action !== 'add') {
+      writeLine(socket, { protocol_version: 1, ok: true, agent_mode: true, servers: [] });
+      socket.end();
+      return;
+    }
     requests.push(req);
     if (!req.acknowledged_unconfined && opts.asks !== false) {
       writeLine(socket, {
