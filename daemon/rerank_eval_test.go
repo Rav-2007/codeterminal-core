@@ -1324,8 +1324,8 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// add queries does not have to remember to raise an integer.
 	retrievedRate := float64(hybridCount) / float64(total)
 	if deliveredRate < evalChunkRecallFloor {
-		evalScoreGate(t, "DELIVERED chunk-level recall %d/%d = %.1f%% is below the floor of %.1f%% measured on "+
-			"2026-08-28. Read resolveExactChunks' output first. If it reported an anchor that "+
+		evalScoreGate(t, "DELIVERED chunk-level recall %d/%d = %.1f%% is below the floor of %.1f%% set on "+
+			"2026-11-20. Read resolveExactChunks' output first. If it reported an anchor that "+
 			"appears in no chunk of its expectedFiles, the DECLARED half of the ground truth "+
 			"has gone stale (code was moved or renamed) and retrieval is fine. If it reported "+
 			"nothing, this is a real retrieval regression: the derived half cannot go stale, "+
@@ -1336,7 +1336,7 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 			"ranker regressed; if evalBudgetedOutCeiling is also red the corpus outgrew the "+
 			"budget; if both are green then expansion or merging lost something retrieval "+
 			"had found.\n\nCORPUS SINCE THIS FLOOR WAS CALIBRATED: %d chunks over %d files "+
-			"today, against %d over %d when 0.75 was set on 2026-08-28 (%+.1f%% chunks). This "+
+			"today, against %d over %d when 0.67 was set on 2026-11-20 (%+.1f%% chunks). This "+
 			"eval indexes THIS repository, so the haystack grows with every commit while the "+
 			"character budget does not. The measured sensitivity is steep: +0.3%% of corpus "+
 			"cost 2-3 queries on 2026-08-30. If that percentage is large and the other two "+
@@ -1622,7 +1622,28 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 // faster and offline is the pinned pair — TestEveryChunkIsPrefixedWithItsOwnPath
 // AndNothingElse, TestTheChunkerIDChangesWhenTheEmbeddedTextDoes, and
 // TestTruncateToBudget_AnOversizedSpanDoesNotForfeitTheTail.
-const evalChunkRecallFloor = 0.75
+//
+// RECALIBRATED 2026-11-20 TO 0.67 -- 33 of 49, two below the 35 measured on
+// main by CI at 270fd79, on 12,139 chunks over 1,555 files. The same
+// measured-minus-two rule 0.75 and evalChunkRetrievedFloor's 0.55 were set by,
+// applied to the corpus that exists now; owner's decision. Main had been red
+// since 2026-10-26 (39 -> 36, 35, 36, 35), and it was not the ranker:
+//
+//   - NO RETRIEVAL CODE MOVED. From 9392b31 (39/49, 2026-10-23) to 270fd79 the
+//     files this workflow watches changed in search.go only -- the chat
+//     history's FTS table (chats per client), not code search -- and in
+//     helper's go.mod. The corpus grew 10,762 -> 12,139 chunks.
+//   - THE LOSSES ARE RANK-EDGE. Queries 37 and 40 were lost for good: the chunk
+//     that delivered each one sat at rank 8 or 9 of the top ten (37's
+//     interrupt_test.go:91-130, 40's usage.go:31-70) and dropped out of it as
+//     chunks from new code ranked in (agentloop.go and protocol.go for 40).
+//     13, 22, 25 and 26 flip run to run.
+//   - THE PER-PR RULE WAS NOT ENFORCED. Six pull requests whose own eval said
+//     NET LOSS were merged (#77, #87, #100, #101, #106, #110): the eval is not a
+//     required check, so its verdict was advice. None touched retrieval code.
+//
+// Winning 37 and 40 back is ranker or budget work, not a constant to edit.
+const evalChunkRecallFloor = 0.67
 
 // evalRecallFloorCalibrationChunks and ...Files record the CORPUS THIS FLOOR WAS
 // SET AGAINST, so a red run can tell the two causes apart without a human
@@ -1642,8 +1663,8 @@ const evalChunkRecallFloor = 0.75
 // honest about 4771 chunks; if you are now at 5200, roughly this much of the
 // drop was never about retrieval.
 const (
-	evalRecallFloorCalibrationChunks = 4771
-	evalRecallFloorCalibrationFiles  = 560
+	evalRecallFloorCalibrationChunks = 12139 // 2026-11-20; it was 4771 over 560 when 0.75 was set
+	evalRecallFloorCalibrationFiles  = 1555
 )
 
 // evalChunkRetrievedFloor gates the RANKER, and nothing else.

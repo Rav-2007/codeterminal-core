@@ -461,3 +461,29 @@ does bite is across COMMITS — the "every commit changes the corpus" noise note
 on 2026-10-03 was partly this, since one added chunk shifted the batch-mates of
 every chunk after it. That part is now gone; the rest (new text competing for
 the top ten) is not.
+
+### 2026-11-20 — DELIVERED floor recalibrated to 0.67 (33/49)
+
+Main's push eval had been red since 2026-10-26: delivered 39/49 at 9392b31
+(2026-10-23), then 36, 35, 36 and 35 at 270fd79 (2026-11-19), against a floor of
+36.75. The owner chose to re-baseline it for 1.6.0; the new floor is 33/49, two
+below the 35 measured, by the same rule every floor in `rerank_eval_test.go` was set.
+
+| | 2026-10-23 (9392b31) | 2026-11-19 (270fd79) |
+|---|---|---|
+| chunks / files | 10,762 / 1,370 | 12,139 / 1,555 |
+| semantic-only | 25/49 | 24/49 |
+| retrieved | 29/49 | 28/49 |
+| **delivered** | **39/49** | **35/49** |
+
+**Not the ranker.** No file the eval workflow watches changed in that window
+except `daemon/search.go` (the chat history's FTS table, not code search) and
+`helper/go.mod`. Queries 37 and 40 were lost for good: the chunk that delivered
+each sat at rank 8 or 9 and dropped out of the top ten as chunks from new code
+ranked in. Queries 13, 22, 25 and 26 flip from run to run.
+
+**Why the per-PR rule did not stop it.** Six pull requests whose own eval said
+NET LOSS were merged: #77, #87, #100, #101, #106 and #110. The eval is not a
+required check, so its verdict was advice. None of the six touched retrieval code;
+each added code that competes for the same top ten. Winning 37 and 40 back is
+ranker or budget work, with these two as its first cases.
