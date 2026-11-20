@@ -100,27 +100,42 @@ func TestAWrongFileFromTheOwnAddressFallsToTheCopy(t *testing.T) {
 }
 
 // The copies of the ONNX Runtime archives are this project's release, one per
-// archive, by the archive's own name -- and the three platforms whose archive
-// was copied on 2026-11-19 each have one. Windows has none yet: no copy of its
-// zip matching the pin was at hand.
+// archive, by the archive's own name -- and every platform has one. Windows got
+// its copy last (2026-11-19, from the npmmirror package mirror, equal to the pin).
 func TestEveryONNXRuntimeCopyIsTheArchiveByItsOwnName(t *testing.T) {
 	if !strings.HasPrefix(onnxRuntimeCopies, "https://github.com/Rav-2007/codeterminal-core/releases/download/onnxruntime-"+onnxRuntimeVersion) {
 		t.Fatalf("onnxRuntimeCopies = %q", onnxRuntimeCopies)
 	}
-	copied := map[string]bool{}
 	for _, p := range onnxRuntimePlatforms {
 		for _, m := range p.archive.mirrors {
 			if m != onnxRuntimeCopies+p.archive.name {
 				t.Errorf("%s/%s: copy %q is not the release asset named %q", p.goos, p.goarch, m, p.archive.name)
 			}
 		}
-		if len(p.archive.mirrors) > 0 {
-			copied[p.goos+"/"+p.goarch] = true
+		if len(p.archive.mirrors) == 0 { // a platform added later needs its copy too
+			t.Errorf("%s/%s has no copy of its ONNX Runtime archive", p.goos, p.goarch)
 		}
 	}
-	for _, want := range []string{"linux/amd64", "linux/arm64", "darwin/arm64"} {
-		if !copied[want] {
-			t.Errorf("%s has no copy of its ONNX Runtime archive", want)
+}
+
+// LIVE, run by .github/workflows/onnxruntime-copies.yml (weekly, and on any PR
+// that touches the pins): every copy, fetched ALONE by the code a first index
+// runs, is still there and still its pinned file. The test above only sees
+// that the code NAMES a copy; a version bump whose copies were never uploaded,
+// or a copy since replaced, passes it and fails this.
+func TestEveryONNXRuntimeCopyServesItsPinnedFile(t *testing.T) {
+	if os.Getenv("MOCHIII_CHECK_COPIES") == "" {
+		t.Skip("downloads every archive (~123 MB); the onnxruntime-copies workflow sets MOCHIII_CHECK_COPIES=1")
+	}
+	for _, p := range onnxRuntimePlatforms {
+		for _, m := range p.archive.mirrors {
+			copyOnly := p.archive
+			copyOnly.url, copyOnly.mirrors = m, nil
+			if _, err := EnsureModelFiles(context.Background(), t.TempDir(), []modelAsset{copyOnly}, log.New(io.Discard, "", 0)); err != nil {
+				t.Errorf("%s/%s: %v", p.goos, p.goarch, err)
+			} else {
+				t.Logf("%s/%s: %s is its pinned file", p.goos, p.goarch, m)
+			}
 		}
 	}
 }
