@@ -9,6 +9,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import { sendMCP } from '../../daemonClient';
 import {
   DEFAULT_CATALOG_URL,
@@ -233,16 +234,9 @@ async function startMCPDaemon(opts: { asks?: boolean; features?: string[] } = {}
   const requests: any[] = [];
   const stub = new StubDaemon();
   stub.handshakeExtra = { features: opts.features ?? ['mcp_admin', 'mcp_manage'] };
+  // The extension's own `servers` listings are answered by StubDaemon itself
+  // (its `background`), so everything that reaches here is the test's.
   await stub.start((req, socket) => {
-    // ONLY AN ADD IS AN ADD. The extension is live in this host, and its MCP
-    // servers view retries `servers` while its daemon starts (mcpServersView.ts);
-    // a retry that lands while this stub is up was taken for an add and crashed
-    // on `req.args.join` (CI, 2026-11-19). It is answered and not counted.
-    if (req.action !== 'add') {
-      writeLine(socket, { protocol_version: 1, ok: true, agent_mode: true, servers: [] });
-      socket.end();
-      return;
-    }
     requests.push(req);
     if (!req.acknowledged_unconfined && opts.asks !== false) {
       writeLine(socket, {
@@ -343,6 +337,29 @@ suite("adding a server takes the daemon's two steps", function () {
       for (const r of requests) {
         assert.deepStrictEqual(r.env_optional, ['CONTEXT7_API_KEY'], 'a request did not say which variable is optional');
       }
+    });
+  });
+
+  // THE CAUSE OF THE 2026-11-19 CI FLAKE, ON DEMAND. The extension's MCP
+  // servers view lists servers on its own schedule, and the listing goes to
+  // whichever stub is up. Fired here in the middle of an add, three times: the
+  // test's behavior must see exactly its own two requests each time. The last
+  // two assertions are the mechanism itself, not only its absence: the refresh
+  // DID reach this stub, as a request with no `args`, which is what the old
+  // stub's `req.args.join` threw on (run 44578156716).
+  test("the extension's own server listing reaches a test's stub and is not taken for the test's add", async () => {
+    const { stub, requests } = await startMCPDaemon();
+    await withDaemon(stub, async () => {
+      for (let round = 0; round < 3; round++) {
+        requests.length = 0;
+        const { ui } = fakeUi({ confirm: true, typed: true });
+        const add = storeServer('test', spec, { action: 'add' }, ui);
+        await vscode.commands.executeCommand('mochiii.mcp.refresh');
+        assert.ok((await add)?.ok, 'the add did not complete');
+        assert.strictEqual(requests.length, 2, `the test saw ${JSON.stringify(requests.map((r) => r.action))}`);
+      }
+      assert.ok(stub.background.length > 0, 'the refresh never reached the stub, so this proves nothing about the cause');
+      assert.ok(stub.background.every((r) => r.args === undefined), 'a listing carried args');
     });
   });
 

@@ -43,6 +43,25 @@ export class StubDaemon {
   // Extra fields merged into the handshake reply, e.g. { needs_api_key: true }.
   handshakeExtra: Record<string, unknown> = {};
 
+  // requests records every operation request this stub received after the
+  // handshake, in order, the extension's own included -- so a failing test can
+  // say what actually arrived instead of only what it expected.
+  readonly requests: any[] = [];
+
+  // THE EXTENSION'S OWN REQUESTS ARE NOT THE TEST'S. The extension is live in
+  // the test host, and its MCP servers view lists servers on its own schedule:
+  // a retry while its daemon starts, a view render, a refresh
+  // (mcpServersView.ts). That request goes to whichever stub has
+  // XDG_RUNTIME_DIR at the moment. On CI on 2026-11-19 one reached a marketplace
+  // test's stub mid-add, was taken for the add, and crashed it on `req.args`,
+  // which a listing does not have (run 44578156716).
+  //
+  // So a listing (`mcp: true, action: servers`) is answered here with an empty
+  // list and recorded in `background`; the test's behavior never sees it. Set
+  // answerBackground = false for a test that is about the listing itself.
+  readonly background: any[] = [];
+  answerBackground = true;
+
   // The workspace the client is told it has open, so the lockfile name it
   // derives matches the one written below.
   private workspaceDir = '';
@@ -88,6 +107,13 @@ export class StubDaemon {
             continue;
           }
           socket.removeListener('data', onData);
+          this.requests.push(req);
+          if (this.answerBackground && req?.mcp === true && req.action === 'servers') {
+            this.background.push(req);
+            writeLine(socket, { protocol_version: PROTOCOL_VERSION, ok: true, agent_mode: true, servers: [] });
+            socket.end();
+            return;
+          }
           behavior(req, socket);
           return;
         }
