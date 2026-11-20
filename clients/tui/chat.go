@@ -1141,9 +1141,9 @@ func (m chatModel) handleEditProposals(msg editProposalsMsg) (tea.Model, tea.Cmd
 }
 
 func (m chatModel) handleStreamDone() (tea.Model, tea.Cmd) {
+	m.state = stateIdle // BEFORE endStream's final repaint: drawn mid-turn, an answer with no text kept "💭 thinking" forever
 	m.endStream()
-	// The build's final task list stays in the transcript: where it got to.
-	if len(m.tasks) > 0 {
+	if len(m.tasks) > 0 { // the build's final task list stays in the transcript: where it got to
 		m.appendTurn(turn{role: roleSystem, text: renderTaskList(m.tasks)})
 		m.tasks = nil
 	}

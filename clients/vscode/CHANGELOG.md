@@ -3,7 +3,39 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
-## [Unreleased]
+## [1.6.0] - 2026-11-20
+
+### Changed
+
+- **The panel has its own chat.** The terminal app and the VS Code panel, open on
+  the same folder, no longer share one: each has its own chat, saved chats and
+  "new chat". The code index, saved rules and spending limits are still shared.
+- **Update the terminal app and this extension together.** The first new version
+  to open chat memory upgrades it in place, and an older version cannot use the
+  upgraded file. Update both, run `mochiii -stop` in each folder you use the
+  terminal app in, and reload VS Code.
+- **One Enter runs a slash command**, and **Forget key asks first.**
+- **MCP:** a server's keys are asked for when it is added; a server that fails to
+  start says why; a key written inline in a server's arguments is refused; a
+  secret the model writes into a third-party tool's arguments is redacted before
+  you are asked and before it is sent; one failed call no longer takes a server
+  down. Marketplace cards show a server's whole tool count and say "Needs uv" or
+  "Needs Docker". `/mcp-server add` opens the add form.
+- **New installs can build their code index again**, from this project's copies
+  of the ONNX Runtime archives when Microsoft's address fails.
+- Built with Go 1.26.11 (GO-2026-6859).
+
+### Fixed
+
+- A key typed into the connect popup or the `/mcp` key form could end up in the
+  chat box, one Enter away from being sent.
+- `/diff` failed with "external diff died" whenever there were changes.
+- An unknown `/command` was sent to the model, and a local command's answer was
+  sent with the next question and taken for the model's reply by `/copy` and
+  `/export`.
+- The Account page showed a raw error while the background service was down.
+
+### Licence
 
 - **The licence is proprietary, all rights reserved.** Versions already published
   (extension 0.1.1 and earlier) were released under Apache-2.0, and that licence

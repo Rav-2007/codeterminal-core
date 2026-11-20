@@ -5,9 +5,7 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
-## Unreleased
-
-The release commit gives this section its version and date.
+## v1.6.0 — 2026-11-20
 
 ### The terminal and VS Code no longer share a chat
 
@@ -52,6 +50,103 @@ different versions, the older one misbehaves until it is updated:
 use the terminal app in, and reload VS Code. The logs are in
 `~/.local/state/mochiii/logs/`. There is no automatic way back to an older version
 after the upgrade.
+
+### New installs can build their code index again
+
+**What changed.** On 19 November Microsoft's download address for ONNX Runtime,
+the engine Mochiii's code search runs on, stopped answering. An install of 1.5.1
+or earlier made after that could not build its index: the installer warned at
+"Downloading the code-search model" and code search stayed off. Mochiii now keeps
+byte-identical copies of the archives for all four platforms on its own GitHub
+release, and uses them when Microsoft's address fails. Each copy is checked
+against the same SHA-256 fingerprint as before, so a file that is not Microsoft's
+is refused.
+
+**What to do.** If an install warned at that step, update, then run
+`mochiii download-model`.
+
+### MCP servers
+
+- **`/mcp` in the terminal app** opens a panel listing every server and its state,
+  the ones that need you first. Paste a server's JSON into it (the `mcpServers`
+  format other apps use); each server is shown, confirmed by typing its name, then
+  added and started.
+- **A server's keys are asked for when it is added**, in a hidden prompt. When a
+  server fails to start because a key has no value, the message names the key and
+  the command that sets it, instead of "fix the command".
+- **A server that fails to start says why**, for example "it needs Node.js >=24,
+  and this computer has v20.20.2", instead of only "connection closed".
+- **A key written inline in a server's arguments** (`--api-key …`, `--token=…`) is
+  refused when the server is added.
+- **A secret the model writes into a third-party tool's arguments is redacted**
+  before you are asked about the call and before it is sent, as web search
+  already did. A tool that needs a key gets it from the key you stored for its
+  server.
+- **One failed call no longer takes a server down.** A reply over the size limit
+  fails only that call, and a server that stops during a call is restarted once.
+  The model is told what happened in either case.
+- **Every tool a server offers is found**, including tools past the first page of
+  a long list. Results that carry only structured data, or an embedded text
+  resource, now reach the model.
+- **The approval question names a server's tool with its server**
+  ("Allow cloudflare/search_cloudflare_documentation"). A tool that declares itself
+  read-only is no longer labelled "marked destructive".
+- **A server's whole tool count is shown** on its Marketplace card and in
+  `/mcp-server`, with a note that tools not on a turn's list are reached through
+  `find_tools`.
+- **Marketplace cards say "Needs uv" or "Needs Docker"** for servers that launch
+  with them.
+- **A lookup through an MCP server counts as checking.** A tool that declares it
+  reaches the live world (`openWorldHint`) no longer triggers the extra "checking
+  the web rather than answering from memory" step.
+- **A key typed before `/mcp-server add` asks for it is never sent** to the model
+  as a chat message.
+
+### Keys
+
+- **A key every model refuses is not stored**, even when some models answer only
+  "not available to this account". Before, such a key could replace a working one.
+- **In VS Code, a key typed into the connect popup or the `/mcp` key form stays
+  there.** Before, a click or an answer finishing could move the cursor to the chat
+  box, one Enter away from sending the key as a message.
+- **In VS Code, Forget key asks first.**
+
+### The terminal app
+
+- **Every launch starts a new chat, and quitting an unsaved chat asks first**:
+  "This chat is not saved and will be erased. Save or quit?" `/save` and
+  `/resume` are the way to keep and reopen a chat.
+- **Typed text no longer answers an approval or an edit review.** A letter answers
+  only when typed on its own, after the question has been on screen for half a
+  second.
+- **A `/plan` turn offers no edits**, and says that the daemon withheld them.
+- **An empty answer from the model is said**: "the model sent back an empty answer.
+  Ask again, or pick another model with /model." Before, "💭 thinking" stayed on
+  screen.
+- A paste cut to 4,000 characters says so, and `/task review` with no saved task
+  says that plainly instead of showing a connection error.
+
+### VS Code
+
+- **One Enter runs a slash command.** Before, a command picked from the menu needed
+  a second Enter.
+- **`/diff` works when there are changes.** It failed with "external diff died".
+- **An unknown `/command` is no longer sent to the model.**
+- **A local command's answer is not sent to the model**, and `/copy` and `/export`
+  no longer take it for the model's reply.
+- **`/mcp-server add` opens the add form** instead of searching the Marketplace.
+- **The Account page says what it is doing** while the background service is down.
+
+### Security
+
+Built with Go 1.26.11, which fixes a `net/http` vulnerability (GO-2026-6859) that
+Mochiii's own HTTP calls could reach.
+
+### Licence
+
+Mochiii is now proprietary, all rights reserved. Versions already published under
+Apache-2.0 keep that licence. The descriptions no longer call Mochiii local-first or
+private: what reaches a model provider depends on the model you pick.
 
 ## v1.5.1 — 2026-10-27
 

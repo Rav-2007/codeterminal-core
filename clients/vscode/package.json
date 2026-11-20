@@ -2,7 +2,7 @@
   "name": "mochiii-vscode",
   "displayName": "Mochiii",
   "description": "An AI coding assistant for VS Code. Your code is indexed and searched on your own machine, and you choose which model it talks to.",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "publisher": "MochiiiAIAgent",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/icon.png",

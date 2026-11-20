@@ -1101,10 +1101,10 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 	if emptyGreeting() {
 		s.logger.Printf("a greeting was answered with an empty reply %d times in a row", maxEmptyGreetingReplies)
-		incomplete = &protocol.IncompleteInfo{
-			Reason: protocol.IncompleteProviderError,
-			Detail: "the model sent back an empty answer three times in a row. Ask again, or pick another model with /model.",
-		}
+		incomplete = &protocol.IncompleteInfo{Reason: protocol.IncompleteProviderError, Detail: "the model sent back an empty answer three times in a row. Ask again, or pick another model with /model."}
+	} else if incomplete == nil && full.Len() == 0 { // any other empty answer is SAID too: it left "thinking" on screen with no word (2026-11-19)
+		s.logger.Print("the model returned an empty answer; the client is told so")
+		incomplete = &protocol.IncompleteInfo{Reason: protocol.IncompleteProviderError, Detail: "the model sent back an empty answer. Ask again, or pick another model with /model."}
 	}
 	// SAVED BEFORE THE DONE, so the Done can say where the chat now stands
 	// (markChatRevision) -- and so a client that acts on the Done at once, with
