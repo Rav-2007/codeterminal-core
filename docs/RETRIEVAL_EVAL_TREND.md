@@ -520,3 +520,29 @@ run:
 The smallest passing N ships. If none passes, all three are recorded here as
 rejected with their numbers, GapFill stays OFF, and question 40 stays a ranker
 question.
+
+#### Result, 2026-11-20 (measured after the entry above was committed as 8cb995c)
+
+`TestExternalLeverSweep` with `MOCHIII_SWEEP_ARMS=GAP`, on a `git archive` copy
+of 8cb995c, this laptop, one build per corpus, 197 questions, 25 minutes:
+
+| arm | in49 | in28 | ext40 | ext20 | fresh60 | context | verdict |
+|---|---|---|---|---|---|---|---|
+| SHIPPED | 35 | 24 | 33 | 14 | 53 | 5,472,498 chars | — |
+| GAP30 | 35 | 24 | 33 | 14 | 53 | +0.4% | fails |
+| GAP60 | 35 | 24 | 34 | 15 | 53 | +0.8% | fails |
+| GAP90 | 35 | 24 | 34 | 15 | 53 | +1.3% | fails |
+
+**Rejected: GapFill stays OFF.** No arm gained a tuning question, so none met
+"in49 +2", and question 40 was not won back at any gap size. It was not
+diagnosed further, inside the plan's one-day box. The likeliest reason, not
+verified: gap steps come after every widening, and the budget is spent by then.
+
+GAP60 and GAP90 did deliver two more outside questions (flask #2 held-out,
+gson #2) and lost nothing anywhere, for 0.8% more context. That is recorded,
+not banked: the rule was written before the measurement, and shipping on a
+gain it did not ask for is the thing pre-registration exists to prevent. A
+later round may pre-register GapFill against FRESH outside questions.
+
+Question 37's correction is in the SHIPPED row (35 on this laptop). The old
+number is printed beside it on every run, and no floor moves for it.

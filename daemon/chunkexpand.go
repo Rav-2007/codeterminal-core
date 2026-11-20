@@ -80,7 +80,8 @@ type expandPolicy struct {
 	// two-pass order.
 	WidenFirst int
 	// GapFill, under TwoPass, joins two delivered spans of one file at most
-	// this many lines apart, budget permitting (gapfill.go). 0 is off.
+	// this many lines apart, budget permitting (gapfill.go). OFF: measured and
+	// rejected 2026-11-20 (docs/RETRIEVAL_EVAL_TREND.md).
 	GapFill int
 	// NestedConstructs widens a hit to the method around it when the only
 	// top-level construct around it is over ConstructCap -- a Java or Python

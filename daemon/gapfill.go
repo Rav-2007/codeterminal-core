@@ -8,10 +8,13 @@ import (
 
 // GAP FILL: two delivered spans of one file, close together, are joined.
 //
-// A LEVER UNDER MEASUREMENT, OFF BY DEFAULT (expandPolicy.GapFill = 0). It was
-// pre-registered in docs/RETRIEVAL_EVAL_TREND.md on 2026-11-20, before it was
-// measured, and ships only if TestExternalLeverSweep's GAP arms meet the rule
-// written there.
+// MEASURED AND REJECTED, 2026-11-20: OFF (expandPolicy.GapFill = 0). Pre-
+// registered in docs/RETRIEVAL_EVAL_TREND.md before it ran; in
+// TestExternalLeverSweep no GAP arm gained a tuning question (in49 35 in
+// every arm, question 40 not won back), so none met the rule. GAP60 and GAP90
+// gained two outside questions and lost none, at +0.8% and +1.3% context:
+// recorded, not banked. Kept as a policy value, like NestedConstructs, so a
+// later round can measure it against fresh questions without rebuilding it.
 //
 // WHY IT MIGHT HELP. When retrieval puts several chunks of one file in the top
 // ten, the file is the answer's neighbourhood, but the chunk that answers can
