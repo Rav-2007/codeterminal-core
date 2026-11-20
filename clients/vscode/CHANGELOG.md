@@ -18,8 +18,8 @@ All notable changes to the Mochiii extension. Versions follow the extension's
 - **MCP:** a server's keys are asked for when it is added; a server that fails to
   start says why; a key written inline in a server's arguments is refused; a
   secret the model writes into a third-party tool's arguments is redacted before
-  you are asked and before it is sent; one failed call no longer takes a server
-  down. Marketplace cards show a server's whole tool count and say "Needs uv" or
+  you are asked and before it is sent, and a call carrying one of Mochiii's own
+  keys is refused; one failed call no longer takes a server down. Marketplace cards show a server's whole tool count and say "Needs uv" or
   "Needs Docker". `/mcp-server add` opens the add form.
 - **New installs can build their code index again**, from this project's copies
   of the ONNX Runtime archives when Microsoft's address fails.
