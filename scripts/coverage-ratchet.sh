@@ -87,7 +87,11 @@ for module in "${MODULES[@]}"; do
   # -cover without -race: the race detector is a separate gate with its own step,
   # and instrumenting for both makes the daemon suite meaningfully slower without
   # changing a single coverage number.
-  output="$(cd "$module_dir" && go test -cover ./... 2>&1)"
+  # -v SO A PASSING RUN SHOWS WHAT IT MEASURED (2026-11-20, issue #17): a
+  # t.Logf is printed only under -v, so the repaint cost at the transcript
+  # ceiling (R1.12) was computed on every run and seen only on a failure. It is
+  # printed below. -v changes what is printed, never what is enforced.
+  output="$(cd "$module_dir" && go test -v -cover ./... 2>&1)"
   rc=$?
   if [ $rc -ne 0 ]; then
     echo "ratchet: 'go test' FAILED in $module -- coverage not evaluated" >&2
@@ -95,6 +99,8 @@ for module in "${MODULES[@]}"; do
     status=1
     continue
   fi
+
+  grep -E 'REPAINT AT THE CEILING' <<<"$output" | sed 's/^[[:space:]]*[a-z_]*_test\.go:[0-9]*: //' | sed "s|^|ratchet: measured in $module: |"
 
   # `go test -cover` emits the package name in one of two columns depending on
   # whether the package had tests:
@@ -111,7 +117,10 @@ for module in "${MODULES[@]}"; do
   # normalised here by skipping a leading ok/?/FAIL token if there is one.
   while IFS= read -r line; do
     case "$line" in
-      *coverage:*)
+      # Under -v, a bare "coverage: N%" line precedes each package's summary,
+      # and a test's own log may say "coverage:". Only a summary names a
+      # package: it starts with ok, FAIL or a tab.
+      ok*coverage:* | FAIL*coverage:* | $'\t'*coverage:*)
         pkg="$(awk '{ print ($1 == "ok" || $1 == "?" || $1 == "FAIL") ? $2 : $1 }' <<<"$line")"
         pct="$(sed -n 's/.*coverage: \([0-9.]*\)% of statements.*/\1/p' <<<"$line")"
         ;;

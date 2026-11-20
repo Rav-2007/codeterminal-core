@@ -625,6 +625,11 @@ hidden because **the branch has not been pushed since `1013e1b`** — which is e
 
 ## 8.2 The `main` eval contradiction — both readings, no choice made
 
+> **Struck 2026-11-20 by the owner (issue #9), annotated rather than rewritten.**
+> There was no contradiction: the two sites this section weighs use different
+> predicates, one relative and one absolute, on either revision
+> (docs/C6_CLOSING_2026-09-17.md). The text below is kept as it was written.
+
 At `efc611d`, `daemon/rerank_eval_test.go` fails on **one query**, with recall **8/9 on both sides**
 **(M)**:
 

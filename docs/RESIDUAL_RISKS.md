@@ -766,6 +766,17 @@ is the one that fixes it rather than trading against it.
 
 ---
 
+
+**Re-measured 2026-11-20, with provenance (issue #13).** `coverage-ratchet.sh`
+now runs `go test -v`, so every passing run prints this measurement instead of
+discarding it (issue #17). On an Intel i5-1340P (16 threads), commit 3ac517c,
+`scripts/coverage-ratchet.sh clients/tui` -- that is, under `-cover`:
+**p50 23.5 ms, p99 45.9 ms** over 200 samples at the ceiling (min 22.1, max 51.5,
+spread 2.3x). The p50 agrees with the 22.4 ms above within a millisecond; the
+p99 is higher than the 29.9 ms recorded, under coverage instrumentation, so the
+two p99s are not the same measurement. The row's verdict stands: bounded, and
+over the 8 ms repaint budget and D-1's 16 ms ceiling. What to do about it is
+#11, the owner's decision.
 ## R1.13 — Two dependency surfaces are scanned by nothing
 
 **What it is.** `govulncheck` covers the six Go modules and nothing else. Two
