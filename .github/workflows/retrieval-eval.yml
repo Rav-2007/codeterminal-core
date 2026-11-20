@@ -89,8 +89,13 @@ on:
         type: boolean
         default: false
 
+# A SCHEDULED RUN IS NEVER CANCELLED BY A MERGE. With one group per ref, a push
+# to main cancelled the Monday run on main: build.yml's weekly run was lost that
+# way on 2026-11-02 (a merge six seconds after it started) and 2026-11-09 (four
+# minutes after), every job "cancelled", nothing reported. The event is part of
+# the group, so pushes still supersede pushes and the weekly run stands alone.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
