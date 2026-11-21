@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
-	"os"
-	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -31,17 +30,19 @@ func proposeEditRequest() protocol.ToolApprovalRequest {
 	}
 }
 
-// THE OWNER'S CASE OVER A REAL SOCKET. The daemon asked, stopped waiting and
-// closed the connection; the answer came after. The write fails with the very
-// error on the owner's screen ("write: broken pipe"), and what reaches the UI
-// must be the lost answer -- not a stream error, which is what drew LINK SEVERED.
+// THE OWNER'S CASE OVER THE REAL TRANSPORT (testAddress: a Unix socket, or a
+// named pipe on Windows). The daemon asked, stopped waiting and closed the
+// connection; the answer came after. On a Unix socket the write fails with the
+// very error on the owner's screen ("write: broken pipe"), and what reaches the
+// UI must be the lost answer -- not a stream error, which is what drew LINK
+// SEVERED.
+//
+// The first version dialled net.Listen("unix") directly, and Windows CI failed
+// it: a write to a closed AF_UNIX peer does not fail there at once. That is a
+// transport the product never uses on Windows, so it proved nothing either way.
 func TestAnAnswerToAClosedConnectionIsReportedAsLostNotSevered(t *testing.T) {
-	dir, err := os.MkdirTemp("", "al") // short: a unix socket path is capped near 104 bytes
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
-	ln, err := net.Listen("unix", filepath.Join(dir, "d.sock"))
+	addr := testAddress(t)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,7 @@ func TestAnAnswerToAClosedConnectionIsReportedAsLostNotSevered(t *testing.T) {
 			accepted <- c
 		}
 	}()
-	clientEnd, err := net.Dial("unix", filepath.Join(dir, "d.sock"))
+	clientEnd, err := protocol.Dial(addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +81,10 @@ func TestAnAnswerToAClosedConnectionIsReportedAsLostNotSevered(t *testing.T) {
 		if lost.req.CallID != req.CallID {
 			t.Errorf("the lost answer names call %q, want %q", lost.req.CallID, req.CallID)
 		}
-		if !errors.Is(lost.err, syscall.EPIPE) {
+		if lost.err == nil {
+			t.Error("the lost answer carries no error")
+		}
+		if runtime.GOOS != "windows" && !errors.Is(lost.err, syscall.EPIPE) {
 			t.Errorf("err = %v, want the broken pipe the owner saw (else this test is not their case)", lost.err)
 		}
 		if !lost.daemonWaits {
