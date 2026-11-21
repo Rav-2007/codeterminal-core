@@ -20,7 +20,6 @@ export const ICONS = {
   account: svg('<circle cx="8" cy="5.6" r="2.6"/><path d="M2.8 13.6c.9-2.5 2.9-3.7 5.2-3.7s4.3 1.2 5.2 3.7"/>'),
   settings: svg('<circle cx="8" cy="8" r="2.1"/><path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M3.6 12.4l1.2-1.2M11.2 4.8l1.2-1.2"/>'),
   back: svg('<path d="M9.5 3.5 5 8l4.5 4.5"/>'),
-  plug: svg('<path d="M6 2v3M10 2v3M4.5 5h7v2.5a3.5 3.5 0 0 1-7 0V5zM8 11v3"/>'),
   at: svg('<circle cx="8" cy="8" r="2.4"/><path d="M10.4 8v1a1.6 1.6 0 0 0 3.2 0V8a5.6 5.6 0 1 0-2.3 4.5"/>'),
   model: svg('<rect x="3" y="3" width="10" height="10" rx="2"/><path d="M6 1.5v1.5M10 1.5v1.5M6 13v1.5M10 13v1.5M1.5 6H3M1.5 10H3M13 6h1.5M13 10h1.5"/><rect x="6" y="6" width="4" height="4" rx=".6"/>'),
   sliders: svg('<path d="M3 4h10M3 8h10M3 12h10"/><circle cx="6" cy="4" r="1.4"/><circle cx="10.5" cy="8" r="1.4"/><circle cx="5" cy="12" r="1.4"/>'),
@@ -31,7 +30,6 @@ export const ICONS = {
   // Stage 9: the header, the composer and the cards (docs: the two mockup sheets).
   plus: svg('<path d="M8 3v10M3 8h10"/>'),
   history: svg('<circle cx="8" cy="8" r="5.8"/><path d="M8 4.8V8l2.2 1.4"/>'),
-  gear: svg('<circle cx="8" cy="8" r="2"/><path d="M8 1.6l1 1.7 1.9-.4.6 1.9 1.8.8-.4 1.9L14.4 8l-1.5 1.5.4 1.9-1.8.8-.6 1.9-1.9-.4-1 1.7-1-1.7-1.9.4-.6-1.9-1.8-.8.4-1.9L1.6 8l1.5-1.5-.4-1.9 1.8-.8.6-1.9 1.9.4z"/>'),
   more: svg('<circle cx="3.5" cy="8" r=".9"/><circle cx="8" cy="8" r=".9"/><circle cx="12.5" cy="8" r=".9"/>'),
   star: svg('<path d="M8 2.2l1.8 3.6 4 .6-2.9 2.8.7 4L8 11.3l-3.6 1.9.7-4L2.2 6.4l4-.6z"/>'),
   send: svg('<path d="M8 13V3.5M3.8 7.6 8 3.4l4.2 4.2"/>'),
@@ -413,7 +411,9 @@ export function chatPagesStyles(): string {
     cursor: pointer;
   }
   .pg-btn:hover { border-color: var(--ct-accent); }
-  .pg-btn.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); border-color: transparent; }
+  /* The theme's primary button, border included: High Contrast's is black with
+     a light border, and without it the button read as plain text. */
+  .pg-btn.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); border-color: var(--vscode-button-border, transparent); }
   .pg-btn.primary:hover { background: var(--ct-accent-solid-hover); }
   .pg-btn.ghost { background: transparent; }
   .pg-btn:disabled { opacity: 0.55; cursor: default; }
