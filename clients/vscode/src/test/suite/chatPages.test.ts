@@ -15,6 +15,7 @@ import {
   pageCommand,
   pageLink,
 } from '../../chatPages/rules';
+import { chatPanelBodyMarkup } from '../../chatPanel';
 import { ConnectResponse } from '../../daemonClient';
 
 // THE CHAT'S PAGES (Stage 8): Customize, Account, Settings.
@@ -284,9 +285,11 @@ suite('chat pages: the Account page', () => {
 suite('chat pages: the composer toolbar', () => {
   const panel = fs.readFileSync(path.join(ROOT, 'src', 'chatPanel.ts'), 'utf8');
 
-  test('@ and the plug sit beside the model chip, labelled', () => {
+  test('+ sits beside the model chip, labelled, and MCP is not repeated there', () => {
     assert.match(panel, /id="contextAddBtn"[^>]*aria-label="Add context"/);
-    assert.match(panel, /id="toolsBtn"[^>]*aria-label="MCP servers" aria-controls="pageCustomize"/);
+    // The plug opened a third copy of the MCP list (after Customize and /mcp)
+    // in the one row that overflowed in a narrow sidebar (UI audit 2026-11-21).
+    assert.doesNotMatch(panel, /id="toolsBtn"/, 'the composer must not carry an MCP button again');
   });
 
   test('@ context is read from the editor by the host, and arrives as a removable attachment', () => {
@@ -295,5 +298,59 @@ suite('chat pages: the composer toolbar', () => {
     assert.match(panel, /type: 'attachmentStarted', id, name/, 'context must arrive the way a file does, as a chip');
     const js = code('main.js');
     assert.match(js, /before === '' \|\| \/\\s\/\.test\(before\)/, 'an @ inside a word (an address) must stay text');
+  });
+});
+
+// THE UI AUDIT'S REMOVALS (2026-11-21, build plan step 1). Each of these was on
+// screen and either did nothing, promised something that does not exist, or
+// repeated a control that has a home elsewhere. Asserted on the markup and the
+// scripts as shipped, comments stripped, so a removal cannot drift back in.
+suite('chat pages: what the panel no longer shows', () => {
+  const body = chatPanelBodyMarkup('logo.png').replace(/<!--[\s\S]*?-->/g, '');
+  const pagesHtml = chatPagesMarkup().replace(/<!--[\s\S]*?-->/g, '');
+  const popover = (): string => {
+    const at = body.indexOf('id="modelPopup"');
+    const end = body.indexOf('id="modesPopup"');
+    assert.ok(at > 0 && end > at, 'the model popover moved; this test reads it between modelPopup and modesPopup');
+    return body.slice(at, end);
+  };
+
+  test('an answer has Copy and no feedback buttons, which only changed their own colour', () => {
+    const js = code('main.js');
+    assert.match(js, /copyBtn\.textContent = 'Copy'/);
+    for (const gone of ['👍', '👎', 'Was this helpful?', "'Helpful'", "'Not helpful'"]) {
+      assert.ok(!js.includes(gone), `main.js still has ${gone}`);
+    }
+  });
+
+  test('the Account page advertises no sign-in that does not exist', () => {
+    const at = pagesHtml.indexOf('id="pageAccount"');
+    const account = pagesHtml.slice(at, pagesHtml.indexOf('</section>', at));
+    assert.ok(at > 0, 'no Account page in the markup');
+    assert.doesNotMatch(account, /coming soon|Sign in to mochiii/i);
+  });
+
+  test('the welcome is the four cards: no second row of ideas, no troubleshooting', () => {
+    const at = body.indexOf('id="firstRun"');
+    const welcome = body.slice(at, body.indexOf('id="notices"'));
+    assert.strictEqual((welcome.match(/class="welcome-card"/g) || []).length, 4);
+    assert.doesNotMatch(welcome, /welcome-chip|Other ideas/);
+    assert.doesNotMatch(welcome, /Restart Daemon|first answer can take/);
+  });
+
+  test('the header says Mochiii, without a tagline', () => {
+    assert.match(body, /class="brand-name">Mochiii</);
+    assert.doesNotMatch(body, /AI Coding Assistant|brand-sub/);
+  });
+
+  test('the model popover does not repeat the effort chip, the mode chip or the ⋯ menu', () => {
+    const p = popover();
+    assert.match(p, /id="modelList"/, 'the model list is what the model chip opens; it stays');
+    assert.match(p, /id="contextPopup"/, 'the context meter stays until it has a home on the composer');
+    assert.doesNotMatch(p, /id="effortSeg"|id="modeSeg"/);
+    assert.doesNotMatch(p, /data-open-page=/);
+    assert.match(body, /id="effortBtn"/, 'the effort chip is the one place to change effort');
+    assert.match(body, /id="autoApplyToggle"/, 'the mode chip is the one place to change mode');
+    assert.match(headerPageButtons(), /id="customizeBtn"[\s\S]*id="accountBtn"[\s\S]*id="settingsBtn"/, 'the ⋯ menu is the way to the pages');
   });
 });

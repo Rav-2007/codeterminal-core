@@ -444,7 +444,7 @@
   }
 
   // THE ⚙ POPOVER (Stage 9) is the model menu grown: the provider, its models,
-  // the effort, the mode, the context meter. The model chip and the gear both
+  // the context meter. The model chip and the gear both
   // open it; it keeps the model popup's id, so everything that closed the
   // model menu closes it.
   function setModelPopupOpen(open) {
@@ -468,7 +468,6 @@
     setModesPopupOpen(false);
     if (controls) {
       controls.closeMenus();
-      controls.opened();
     }
     showModelMenuMessage('Loading models\u2026');
     setModelPopupOpen(true);
@@ -1145,13 +1144,11 @@
     });
   }
 
-  // @ CONTEXT and THE PLUG (Stage 8). @ asks the host what to add -- a file,
+  // @ CONTEXT (Stage 8). @ asks the host what to add -- a file,
   // the selection, a file's problems, an open file -- and each arrives as an
   // attachment chip, removable until sent. Typing @ at the start of a word
   // does the same; an @ inside a word (an address) is just text.
   const contextAddBtn = document.getElementById('contextAddBtn');
-  const toolsBtn = document.getElementById('toolsBtn');
-  const toolsCountEl = document.getElementById('toolsCount');
   function askForContext() {
     vscode.postMessage({ type: 'addContext', remaining: MAX_ATTACH_FILES - pendingAttachments.length });
   }
@@ -1170,24 +1167,6 @@
       askForContext();
     }
   });
-  if (toolsBtn) {
-    toolsBtn.addEventListener('click', () => {
-      if (pages) pages.openMcp();
-    });
-  }
-  /** @param {any} msg */
-  function setToolsCount(msg) {
-    if (!toolsBtn || !toolsCountEl) {
-      return;
-    }
-    const on = Number(msg.on) || 0;
-    toolsCountEl.textContent = String(on);
-    toolsCountEl.hidden = on === 0;
-    const what = on === 0 ? 'no MCP servers on' : on + ' MCP server' + (on === 1 ? '' : 's') + ' on';
-    const off = msg.agentMode === false && msg.total > 0 ? ' (agent mode is off, so none starts)' : '';
-    toolsBtn.setAttribute('aria-label', 'MCP servers: ' + what + off);
-    toolsBtn.title = 'MCP servers: ' + what + off + '. Click to manage them or browse for more.';
-  }
 
   // dismissFirstRun drops the static first-run guidance (see chatPanel.ts's
   // #firstRun) once the transcript has real content. Deliberately NOT called
@@ -1706,7 +1685,11 @@
     }
   }
 
-  function attachFeedbackFooter(card, rawText) {
+  // Under a finished answer: Copy. There were 👍 and 👎 here too, with "Was
+  // this helpful?", and a click only coloured the button: nothing was sent,
+  // saved or logged, and the choice was gone on reload. A question nobody
+  // receives is not asked any more.
+  function attachCopyFooter(card, rawText) {
     if (!card || card.querySelector('.msg-footer')) {
       return;
     }
@@ -1728,30 +1711,6 @@
     });
     footer.appendChild(copyBtn);
 
-    const up = document.createElement('button');
-    up.type = 'button';
-    up.textContent = '👍';
-    up.setAttribute('aria-label', 'Helpful');
-    const down = document.createElement('button');
-    down.type = 'button';
-    down.textContent = '👎';
-    down.setAttribute('aria-label', 'Not helpful');
-    up.addEventListener('click', () => {
-      up.classList.add('active');
-      down.classList.remove('active');
-    });
-    down.addEventListener('click', () => {
-      down.classList.add('active');
-      up.classList.remove('active');
-    });
-    footer.appendChild(up);
-    footer.appendChild(down);
-
-    const helpful = document.createElement('span');
-    helpful.className = 'helpful';
-    helpful.textContent = 'Was this helpful?';
-    footer.appendChild(helpful);
-
     card.appendChild(footer);
   }
 
@@ -1760,7 +1719,7 @@
       if (!currentAssistantPlain) {
         renderFencedContent(currentAssistantBubble, currentAssistantRaw);
       }
-      attachFeedbackFooter(currentAssistantCard, currentAssistantRaw);
+      attachCopyFooter(currentAssistantCard, currentAssistantRaw);
     }
     currentAssistantPlain = false;
     currentAssistantBubble = null;
@@ -3450,16 +3409,6 @@
     ? window.MochiiiControls.init(vscode, {
         toggleSettings: () => toggleSettings(),
         closeSettings: () => setModelPopupOpen(false),
-        getEffort: () => EFFORTS[effortIndex],
-        setEffort: (/** @type {string} */ e) => setEffortLevel(e),
-        getMode: () => currentMode,
-        setMode: (/** @type {string} */ m) => {
-          currentMode = m || 'auto';
-          renderMode();
-        },
-        openPage: (/** @type {string} */ name) => {
-          if (pages) pages.open(name);
-        },
         closePopups: () => {
           setHistoryOpen(false);
           setModelPopupOpen(false);
@@ -3559,7 +3508,7 @@
               currentAssistantCard.appendChild(cut);
             }
             if (currentAssistantCard) {
-              attachFeedbackFooter(currentAssistantCard, currentAssistantRaw);
+              attachCopyFooter(currentAssistantCard, currentAssistantRaw);
             }
             currentAssistantBubble = null;
             currentAssistantCard = null;
@@ -3681,9 +3630,6 @@
         break;
       case 'toolActivity':
         showToolActivity(msg.activity);
-        break;
-      case 'mcpCount':
-        setToolsCount(msg);
         break;
       case 'uiSettings':
         toolActivityMode = msg.toolActivity === 'expanded' ? 'expanded' : 'compact';
