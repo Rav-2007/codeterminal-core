@@ -31,6 +31,7 @@ func Main(args []string) {
 	// say at the moment of the first Style.Render, wherever in the program that
 	// turns out to be. Resolving it here makes rendering a function of state.
 	pinColorProfile()
+	pinHyperlinks() // hyperlink.go: off for the Linux console and TERM=dumb
 
 	fs := flag.NewFlagSet("mochiii", flag.ExitOnError)
 	promptFlag := fs.String("prompt", "", "prompt text to send (reads stdin if omitted); with this flag (or piped stdin), runs one-shot instead of launching the chat UI")

@@ -100,6 +100,7 @@ const (
 type mdPens struct {
 	profile     termenv.Profile
 	open, close [penCount]string
+	links       bool // addresses are hyperlinks: not under NO_COLOR, which sends no escape at all
 }
 
 // mdPenMemo holds the pens of the last profile asked for. One profile per
@@ -113,7 +114,7 @@ func currentPens() *mdPens {
 	if p := mdPenMemo.Load(); p != nil && p.profile == profile {
 		return p
 	}
-	p := &mdPens{profile: profile}
+	p := &mdPens{profile: profile, links: profile != termenv.Ascii}
 	for pen := range mdStyles {
 		p.open[pen], p.close[pen] = sgrAround(mdStyles[pen])
 	}
@@ -137,6 +138,7 @@ func sgrAround(st lipgloss.Style) (open, close string) {
 type mdRun struct {
 	text string
 	pen  mdPen
+	link string // where it opens, when the text IS an address (hyperlink.go)
 }
 
 // renderAnswer draws a model's answer at width.
@@ -311,7 +313,7 @@ func (r *mdRenderer) render(src string) {
 			r.flow.begin(&r.b, r.pens, r.width, r.width, "", nil)
 			r.flow.feed(assistantLabel, penBody)
 			for _, run := range r.runs {
-				r.flow.feed(run.text, run.pen)
+				r.flow.feedRun(run)
 			}
 			r.flow.finish()
 			continue
@@ -441,7 +443,7 @@ func (r *mdRenderer) flowLine(firstPrefix string, firstW int, restPrefix string,
 	r.b.WriteString(firstPrefix)
 	r.flow.begin(&r.b, r.pens, r.width-firstW, r.width-restW, restPrefix, nil)
 	for _, run := range runs {
-		r.flow.feed(run.text, run.pen)
+		r.flow.feedRun(run)
 	}
 	r.flow.finish()
 }
@@ -765,7 +767,7 @@ func (r *mdRenderer) table(header []string, aligns []mdAlign, body []string) {
 		cell.markFrom = len(marks)
 		r.flow.begin(&scratch, r.pens, widths[i%ncol], widths[i%ncol], "", &marks)
 		for _, run := range runs[cell.runFrom:cell.runTo] {
-			r.flow.feed(run.text, run.pen)
+			r.flow.feedRun(run)
 		}
 		r.flow.finish()
 		cell.markTo = len(marks)
@@ -851,13 +853,13 @@ func (r *mdRenderer) tableAsRows(cells []mdCell, runs []mdRun, ncol, nrow int) {
 			r.flow.begin(&r.b, r.pens, r.width, r.width-2, "  ", nil)
 			head := cells[col]
 			for _, run := range runs[head.runFrom:head.runTo] {
-				r.flow.feed(run.text, run.pen)
+				r.flow.feedRun(run)
 			}
 			if head.runFrom != head.runTo {
 				r.flow.feed(": ", penRule)
 			}
 			for _, run := range runs[cell.runFrom:cell.runTo] {
-				r.flow.feed(run.text, run.pen)
+				r.flow.feedRun(run)
 			}
 			r.flow.finish()
 		}
@@ -870,7 +872,7 @@ func (r *mdRenderer) tableAsRows(cells []mdCell, runs []mdRun, ncol, nrow int) {
 				r.flow.feed(" · ", penRule)
 			}
 			for _, run := range runs[cells[col].runFrom:cells[col].runTo] {
-				r.flow.feed(run.text, run.pen)
+				r.flow.feedRun(run)
 			}
 		}
 		r.flow.finish()
@@ -996,6 +998,8 @@ type mdFlow struct {
 	lineStart int // where this line began in out (marks only)
 	pen       mdPen
 	open      bool
+	link      string // the open pen's link; closed with it, so no line leaves one open
+	linked    bool   // the link's sequence was written (hyperlinks may be off)
 
 	word     []mdSeg // the word being gathered: it may change pen midway
 	wordW    int
@@ -1009,6 +1013,7 @@ type mdSeg struct {
 	text string
 	pen  mdPen
 	w    int
+	link string
 }
 
 func (f *mdFlow) begin(out *strings.Builder, pens *mdPens, first, rest int, prefix string, marks *[]mdMark) {
@@ -1024,7 +1029,12 @@ func (f *mdFlow) begin(out *strings.Builder, pens *mdPens, first, rest int, pref
 }
 
 // feed adds text in pen.
-func (f *mdFlow) feed(s string, pen mdPen) {
+func (f *mdFlow) feed(s string, pen mdPen) { f.feedLinked(s, pen, "") }
+
+// feedRun adds a run, and the link it carries.
+func (f *mdFlow) feedRun(run mdRun) { f.feedLinked(run.text, run.pen, run.link) }
+
+func (f *mdFlow) feedLinked(s string, pen mdPen, link string) {
 	for len(s) > 0 {
 		switch s[0] {
 		case ' ':
@@ -1048,7 +1058,7 @@ func (f *mdFlow) feed(s string, pen mdPen) {
 				j = len(s)
 			}
 			w := textWidth(s[:j])
-			f.word = append(f.word, mdSeg{s[:j], pen, w})
+			f.word = append(f.word, mdSeg{s[:j], pen, w, link})
 			f.wordW += w
 			s = s[j:]
 		}
@@ -1072,29 +1082,35 @@ func (f *mdFlow) flushWord() {
 			n = room
 		}
 		if n > 0 {
-			f.put(spaceString(n), f.spacePen, n)
+			f.put(spaceString(n), f.spacePen, n, "")
 		}
 	}
 	f.spaces = 0
 	if f.w+f.wordW <= f.avail {
 		for _, seg := range f.word {
-			f.put(seg.text, seg.pen, seg.w)
+			f.put(seg.text, seg.pen, seg.w, seg.link)
 		}
 	} else {
 		// Wider than a whole line: it is broken where each line ends.
 		for _, seg := range f.word {
-			f.putLong(seg.text, seg.pen)
+			f.putLong(seg.text, seg.pen, seg.link)
 		}
 	}
 	f.word, f.wordW = f.word[:0], 0
 }
 
-// put writes s (w columns) in pen, switching pens if it has to.
-func (f *mdFlow) put(s string, pen mdPen, w int) {
-	if !f.open || f.pen != pen {
+// put writes s (w columns) in pen, as a link to link if that is not "",
+// switching pens if it has to.
+func (f *mdFlow) put(s string, pen mdPen, w int, link string) {
+	if !f.open || f.pen != pen || f.link != link {
 		f.closePen()
 		f.out.WriteString(f.pens.open[pen])
-		f.pen, f.open = pen, true
+		seq := ""
+		if f.pens.links {
+			seq = hyperlinkOpen(link)
+		}
+		f.out.WriteString(seq)
+		f.pen, f.open, f.link, f.linked = pen, true, link, seq != ""
 	}
 	f.out.WriteString(s)
 	f.w += w
@@ -1107,7 +1123,7 @@ func (f *mdFlow) put(s string, pen mdPen, w int) {
 // what remained before every line, and a Chinese or Japanese paragraph is one
 // "word" with no space in it: the work grew with the square of its length.
 // FOUND 2026-10-06 by FuzzAnAnswerDraws -- 3.4 KB took 1.09 s to draw.
-func (f *mdFlow) putLong(s string, pen mdPen) {
+func (f *mdFlow) putLong(s string, pen mdPen, link string) {
 	for s != "" {
 		head, w, tail := takeWidth(s, f.avail-f.w)
 		if head == "" {
@@ -1123,7 +1139,7 @@ func (f *mdFlow) putLong(s string, pen mdPen) {
 			}
 			head, w, tail = cluster, cw, rest
 		}
-		f.put(head, pen, w)
+		f.put(head, pen, w, link)
 		if tail == "" {
 			return
 		}
@@ -1134,8 +1150,11 @@ func (f *mdFlow) putLong(s string, pen mdPen) {
 
 func (f *mdFlow) closePen() {
 	if f.open {
+		if f.linked {
+			f.out.WriteString(hyperlinkClose)
+		}
 		f.out.WriteString(f.pens.close[f.pen])
-		f.open = false
+		f.open, f.link, f.linked = false, "", false
 	}
 }
 
@@ -1241,6 +1260,7 @@ const (
 type mdNode struct {
 	text  string
 	flags uint8
+	link  string // as mdRun.link
 
 	delim    byte // '*', '_' or '~'; 0 for text
 	count    int  // characters of the run not yet used
@@ -1256,7 +1276,7 @@ const mdInlineSpecial = "*_`[\\<~&"
 // inline appends s's runs to dst, drawn in base where nothing marks them.
 func (r *mdRenderer) inline(dst []mdRun, s string, base mdPen) []mdRun {
 	if !strings.ContainsAny(s, mdInlineSpecial) {
-		return append(dst, mdRun{s, base})
+		return append(dst, mdRun{s, base, ""})
 	}
 	r.nodes = tokenize(r.nodes[:0], s, 0)
 	resolveEmphasis(r.nodes)
@@ -1268,7 +1288,7 @@ func (r *mdRenderer) inline(dst []mdRun, s string, base mdPen) []mdRun {
 		if text == "" {
 			continue
 		}
-		dst = append(dst, mdRun{text, penFor(base, n.flags)})
+		dst = append(dst, mdRun{text, penFor(base, n.flags), n.link})
 	}
 	return dst
 }
@@ -1366,12 +1386,15 @@ func tokenize(nodes []mdNode, s string, flags uint8) []mdNode {
 					from = i - 1 // an image: its alt text and where it is
 				}
 				text(from)
+				labelFrom := len(nodes)
 				nodes = tokenize(nodes, label, flags|mdLinkText)
 				if dest != "" && dest != label && !strings.HasPrefix(dest, "#") {
 					nodes = append(nodes,
 						mdNode{text: " (", flags: flags | mdFaint},
-						mdNode{text: dest, flags: flags | mdFaint},
+						mdNode{text: dest, flags: flags | mdFaint, link: hyperlinkTarget(dest)},
 						mdNode{text: ")", flags: flags | mdFaint})
+				} else if dest == label && labelFrom+1 == len(nodes) && nodes[labelFrom].text == dest && nodes[labelFrom].delim == 0 {
+					nodes[labelFrom].link = hyperlinkTarget(dest) // "[https://x](https://x)": the label is the address
 				}
 				i = end
 				start = i
@@ -1387,7 +1410,7 @@ func tokenize(nodes []mdNode, s string, flags uint8) []mdNode {
 			}
 			if url, end, ok := autolinkAt(s, i); ok {
 				text(i)
-				nodes = append(nodes, mdNode{text: url, flags: flags | mdLinkText})
+				nodes = append(nodes, mdNode{text: url, flags: flags | mdLinkText, link: hyperlinkTarget(url)})
 				i = end
 				start = i
 				continue

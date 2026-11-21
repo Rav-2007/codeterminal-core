@@ -299,6 +299,7 @@ func answerCorpus() []string {
 		"**" + strings.Repeat("strong words ", 30) + "**",
 		"- " + strings.Repeat("x", 300),
 		"1. see https://example.com/" + strings.Repeat("a/", 60) + " and *then* stop",
+		"read <https://example.com/" + strings.Repeat("b/", 60) + "> and [the docs](https://x.dev/" + strings.Repeat("c", 90) + ")",
 		"> " + strings.Repeat("quoted *words* ", 20),
 		"# " + strings.Repeat("a long heading ", 12),
 		"| a | b | c | d | e | f |\n|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | " + strings.Repeat("six ", 30) + "|",
@@ -348,6 +349,9 @@ func TestAnAnswerFitsItsWidthAndEveryLineClosesItsColour(t *testing.T) {
 				// lines and Bubble Tea redraws only the ones that changed.
 				if leavesColourOpen(line) {
 					t.Fatalf("width %d, line %d leaves a colour open: %q\n  doc: %q", width, n, line, clipForTest(doc))
+				}
+				if why := badHyperlinks(line); why != "" {
+					t.Fatalf("width %d, line %d: %s: %q\n  doc: %q", width, n, why, line, clipForTest(doc))
 				}
 				// NO LINE IS WIDER THAN THE TERMINAL. Asserted from 24 columns
 				// up; below that a list's own marker and a wide character can
@@ -737,6 +741,9 @@ func FuzzAnAnswerDraws(f *testing.F) {
 		for n, line := range strings.Split(coloured, "\n") {
 			if leavesColourOpen(line) {
 				t.Fatalf("width %d, line %d leaves a colour open: %q\n  doc: %q", width, n, line, doc)
+			}
+			if why := badHyperlinks(line); why != "" {
+				t.Fatalf("width %d, line %d: %s: %q\n  doc: %q", width, n, why, line, doc)
 			}
 			if width >= 24 {
 				if w := lipgloss.Width(line); w > width {
