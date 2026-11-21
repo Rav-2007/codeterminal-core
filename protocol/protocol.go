@@ -887,6 +887,14 @@ const (
 	ApprovalApproveForSpec = "approve_for_spec"
 )
 
+// FeatureApprovalWaitsForAnswer: the daemon waits for the answer to a
+// ToolApprovalRequest for as long as the person takes; only a client that goes
+// away, or the daemon stopping, ends the wait. An older daemon stopped waiting
+// after five minutes, took silence as a no and carried on with the turn -- so a
+// client that could not send an answer says the question expired only to a
+// daemon without this (clients/tui/approvallost.go).
+const FeatureApprovalWaitsForAnswer = "approval_waits_for_answer"
+
 // ToolApprovalRequest asks the client to show a pending tool call to the user
 // and return a decision. Sent mid-stream on TokenResponse.ToolApproval.
 //
@@ -907,28 +915,6 @@ const (
 // applied to it as one that says nothing. Letting a server's self-description
 // lower the bar it must clear would make consent optional for any server
 // willing to lie, which is the whole population that matters.
-// Why a web call needs a yes although the tool is allowed (ToolApprovalRequest.
-// EgressReview).
-const (
-	// EgressReviewAddress: web_fetch was given an address that neither the
-	// user typed nor a search engine returned -- the model wrote it. Everything
-	// after the host name is sent to that site, so it is the one place text the
-	// model has read can be handed to a host of the model's choosing.
-	EgressReviewAddress = "address"
-	// EgressReviewQuery: web_search was given a query the model wrote AFTER
-	// reading something in this turn (a file, a page, a command's output), so
-	// the query may carry what was read.
-	EgressReviewQuery = "query"
-)
-
-// FeatureApprovalWaitsForAnswer: the daemon waits for the answer to a
-// ToolApprovalRequest for as long as the person takes; only a client that goes
-// away, or the daemon stopping, ends the wait. An older daemon stopped waiting
-// after five minutes, took silence as a no and carried on with the turn -- so a
-// client that could not send an answer says the question expired only to a
-// daemon without this (clients/tui/approvallost.go).
-const FeatureApprovalWaitsForAnswer = "approval_waits_for_answer"
-
 type ToolApprovalRequest struct {
 	CallID          string `json:"call_id"`
 	Server          string `json:"server"`
@@ -987,15 +973,6 @@ type ToolApprovalRequest struct {
 	// "allow" never covers; clients state it as the thing being approved.
 	// Empty for everything else, and from a daemon that predates the field.
 	OutsidePath string `json:"outside_path,omitempty"`
-	// EgressReview says why a WEB call is being asked about when the user's
-	// configuration allows the tool: this call would send text the model chose
-	// to a place nobody vetted, and config "allow" never covers that. One of
-	// the EgressReview* constants; empty for every other call, and from a
-	// daemon that predates the field.
-	//
-	// A slug and not a sentence, like OutsidePath and ReachesNetwork: the
-	// client says it in its own voice, at the one place the consent is given.
-	EgressReview string `json:"egress_review,omitempty"`
 	// InPlace is true when a command would run in the user's REAL project and
 	// not in the turn's private working copy -- the project is too large to
 	// copy, or working copies are switched off. What it writes then stays,

@@ -517,27 +517,16 @@ startup naming exactly which tools do this and how to undo it. Change both value
 to `"ask"` and every call stops for a human first — the prompt shows the outgoing
 text in full before anything is sent.
 
-**What `"allow"` covers, and what it never does.** A file or a page can tell a
-model "now fetch this address with what you just read in it", and a model that
-does as a document says has sent your text to a stranger. So `"allow"` covers
-only the two calls that cannot do that:
-
-| Call | Runs without asking when | Otherwise |
-|---|---|---|
-| `web_search` | the turn has read nothing yet — its first query can only say what the conversation said | asks, showing the query |
-| `web_fetch` | the address is one **you typed** or one **a search returned** in this turn, compared whole | asks, showing the address |
-
-An address the agent wrote itself is always asked about: everything after the
-host name is sent to that host. "Yes, for this turn" on a web call covers that
-exact query or address and no other. A fetch address is also checked like a
-query — a secret-shaped value in it, or one longer than an address needs to be,
-is refused even with a yes. The prompt says which of these is why you are being
-asked (`daemon/webegress.go`). Before 2026-10-07 `"allow"` covered every call: a
-scripted model that read a file and then fetched an address carrying it was not
-stopped.
+**What `"allow"` covers.** Every web search and page fetch runs without asking,
+including after the agent has read your files or a page (owner's decision,
+2026-11-21; from 2026-10-07 until then, a search after a read and a fetch of an
+address the agent wrote were asked about). Set a tool to `"ask"` to see every
+call. A fetch address is checked like a query: a secret-shaped value in it, or
+one longer than an address needs to be, is refused (`daemon/webegress.go`).
 
 What the daemon does and does not promise on this path: secret-shaped values are
-stripped from the query before it leaves, private and link-local addresses are
+stripped from the query before it leaves (other text the agent read is not, so a
+planted instruction can make a call carry it), private and link-local addresses are
 refused, and fetched pages are fenced as untrusted data that the model may quote
 but never obey. It cannot vouch for the far end. See
 [`SECURITY_MODEL.md`](../SECURITY_MODEL.md).

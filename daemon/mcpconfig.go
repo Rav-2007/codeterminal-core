@@ -1080,16 +1080,14 @@ func (c *Config) warnMCPPolicySurface() {
 				len(local), strings.Join(local, ", "))
 		}
 		if len(network) > 0 {
-			// WHAT "ALLOW" STILL COVERS, said where the choice is made. It used
-			// to cover every call, and the warning said so; since 2026-10-07 a
-			// call that could carry what the model has read is asked about
-			// whatever this setting says (webegress.go), and a warning that
-			// still promised silence would be describing another program.
+			// WHAT "ALLOW" COVERS, said where the choice is made: every call,
+			// again, since the owner removed the asks of 2026-10-07 on
+			// 2026-11-21 (webegress.go). So the warning says plainly that a
+			// call made after reading can carry what was read.
 			c.warnf("mcp.builtin: %d built-in tool(s) will REACH THE INTERNET without asking you: %s. "+
-				"Only where the call cannot carry what the model has read: a search made before the turn "+
-				"has read anything, and a fetch of an address you typed or a search returned. Every other "+
-				"search or fetch asks you first, showing what would be sent, whatever this setting says. "+
-				"Secrets are stripped on the way out and returned pages are treated as untrusted data, "+
+				"Searches and page fetches go out as the model writes them, including after it has read "+
+				"your files or a web page, so they can carry what it read. Secret-shaped values are "+
+				"stripped or refused on the way out and returned pages are treated as untrusted data, "+
 				"but nothing here can vouch for the far end — set these to %q to see every one",
 				len(network), strings.Join(network, ", "), PolicyAsk)
 		}

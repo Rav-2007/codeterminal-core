@@ -2956,12 +2956,8 @@ func renderApprovalPanel(req protocol.ToolApprovalRequest) string {
 	return b.String()
 }
 
-// Why a web call is asked about although the tool is allowed. Kept word for
-// word with clients/vscode/media/main.js.
+// Kept word for word with clients/vscode/media/main.js.
 const (
-	egressAddressRisk = "THE AGENT WROTE THIS ADDRESS ITSELF: you did not type it and no search returned it, " +
-		"and everything in it is sent to that site — check it carries nothing of yours"
-	egressQueryRisk = "WRITTEN AFTER THE AGENT READ FILES OR PAGES IN THIS TURN: check it carries nothing of yours"
 	// A command that runs in the project itself (ToolApprovalRequest.InPlace).
 	inPlaceRisk = "RUNS IN YOUR REAL PROJECT, not in a private copy: whatever it writes stays, unreviewed — " +
 		"including .git/hooks, which run later with your full access"
@@ -2979,15 +2975,6 @@ func approvalRisks(req protocol.ToolApprovalRequest) []string {
 		risks = append(risks, "LEAVES YOUR MACHINE: sent to a third party over the internet")
 		if req.Remote != "" {
 			risks = append(risks, "SENT TO "+sanitizeText(req.Remote)+", the remote MCP server you added: what it does with this is up to its operator")
-		}
-		// WHY THIS ONE IS ASKED ABOUT when the tool is allowed (the daemon's
-		// webegress.go). Said in this client's own words, like the line above:
-		// it is the reason to read the address or the query before saying yes.
-		switch req.EgressReview {
-		case protocol.EgressReviewAddress:
-			risks = append(risks, egressAddressRisk)
-		case protocol.EgressReviewQuery:
-			risks = append(risks, egressQueryRisk)
 		}
 	case req.LaunchesSubprocess:
 		if program := sanitizeText(req.Program); program != "" {

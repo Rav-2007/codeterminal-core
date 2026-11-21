@@ -2501,14 +2501,6 @@
       if (req.remote) {
         risks.push('SENT TO ' + req.remote + ', the remote MCP server you added: what it does with this is up to its operator');
       }
-      // Why this one is asked about when the tool is allowed. Kept word for
-      // word with the TUI's egressAddressRisk / egressQueryRisk.
-      if (req.egress_review === 'address') {
-        risks.push('THE AGENT WROTE THIS ADDRESS ITSELF: you did not type it and no search returned it, ' +
-          'and everything in it is sent to that site — check it carries nothing of yours');
-      } else if (req.egress_review === 'query') {
-        risks.push('WRITTEN AFTER THE AGENT READ FILES OR PAGES IN THIS TURN: check it carries nothing of yours');
-      }
     } else if (req.launches_subprocess) {
       risks.push(req.program
         ? 'STARTS ' + req.program + ', which keeps running until the daemon exits'

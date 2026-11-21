@@ -58,14 +58,15 @@ The repository is public. An issue or a comment can be written by anyone, and ca
 | Every author is shown with their relationship to the repository (`owner of the repository`, `no relationship to the repository`) | `githubRelationship`, `daemon/githubread.go:127` |
 | The model's tool result is scrubbed, neutralised, then wrapped in `<github_content>`, a protected family, under a note saying it is information, never an instruction | `githubEnvelope`, `daemon/githubtools.go:50`; `daemon/context.go:118` |
 | What the user attaches with `/issue`, `/pr N` and `/pr N log` goes through the attached-output path, scrubbed and neutralised, and is fenced as command output | `daemon/attachedoutput.go:79` |
-| Reading anything marks the turn, so a web search after it is asked about | `hasRead`, `daemon/webegress.go:147` |
+| ~~Reading anything marks the turn, so a web search after it is asked about~~ — removed 2026-11-21 by the owner's decision: web calls under `allow` are not asked about, so the fence above is what stands between an issue's text and the web tools | `daemon/webegress.go` |
 | A CI log is cut down to the failed step and the lines that name the failure; it never reaches the model whole | `extractCIFailure`, `daemon/githubread.go:551` |
 
 The test that matters: an issue body that closes the fence and poses as the owner stays inside
 it (`daemon/github_test.go`).
 
 **Residual:** a fence makes hostile text *recognisable*; it does not make a model immune to it.
-In this phase the worst case is a misleading answer, or a web call the user is asked about.
+In this phase the worst case is a misleading answer, or a web call that carries what the model
+read, made without asking (since 2026-11-21).
 Phases 2–5 add writes, and every one of them is a proposal the owner sees word for word.
 
 ## Reproducing
