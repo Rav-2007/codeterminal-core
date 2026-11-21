@@ -298,6 +298,7 @@ func formatSlashHelp() string {
 	b.WriteString("  ctrl+↑ ctrl+↓  the prompts you sent before (alt+↑ alt+↓ too)\n")
 	b.WriteString("  drag           select text; " + copyKey() + " copies it (the terminal's own copy)\n")
 	b.WriteString(fmt.Sprintf("  %-15spaste (the terminal's own paste)\n", pasteKey()))
+	b.WriteString(fmt.Sprintf("  %-15sopen a link (the terminal's own; a plain click only selects)\n", linkKey()))
 
 	// THE AUTOMATIC BOUND, said here because /help is where someone goes after
 	// seeing the eviction marker and wondering what took their transcript.

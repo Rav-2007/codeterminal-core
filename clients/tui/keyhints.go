@@ -34,6 +34,19 @@ func pasteKeyFor(goos string) string {
 	return "ctrl+shift+v"
 }
 
+// linkKey is the terminal's gesture for opening a link, listed in /help. The
+// owner, 2026-11-21, clicked an address and nothing opened: a plain click is
+// the terminal's selection (the mouse is the terminal's, ADR-001), and the
+// terminal opens a link on ctrl+click -- cmd+click on a Mac.
+func linkKey() string { return linkKeyFor(runtime.GOOS) }
+
+func linkKeyFor(goos string) string {
+	if goos == "darwin" {
+		return "cmd+click"
+	}
+	return "ctrl+click"
+}
+
 // idleHelpText is helpText for this platform.
 func idleHelpText() string { return idleHelpTextFor(runtime.GOOS) }
 
