@@ -210,6 +210,8 @@ func (m chatModel) handleSideAnswer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleGitHubResult(msg)
 	case rateWaitTickMsg: // the countdown of a rate-limit wait (ratewait.go)
 		return m.handleRateWaitTick(msg)
+	case approvalLostMsg: // an approval answer that could not be sent (approvallost.go)
+		return m.handleApprovalLost(msg)
 	}
 	return m, nil
 }

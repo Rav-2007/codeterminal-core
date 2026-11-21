@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"mochiii/protocol"
 )
@@ -220,4 +221,20 @@ func TestAnApprovalToADaemonThatWaitsIsNeverCalledExpired(t *testing.T) {
 			t.Errorf("the transcript does not say %q:\n%s", want, screen)
 		}
 	}
+}
+
+// THE HEADLINE IS DRAWN TO BE READ: in the error colour, where roleSystem's
+// notices are faint grey. That is the one reason roleApprovalLost exists, and a
+// test that strips colour (every other one here) cannot see it go.
+func TestTheLostAnswerHeadlineIsInTheErrorColour(t *testing.T) {
+	withColorProfile(t, termenv.ANSI256, func() {
+		head := "✗ approval expired — the edit was not made (builtin__propose_edit did not run)"
+		got := renderTranscript([]turn{{role: roleApprovalLost, text: head + "\nwhy"}}, 120)
+		if want := errorStyle.Render(head); !strings.Contains(got, want) {
+			t.Errorf("the headline is not drawn in the error colour:\n got %q\nwant it to contain %q", got, want)
+		}
+		if faint := helpStyle.Render(head); strings.Contains(got, faint) {
+			t.Errorf("the headline is drawn faint, like a roleSystem notice: %q", got)
+		}
+	})
 }

@@ -257,5 +257,8 @@ func renderSystemTurn(t turn, width int) string {
 	if t.role == roleActivity && t.act != nil {
 		return renderActivity(*t.act, width)
 	}
+	if t.role == roleApprovalLost {
+		return renderApprovalLost(t.text) // approvallost.go
+	}
 	return helpStyle.Render(t.text)
 }
