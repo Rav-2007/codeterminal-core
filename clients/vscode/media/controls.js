@@ -1,11 +1,13 @@
 // THE CHAT'S CONTROLS (Stage 9, the mockup sheets): the ⋯ menu in the header,
-// the ⚙ popover's provider cards, effort and mode, its links on to the pages,
-// and the composer's ＋ (add context) and @ (mention a file).
+// the ⚙ popover's provider cards, and the composer's ＋ (add context) and @
+// (mention a file).
 //
 // The popover's model list and context meter stay main.js's (renderModelMenu,
 // refreshContextUsage): this file draws what is new around them and asks
-// main.js, through hooks, for the state it already owns -- the effort, the
-// mode, how many more files may be attached.
+// main.js, through hooks, for the state it already owns -- how many more files
+// may be attached. The popover once had its own effort and mode buttons and
+// links to the pages; the effort and mode chips and the ⋯ menu are their one
+// home now, so they are not repeated here.
 //
 // Everything dynamic goes in through textContent, as in main.js and pages.js.
 // One function scope; the webview scripts are type-checked as one project
@@ -21,9 +23,7 @@
    * @param {any} vscode the webview API main.js acquired
    * @param {{
    *   toggleSettings: () => void, closeSettings: () => void,
-   *   getEffort: () => string, setEffort: (e: string) => void,
-   *   getMode: () => string, setMode: (m: string) => void,
-   *   openPage: (name: string) => void, closePopups: () => void,
+   *   closePopups: () => void,
    *   attachRemaining: () => number, focusComposer: () => void,
    *   prefill: (cmd: string, arg: string) => void
    * }} hooks
@@ -33,10 +33,7 @@
     const moreMenu = document.getElementById('moreMenu');
     const gearBtn = document.getElementById('gearBtn');
     const settingsClose = document.getElementById('settingsClose');
-    const popover = document.getElementById('modelPopup');
     const providerGrid = document.getElementById('providerGrid');
-    const effortSeg = document.getElementById('effortSeg');
-    const modeSeg = document.getElementById('modeSeg');
     const addBtn = document.getElementById('contextAddBtn');
     const atBtn = document.getElementById('atBtn');
     const contextMenu = document.getElementById('contextMenu');
@@ -136,54 +133,6 @@
       settingsClose.addEventListener('click', () => hooks.closeSettings());
     }
 
-    /** @param {HTMLElement | null} seg @param {string} attr @param {string} value */
-    function markSeg(seg, attr, value) {
-      if (!seg) return;
-      seg.querySelectorAll('[role="radio"]').forEach((b) => {
-        b.setAttribute('aria-checked', b.getAttribute(attr) === value ? 'true' : 'false');
-      });
-    }
-
-    function syncSegments() {
-      markSeg(effortSeg, 'data-effort', hooks.getEffort());
-      markSeg(modeSeg, 'data-mode', hooks.getMode());
-    }
-
-    /** @param {HTMLElement | null} seg @param {string} attr @param {(v: string) => void} set */
-    function wireSeg(seg, attr, set) {
-      if (!seg) return;
-      seg.addEventListener('click', (e) => {
-        const b = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (e.target).closest('[role="radio"]'));
-        if (!b) return;
-        set(b.getAttribute(attr) || '');
-        syncSegments();
-      });
-      // A radio group moves with the arrow keys.
-      seg.addEventListener('keydown', (e) => {
-        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-        e.preventDefault();
-        const items = Array.from(seg.querySelectorAll('[role="radio"]'));
-        const at = items.indexOf(/** @type {Element} */ (document.activeElement));
-        const next = /** @type {HTMLElement | undefined} */ (items[(at + (e.key === 'ArrowRight' ? 1 : -1) + items.length) % items.length]);
-        if (next) {
-          next.focus();
-          next.click();
-        }
-      });
-    }
-    wireSeg(effortSeg, 'data-effort', hooks.setEffort);
-    wireSeg(modeSeg, 'data-mode', hooks.setMode);
-
-    if (popover) {
-      popover.addEventListener('click', (e) => {
-        const link = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (e.target).closest('[data-open-page]'));
-        if (link) {
-          hooks.closeSettings();
-          hooks.openPage(link.getAttribute('data-open-page') || '');
-        }
-      });
-    }
-
     /** @param {string} base */
     function hostOf(base) {
       try {
@@ -266,8 +215,6 @@
     }
 
     return {
-      /** The popover opened: the segments show what is in force now. */
-      opened: syncSegments,
       closeMenus: closeMenus,
       renderProviders: renderProviders,
       /** @param {string} name the file open in the editor, '' for none */

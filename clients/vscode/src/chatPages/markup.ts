@@ -172,11 +172,6 @@ function accountPage(): string {
       <h3>Privacy</h3>
       <ul id="acctPrivacy" class="plain-list"></ul>
     </div>
-    <div class="soon-card">
-      <h3>Sign in to mochiii.in</h3>
-      <p>Coming soon: one sign-in to keep your favourite servers and settings across machines. Mochiii works fully without it, and nothing is sent until you choose to sign in.</p>
-      <button type="button" class="pg-btn" disabled>Sign in — coming soon</button>
-    </div>
   </section>`;
 }
 
@@ -618,22 +613,6 @@ export function chatPagesStyles(): string {
   .check { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; line-height: 1.45; }
   .market-root { min-width: 0; }
 
-  /* The composer's plug: how many MCP servers are on, as a small count. */
-  .tools-btn { position: relative; }
-  .tools-btn svg, #contextAddBtn svg { display: block; }
-  .tools-count {
-    position: absolute;
-    top: 1px;
-    right: 0;
-    min-width: 14px;
-    height: 14px;
-    padding: 0 3px;
-    border-radius: 999px;
-    font-size: 9.5px;
-    line-height: 14px;
-    text-align: center;
-    background: var(--ct-accent-solid);
-    color: var(--ct-on-accent);
-  }
+  #contextAddBtn svg { display: block; }
   `;
 }

@@ -7,14 +7,14 @@ import { serverStatus } from './mcpServersView';
 // each place. The /mcp dialog and Customize each turned the daemon's status
 // line into a badge of their own -- a server that had not started was "Not
 // started" in one and a green "On" in the other, including a server whose
-// program does not exist -- and the composer's chip counted every server not
-// paused as "on", so it read "3 MCP servers on" while one failed and one
-// needed a key.
+// program does not exist -- and the composer's chip (since removed) counted
+// every server not paused as "on", so it read "3 MCP servers on" while one
+// failed and one needed a key.
 //
 // The facts are the daemon's (MCPServerInfo.status_line, its state and the
 // keys it is missing); this is the one reading of them. The host computes it
-// and sends it with each server (pagesHost.postMcp); the dialog, Customize, the
-// chip's count (pagesHost.postToolsCount) and the sidebar tree all show it.
+// and sends it with each server (pagesHost.postMcp); the dialog, Customize and
+// the sidebar tree all show it.
 
 export type VerdictKind =
   | 'connected'
@@ -103,11 +103,6 @@ export function serverVerdict(s: MCPServerInfo): ServerVerdict {
     return v('connected', 'Connected', 'on', '', status.detail);
   }
   return v('not-started', 'Not started', '', '', NOT_STARTED_TITLE);
-}
-
-/** How many servers count as on: what the composer's chip says. */
-export function serversOn(servers: MCPServerInfo[]): number {
-  return servers.filter((s) => serverVerdict(s).working).length;
 }
 
 /** The badge with its sign, for a surface that shows one ("✘ Failed"). */

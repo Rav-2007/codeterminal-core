@@ -5,9 +5,9 @@ interface Window {
   /** media/marketplace.js: draw the MCP marketplace into an element. */
   MochiiiMarketplace?: { mount(root: HTMLElement, post: (msg: any) => void): { receive(msg: any): void } };
   /** media/pages.js: the chat's Customize, Account and Settings pages. */
-  /** media/controls.js: the ⋯ menu, the ⚙ popover's cards and segments, ＋ and @. */
+  /** media/controls.js: the ⋯ menu, the ⚙ popover's provider cards, ＋ and @. */
   MochiiiControls?: {
-    init(vscode: any, hooks: any): { opened(): void; closeMenus(): void; renderProviders(msg: any): void; currentFile(name: string): void };
+    init(vscode: any, hooks: any): { closeMenus(): void; renderProviders(msg: any): void; currentFile(name: string): void };
   };
   /** media/connect.js: the connect popup -- a provider, then its key. */
   MochiiiConnect?: { init(vscode: any, hooks: any): { handle(msg: any): boolean; isOpen(): boolean } };

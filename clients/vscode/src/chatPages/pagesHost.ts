@@ -6,7 +6,7 @@
 // the setting "toolActivity" with a value the table accepts, not for any key;
 // for the link "issues", not for a URL.
 
-import { serverVerdict, serversOn, verdictLabel } from '../mcpVerdict';
+import { serverVerdict, verdictLabel } from '../mcpVerdict';
 import * as vscode from 'vscode';
 
 import { ConnectResponse, FEATURE_MCP_TOOLS, daemonInfo, fetchAvailableTiers, sendConnect, sendMCP, spendStatus, SpendStatus } from '../daemonClient';
@@ -69,7 +69,6 @@ export class ChatPagesHost implements vscode.Disposable {
       // The Installed list follows the daemon, as the tree view does.
       this.disposables.push(
         mcp.onDidChangeState(() => {
-          this.postToolsCount();
           if (this.loaded.has('customize') || this.loaded.has('mcp')) {
             this.postMcp();
           }
@@ -106,30 +105,6 @@ export class ChatPagesHost implements vscode.Disposable {
       );
     }
     await this.market.onMessage(inner);
-  }
-
-  /**
-   * announceTools gives the composer's plug button its count, asking the
-   * daemon first (the servers action starts nothing).
-   */
-  announceTools(): void {
-    const mcp = pagesContext?.mcpServers;
-    if (!mcp) {
-      return;
-    }
-    this.postToolsCount();
-    void mcp.refresh();
-  }
-
-  private postToolsCount(): void {
-    const st = pagesContext?.mcpServers?.current;
-    if (!st) {
-      return;
-    }
-    // On means working or about to be, by the same verdict the badges show --
-    // not merely "not paused" (a failed server is not on).
-    const on = serversOn(st.servers);
-    this.panel.post({ type: 'mcpCount', on, total: st.servers.length, agentMode: st.agentMode });
   }
 
   /** handle answers one page message. Returns false for a message that is not a page's. */

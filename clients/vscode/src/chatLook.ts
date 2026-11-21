@@ -14,7 +14,7 @@
 
 export function chatLookStyles(): string {
   return `
-  .icon-btn, .composer-icon, .menu-item, .provider-card, .seg-row button, .send-btn {
+  .icon-btn, .composer-icon, .menu-item, .provider-card, .send-btn {
     font: inherit;
   }
   .icon-btn, .composer-icon { padding: 0; }
@@ -26,7 +26,6 @@ export function chatLookStyles(): string {
   #appHeader .brand-logo { width: 30px; height: 30px; }
   .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
   .brand-name { font-weight: 650; font-size: 14.5px; color: var(--ct-ink); }
-  .brand-sub { font-size: 11px; font-weight: 400; color: var(--ct-muted); }
   #appHeader .header-actions { gap: 2px; }
   .icon-btn { width: 30px; height: 30px; }
   .icon-btn[aria-expanded="true"] { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
@@ -162,31 +161,10 @@ export function chatLookStyles(): string {
   }
   .model-list .model-empty { padding: 10px; color: var(--ct-muted); font-size: 12px; }
 
-  .seg-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 6px; }
-  .seg-row button {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 1px;
-    padding: 7px 4px;
-    border: 1px solid var(--ct-border);
-    border-radius: 9px;
-    background: transparent;
-    color: var(--ct-ink);
-    cursor: pointer;
-  }
-  .seg-row button:hover, .seg-row button:focus-visible { border-color: var(--ct-accent); outline: none; }
-  .seg-row button[aria-checked="true"] { border-color: var(--ct-accent); background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
-  .seg-name { font-size: 12.5px; font-weight: 600; }
-  .seg-desc { font-size: 10.5px; color: var(--ct-muted); }
-
   #contextPopup .context-bar { margin: 0 2px; }
   #contextPopup .context-popup-summary { padding: 4px 2px 0; font-size: 11.5px; color: var(--ct-muted); }
   #contextPopup .context-rows { padding: 4px 2px 0; }
   #contextPopup .context-note { padding: 4px 2px 0; }
-
-  .sp-links { display: flex; flex-direction: column; border-top: 1px solid var(--ct-border); padding-top: 8px; }
-  .sp-links .menu-item > svg:last-child { transform: rotate(-90deg); width: 12px; height: 12px; }
 
   /* ---- the welcome ------------------------------------------------------- */
   .first-run.welcome {
@@ -225,20 +203,6 @@ export function chatLookStyles(): string {
   .wc-text { display: flex; flex-direction: column; min-width: 0; }
   .wc-title { font-size: 13px; font-weight: 600; }
   .wc-desc { font-size: 11.5px; color: var(--ct-muted); margin-top: 2px; }
-  .welcome-ideas-label { text-align: left; font-size: 12px; color: var(--ct-muted); margin: 18px 2px 8px; }
-  .welcome-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .welcome-chip {
-    padding: 5px 11px;
-    border: 1px solid var(--ct-border);
-    border-radius: 999px;
-    background: transparent;
-    color: var(--ct-ink);
-    font: inherit;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .welcome-chip:hover, .welcome-chip:focus-visible { border-color: var(--ct-accent); color: var(--ct-accent-strong); outline: none; }
-  .first-run.welcome .first-run-quiet { margin: 18px 0 0 !important; font-size: 11px; text-align: center; }
 
   /* ---- messages ----------------------------------------------------------- */
   .msg.user { display: flex; justify-content: flex-end; }
@@ -405,8 +369,7 @@ export function chatLookStyles(): string {
 
   /* ---- narrow side bars --------------------------------------------------- */
   @media (max-width: 360px) {
-    .brand-sub { display: none; }
-    .composer-bar .effort-pill, #toolsBtn { display: none; }
+    .composer-bar .effort-pill { display: none; }
     .model-chip { max-width: 110px; }
   }
 `;

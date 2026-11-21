@@ -5,7 +5,7 @@ import { ChatPanel } from '../../chatPanel';
 import { ChatPagesHost, PagesContext, currentPagesContext, setPagesContext } from '../../chatPages/pagesHost';
 import { MCPServerInfo } from '../../daemonClient';
 import { McpServersState } from '../../mcpServersView';
-import { serverVerdict, serversOn } from '../../mcpVerdict';
+import { serverVerdict } from '../../mcpVerdict';
 import { ChatDevTools } from '../devtools';
 
 const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
@@ -21,6 +21,11 @@ const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
 // counting every server not paused), "the dialog, Customize and the chip say
 // the same" fails on its first server: 'probe: Customize says "On", the dialog
 // "Not started"'. The verdict's own tests pass either way.
+//
+// The composer's plug button and its count were removed (2026-11-22, the UI
+// audit: a third copy of the MCP list in a row with no room), so serversOn,
+// postToolsCount and the chip's assertions went with them. Each server's
+// `working` is still checked below; the dialog is opened by typing /mcp.
 
 function server(name: string, extra: Partial<MCPServerInfo>): MCPServerInfo {
   return { name, command: '/opt/' + name, source: 'user', ...extra } as MCPServerInfo;
@@ -47,7 +52,6 @@ suite('MCP server verdict', () => {
       const v = serverVerdict(s);
       assert.deepStrictEqual([v.kind, v.badge, v.working], want[s.name], s.name);
     }
-    assert.strictEqual(serversOn(SERVERS), 2);
   });
 
   test('a server that has not started is never shown as on (green)', () => {
@@ -63,7 +67,7 @@ suite('MCP server verdict', () => {
   });
 });
 
-suite('E2E chat — the dialog, Customize and the chip say the same about each server', () => {
+suite('E2E chat — the dialog and Customize say the same about each server', () => {
   let dt: ChatDevTools;
   let post: (msg: Record<string, unknown>) => Thenable<boolean>;
 
@@ -87,7 +91,7 @@ suite('E2E chat — the dialog, Customize and the chip say the same about each s
 
   suiteTeardown(() => dt?.close());
 
-  test('the dialog, Customize and the chip say the same', async function () {
+  test('the dialog and Customize say the same', async function () {
     this.timeout(30000);
     // What the host sends for these servers, by its own code.
     const sent: Record<string, unknown>[] = [];
@@ -107,7 +111,6 @@ suite('E2E chat — the dialog, Customize and the chip say the same about each s
     });
     try {
       (host as any).postMcp();
-      (host as any).postToolsCount();
     } finally {
       host.dispose();
       if (real) {
@@ -115,12 +118,12 @@ suite('E2E chat — the dialog, Customize and the chip say the same about each s
       }
     }
     const mcp = sent.find((m) => m.type === 'page:mcp');
-    const count = sent.find((m) => m.type === 'mcpCount');
-    assert.ok(mcp && count, 'the host sent no page:mcp or mcpCount');
+    assert.ok(mcp, 'the host sent no page:mcp');
 
-    // The dialog lists only while it is open: open it as a user does (the
-    // chip), let the host answer for the real daemon, then show these servers.
-    await dt.chatEval("(d.getElementById('toolsBtn').click(), true)");
+    // The dialog lists only while it is open: open it as a user does (/mcp,
+    // then Send), let the host answer for the real daemon, then show these
+    // servers.
+    await dt.chatEval("(d.getElementById('promptInput').value = '/mcp', d.getElementById('sendBtn').click(), true)");
     const deadline = Date.now() + 8000;
     while (await dt.chatEval<boolean>("d.getElementById('mcpDlg').hidden")) {
       assert.ok(Date.now() < deadline, 'the /mcp dialog did not open');
@@ -128,13 +131,12 @@ suite('E2E chat — the dialog, Customize and the chip say the same about each s
     }
     await new Promise((r) => setTimeout(r, 1500));
     await post(mcp);
-    await post(count);
     await new Promise((r) => setTimeout(r, 300));
-    const seen = await dt.chatEval<{ customize: Record<string, string>; dialog: Record<string, string>; chip: string }>(`(() => {
+    const seen = await dt.chatEval<{ customize: Record<string, string>; dialog: Record<string, string> }>(`(() => {
       const customize = {}, dialog = {};
       for (const r of d.querySelectorAll('#mcpInstalledList .mcp-row')) customize[r.querySelector('.row-title').textContent] = r.querySelector('.tag').textContent;
       for (const r of d.querySelectorAll('#mcpDlgGroups .mcp-dlg-item')) dialog[r.querySelector('.mcp-dlg-name').textContent] = r.querySelector('.mcp-pill').textContent;
-      return { customize, dialog, chip: d.getElementById('toolsCount').textContent };
+      return { customize, dialog };
     })()`);
 
     for (const s of SERVERS) {
@@ -145,7 +147,6 @@ suite('E2E chat — the dialog, Customize and the chip say the same about each s
       assert.strictEqual(c, serverVerdict(s).badge, `${s.name}: shown as "${c}", the verdict is "${serverVerdict(s).badge}"`);
     }
     assert.ok(!Object.values(seen.customize).includes('On'), 'Customize still says "On": ' + JSON.stringify(seen.customize));
-    assert.strictEqual(seen.chip, String(serversOn(SERVERS)), 'the chip counts servers that are not working');
     await dt.chatEval("(d.getElementById('mcpDlgClose').click(), true)");
   });
 });

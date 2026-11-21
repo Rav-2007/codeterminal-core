@@ -18,7 +18,6 @@ import { LocalCommandHost, runLocalCommand } from './localCommands';
 import {
   APPROVAL_APPROVE_FOR_SPEC,
   APPROVAL_DENY,
-  RESTART_HINT,
   ChatHistoryResponse,
   Degradation,
   EditBlockWire,
@@ -698,7 +697,6 @@ export class ChatPanel {
       this.postSlashCatalog();
       this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length, file: activeFileName() });
       this.postUiSettings();
-      this.pages.announceTools();
     } else if (msg.type === 'addContext' && typeof msg.remaining === 'number') {
       void this.onAddContext(msg.remaining, typeof msg.kind === 'string' ? msg.kind : undefined);
     } else if (msg.type === 'focused') {
@@ -2562,9 +2560,6 @@ export function chatPanelStyles(): string {
   }
   .first-run p { margin: 0 0 8px; color: var(--ct-ink); }
   .first-run p:last-child { margin-bottom: 0; }
-  /* The recovery hint is secondary: it matters only if the common case fails,
-     so it must not compete with the sentence telling the user to just type. */
-  .first-run .first-run-quiet { color: var(--ct-muted); font-size: 12px; }
   /* A TRANSCRIPT. The avatar circle and the per-turn role caption are gone
      (see addBubble in media/main.js); what tells the two speakers apart is the
      shape of the block, which is how a diff or a mail thread does it and which
@@ -2724,8 +2719,6 @@ export function chatPanelStyles(): string {
     font-size: 12px;
   }
   .msg-footer button:hover { border-color: var(--ct-accent); color: var(--ct-accent-strong); }
-  .msg-footer button.active { background: var(--ct-accent-soft); border-color: var(--ct-accent); color: var(--ct-accent-strong); }
-  .msg-footer .helpful { margin-left: auto; }
   .turn.reasoning {
     opacity: 0.7;
     font-style: italic;
@@ -3674,7 +3667,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
   <header id="appHeader">
     <div class="brand">
       ${logoUri ? `<img src="${logoUri}" alt="" class="brand-logo" />` : `<span class="brand-mark" aria-hidden="true">✦</span>`}
-      <div class="brand-text"><span class="brand-name">Mochiii</span><span class="brand-sub">AI Coding Assistant</span></div>
+      <div class="brand-text"><span class="brand-name">Mochiii</span></div>
     </div>
     <div class="header-actions">
       <button type="button" id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">${ICONS.plus}</button>
@@ -3710,20 +3703,25 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
        naming ./daemon/mochiii-daemon. That was true when written and is
        now the opposite of the truth: the extension starts and supervises the
        daemon (daemonSupervisor.ts), so following the old instruction started a
-       SECOND daemon which could only lose the bind and exit. The recovery hint
-       is interpolated from daemonClient.ts's RESTART_HINT rather than written
-       out again, so it cannot drift from the palette entry it names. -->
+       SECOND daemon which could only lose the bind and exit.
+
+       It then said, to everyone, that the first answer can be slow and to run
+       Restart Daemon if it never came. That is troubleshooting, and it is shown
+       where it is true instead: a turn that hears nothing ends with "No answer
+       arrived" and Try again (daemonClient.ts noResponseMessage), and a daemon
+       that cannot be reached is named with RESTART_HINT in its error. -->
   <!-- role="log" + aria-live="polite" + aria-atomic="false" is the combination
        that makes a STREAMED answer followable: the reader announces each
        appended token as it arrives instead of re-reading the entire transcript
        on every mutation (which aria-atomic="true" would do, and which is
        unusable at streaming rates). -->
   <div id="transcript" role="log" aria-live="polite" aria-atomic="false" aria-label="Conversation transcript">
-    <!-- THE WELCOME (Stage 9, mockup "empty state"). Each card and idea fills
-         the composer with a command and a default argument, selected so that
-         typing replaces it; nothing is sent until the user sends. The open file
-         already goes with every question (editorContext), so no card attaches it
-         again. -->
+    <!-- THE WELCOME (Stage 9, mockup "empty state"). Each card fills the
+         composer with a command and a default argument, selected so that typing
+         replaces it; nothing is sent until the user sends. The open file already
+         goes with every question (editorContext), so no card attaches it again.
+         Four cards and nothing else: a second row of "Other ideas" was four more
+         starters under the four, and every command is in the / menu anyway. -->
     <div id="firstRun" class="first-run welcome">
       ${logoUri ? `<img src="${logoUri}" alt="" class="welcome-logo" />` : ''}
       <h1 class="welcome-title">What are we building today?</h1>
@@ -3734,14 +3732,6 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
         <button type="button" class="welcome-card" data-cmd="/test " data-arg="the current file"><span class="wc-icon">${ICONS.flask}</span><span class="wc-text"><span class="wc-title">Write unit tests</span><span class="wc-desc">Generate tests for this file</span></span></button>
         <button type="button" class="welcome-card" data-cmd="/refactor " data-arg="the current file for readability"><span class="wc-icon">${ICONS.spark}</span><span class="wc-text"><span class="wc-title">Refactor code</span><span class="wc-desc">Improve and simplify</span></span></button>
       </div>
-      <div class="welcome-ideas-label">Other ideas</div>
-      <div class="welcome-chips">
-        <button type="button" class="welcome-chip" data-cmd="/review " data-arg="my recent changes">Review changes</button>
-        <button type="button" class="welcome-chip" data-cmd="/doc " data-arg="the current file">Create documentation</button>
-        <button type="button" class="welcome-chip" data-cmd="/run " data-arg="the tests for this project">How to run it</button>
-        <button type="button" class="welcome-chip" data-cmd="/plan " data-arg="the architecture for ">Design architecture</button>
-      </div>
-      <p class="first-run-quiet">The first answer can take a moment while the local index loads. If it never arrives, ${RESTART_HINT}.</p>
     </div>
   </div>
   <!-- THE NOTICES, COLLAPSED. Every strip is still a live region, so a screen
@@ -3797,8 +3787,10 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       </div>
     </div>
     <!-- THE COMPOSER (Stage 9, mockup sheet 1): one box -- what goes with the
-         question, the question, then one row: add context, @ a file, MCP, the
-         model, the effort, the mode, send. -->
+         question, the question, then one row: add context, @ a file, the model,
+         the effort, the mode, send. MCP servers are not here: they live in
+         Customize (the ⋯ menu) and /mcp, and a plug button here opened a third
+         copy of the same list in a row that had no room for it. -->
     <div id="composerShell">
       <div id="attachList" class="attach-list" hidden></div>
       <label for="promptInput" class="sr-only">Ask a question about your code</label>
@@ -3806,7 +3798,6 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       <div class="composer-bar">
         <button type="button" class="composer-icon" id="contextAddBtn" title="Add context: the current file, the selection, files, images, problems" aria-label="Add context" aria-haspopup="menu" aria-expanded="false" aria-controls="contextMenu">${ICONS.plus}</button>
         <button type="button" class="composer-icon" id="atBtn" title="Mention a file (or type @)" aria-label="Mention a file">${ICONS.at}</button>
-        <button type="button" class="composer-icon tools-btn" id="toolsBtn" title="MCP servers" aria-label="MCP servers" aria-controls="pageCustomize">${ICONS.plug}<span id="toolsCount" class="tools-count" hidden>0</span></button>
         <button type="button" class="pill model-chip" id="modelChip" title="Model and settings" aria-label="Choose model"
           aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPopup">
           <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">${ICONS.chevron}</span>
@@ -3848,9 +3839,11 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       <button type="button" class="menu-item" role="menuitem" data-context="openFile">${ICONS.code}<span class="mi-text"><span class="mi-name">An open file</span><span class="mi-desc">Any file open in a tab</span></span></button>
       <button type="button" class="menu-item" role="menuitem" data-context="problems">${ICONS.warning}<span class="mi-text"><span class="mi-name">Diagnostics</span><span class="mi-desc">Errors and warnings in the current file</span></span></button>
     </div>
-    <!-- MODEL & SETTINGS (⚙ and the model chip): the provider, its models, the
-         effort, the mode, how full the context is, and the ways on to the pages.
-         id="modelPopup" because the model menu's code opens and closes it. -->
+    <!-- MODEL & SETTINGS (⚙ and the model chip): the provider, its models, and
+         how full the context is. id="modelPopup" because the model menu's code
+         opens and closes it. Effort and mode are not repeated here: each has its
+         own chip beside the model chip, and a second control for the same
+         setting is a second place to look. The pages are in the ⋯ menu. -->
     <div id="modelPopup" class="settings-popover" hidden role="dialog" aria-label="Model and settings">
       <div class="sp-head">
         <div class="sp-title">Model &amp; settings</div>
@@ -3865,34 +3858,12 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
           <div class="sp-label">Model</div>
           <div class="modes-list model-list" id="modelList" role="listbox" aria-label="Models"></div>
         </div>
-        <div class="sp-section">
-          <div class="sp-label">Effort</div>
-          <div class="seg-row" id="effortSeg" role="radiogroup" aria-label="Thinking effort">
-            <button type="button" role="radio" aria-checked="false" data-effort=""><span class="seg-name">Auto</span><span class="seg-desc">Model default</span></button>
-            <button type="button" role="radio" aria-checked="false" data-effort="low"><span class="seg-name">Low</span><span class="seg-desc">Faster</span></button>
-            <button type="button" role="radio" aria-checked="false" data-effort="medium"><span class="seg-name">Medium</span><span class="seg-desc">Balanced</span></button>
-            <button type="button" role="radio" aria-checked="false" data-effort="high"><span class="seg-name">High</span><span class="seg-desc">More careful</span></button>
-          </div>
-        </div>
-        <div class="sp-section">
-          <div class="sp-label">Mode</div>
-          <div class="seg-row" id="modeSeg" role="radiogroup" aria-label="Agent mode">
-            <button type="button" role="radio" aria-checked="false" data-mode="manual"><span class="seg-name">Manual</span><span class="seg-desc">You apply edits</span></button>
-            <button type="button" role="radio" aria-checked="false" data-mode="plan"><span class="seg-name">Plan</span><span class="seg-desc">Plan first</span></button>
-            <button type="button" role="radio" aria-checked="false" data-mode="auto"><span class="seg-name">Auto</span><span class="seg-desc">Edits apply</span></button>
-          </div>
-        </div>
         <div class="sp-section" id="contextPopup" role="group" aria-label="Context usage">
           <div class="sp-label sp-label-row"><span>Context</span><span id="contextPct">0% Full</span></div>
           <div class="context-bar" id="contextBar" aria-hidden="true"></div>
           <div class="context-popup-summary"><span id="contextTotals">~0 / 128K Tokens</span></div>
           <div class="context-rows" id="contextRows"></div>
           <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
-        </div>
-        <div class="sp-links">
-          <button type="button" class="menu-item" data-open-page="customize">${ICONS.plug}<span class="mi-text"><span class="mi-name">MCP servers</span></span>${ICONS.chevron}</button>
-          <button type="button" class="menu-item" data-open-page="account">${ICONS.key}<span class="mi-text"><span class="mi-name">Account &amp; API key</span></span>${ICONS.chevron}</button>
-          <button type="button" class="menu-item" data-open-page="settings">${ICONS.sliders}<span class="mi-text"><span class="mi-name">More settings</span></span>${ICONS.chevron}</button>
         </div>
       </div>
     </div>

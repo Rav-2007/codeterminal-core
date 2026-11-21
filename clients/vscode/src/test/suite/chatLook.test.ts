@@ -25,9 +25,12 @@ suite('the chat look (Stage 9)', () => {
     assert.match(css, /\.icon-btn svg, \.composer-icon svg[^{]*\{ flex-shrink: 0;/);
   });
 
-  test('every welcome card and idea fills in a command that exists, with an argument', () => {
+  test('every welcome card fills in a command that exists, with an argument', () => {
+    // Four cards. The four "Other ideas" chips under them were removed (UI
+    // audit 2026-11-21: a second set of starters; every command is in the /
+    // menu), so the count is the cards'.
     const starters = [...html.matchAll(/data-cmd="\/([a-z-]+) " data-arg="([^"]+)"/g)];
-    assert.ok(starters.length >= 8, `expected the 4 cards and 4 ideas, found ${starters.length}`);
+    assert.strictEqual(starters.length, 4, `expected the 4 cards, found ${starters.length}`);
     const known = new Set(SLASH_CATALOG.map((d) => d.name));
     for (const [, name, arg] of starters) {
       assert.ok(known.has(name), `/${name} is not a command`);
