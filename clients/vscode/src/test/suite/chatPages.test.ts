@@ -310,8 +310,8 @@ suite('chat pages: what the panel no longer shows', () => {
   const pagesHtml = chatPagesMarkup().replace(/<!--[\s\S]*?-->/g, '');
   const popover = (): string => {
     const at = body.indexOf('id="modelPopup"');
-    const end = body.indexOf('id="modesPopup"');
-    assert.ok(at > 0 && end > at, 'the model popover moved; this test reads it between modelPopup and modesPopup');
+    const end = body.indexOf('id="contextPopup"');
+    assert.ok(at > 0 && end > at, 'the model menu moved; this test reads it between modelPopup and contextPopup');
     return body.slice(at, end);
   };
 
@@ -330,23 +330,42 @@ suite('chat pages: what the panel no longer shows', () => {
     assert.doesNotMatch(account, /coming soon|Sign in to mochiii/i);
   });
 
-  test('the welcome is the four cards: no second row of ideas, no troubleshooting', () => {
+  test('the empty chat has no starters and no troubleshooting', () => {
     const at = body.indexOf('id="firstRun"');
     const welcome = body.slice(at, body.indexOf('id="notices"'));
-    assert.strictEqual((welcome.match(/class="welcome-card"/g) || []).length, 4);
-    assert.doesNotMatch(welcome, /welcome-chip|Other ideas/);
+    assert.doesNotMatch(welcome, /welcome-chip|Other ideas|welcome-card/);
     assert.doesNotMatch(welcome, /Restart Daemon|first answer can take/);
   });
 
-  test('the header says Mochiii, without a tagline', () => {
-    assert.match(body, /class="brand-name">Mochiii</);
+  test('the header says Mochiii and the folder, without a tagline, and has three buttons', () => {
+    assert.match(body, /class="brand-name">Mochiii<\/span><span class="brand-folder" id="brandFolder" hidden>/);
     assert.doesNotMatch(body, /AI Coding Assistant|brand-sub/);
+    const actions = body.slice(body.indexOf('class="header-actions"'), body.indexOf('id="moreMenu"'));
+    const buttons = [...actions.matchAll(/<button[^>]*id="([a-zA-Z]+)"/g)].map((m) => m[1]);
+    assert.deepStrictEqual(buttons, ['newChatBtn', 'historyBtn', 'moreBtn'], 'the gear went: it and ⋯ both led to settings');
+    const panel = fs.readFileSync(path.join(ROOT, 'src', 'chatPanel.ts'), 'utf8');
+    assert.match(panel, /type: 'folder', name: path\.basename\(workspacePath\(\)\)/, 'the host must name the folder');
   });
 
-  test('the model popover does not repeat the effort chip, the mode chip or the ⋯ menu', () => {
+  test('the ⋯ menu lists the pages, then the bookmark', () => {
+    const menu = body.slice(body.indexOf('id="moreMenu"'), body.indexOf('id="historyPopup"'));
+    const ids = [...menu.matchAll(/<button[^>]*id="([a-zA-Z]+)"/g)].map((m) => m[1]);
+    assert.deepStrictEqual(ids, ['customizeBtn', 'accountBtn', 'settingsBtn', 'bookmarkBtn']);
+  });
+
+  test('the composer is one row: mode, model, effort ... add, context, send', () => {
+    const bar = body.slice(body.indexOf('<div class="composer-bar">'), body.indexOf('id="contextMenu"'));
+    const ids = [...bar.matchAll(/<(?:button|span)[^>]*id="([a-zA-Z]+)"/g)].map((m) => m[1]).filter((id) => /Btn$|Chip$|Toggle$/.test(id));
+    assert.deepStrictEqual(ids, ['autoApplyToggle', 'modelChip', 'specChip', 'effortBtn', 'noticesChip', 'contextAddBtn', 'contextBtn', 'sendBtn']);
+    assert.doesNotMatch(bar, /id="atBtn"|id="toolsBtn"|id="gearBtn"/);
+  });
+
+  test('the model menu is the models and a way to another provider -- nothing that has a home elsewhere', () => {
     const p = popover();
     assert.match(p, /id="modelList"/, 'the model list is what the model chip opens; it stays');
-    assert.match(p, /id="contextPopup"/, 'the context meter stays until it has a home on the composer');
+    assert.match(p, /id="switchProviderBtn"/);
+    assert.doesNotMatch(p, /id="providerGrid"|id="contextPopup"|id="contextBar"/, 'provider cards and the context meter have their own homes');
+    assert.match(body, /id="contextBtn"[^>]*aria-controls="contextPopup"/, 'the ring beside Send opens the context meter');
     assert.doesNotMatch(p, /id="effortSeg"|id="modeSeg"/);
     assert.doesNotMatch(p, /data-open-page=/);
     assert.match(body, /id="effortBtn"/, 'the effort chip is the one place to change effort');

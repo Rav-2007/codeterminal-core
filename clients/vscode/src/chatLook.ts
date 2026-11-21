@@ -1,5 +1,8 @@
-// THE CHAT'S LOOK (Stage 9): the header, the composer, the ⋯ and ＋ menus and
-// the ⚙ popover, drawn to the two mockup sheets the owner chose on 2026-10-14.
+// THE CHAT'S LOOK: the header, the composer, the ⋯ and ＋ menus, the model menu
+// and the empty chat. Stage 9 drew them to the mockup sheets of 2026-10-14; the
+// UI audit of 2026-11-21 (step 2) made the panel quieter, in the manner of an
+// editor's own chat: one row under the prompt, VS Code's own button colours,
+// a header of three buttons and an empty chat that is the lotus and one line.
 //
 // Loaded AFTER chatPanelStyles() and chatPagesStyles(), so where a rule here
 // names the same element it wins. Theme tokens only, as everywhere in the
@@ -14,7 +17,7 @@
 
 export function chatLookStyles(): string {
   return `
-  .icon-btn, .composer-icon, .menu-item, .provider-card, .send-btn {
+  .icon-btn, .composer-icon, .menu-item, .send-btn, .recent-row {
     font: inherit;
   }
   .icon-btn, .composer-icon { padding: 0; }
@@ -24,9 +27,14 @@ export function chatLookStyles(): string {
   #appHeader { padding: 10px 12px 10px 14px; }
   #appHeader .brand { gap: 10px; }
   #appHeader .brand-logo { width: 30px; height: 30px; }
-  .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
-  .brand-name { font-weight: 650; font-size: 14.5px; color: var(--ct-ink); }
-  #appHeader .header-actions { gap: 2px; }
+  #appHeader .brand { min-width: 0; flex: 1; }
+  #appHeader .brand-logo { flex-shrink: 0; }
+  .brand-text { display: flex; align-items: baseline; gap: 6px; min-width: 0; line-height: 1.15; }
+  .brand-name { font-weight: 650; font-size: 14.5px; color: var(--ct-ink); flex-shrink: 0; }
+  /* The folder, muted, after a dot; it gives way first (full path in its title). */
+  .brand-folder { font-weight: 400; font-size: 12.5px; color: var(--ct-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .brand-folder::before { content: '·'; margin-right: 6px; }
+  #appHeader .header-actions { gap: 2px; flex-shrink: 0; }
   .icon-btn { width: 30px; height: 30px; }
   .icon-btn[aria-expanded="true"] { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
 
@@ -69,7 +77,17 @@ export function chatLookStyles(): string {
 
   /* ---- the composer: one box, one row ------------------------------------- */
   #composer { padding: 10px 12px 12px; }
-  #composerShell { border-radius: 16px; padding: 10px 10px 8px 12px; overflow: visible; }
+  /* A plain input box: the theme's border, its focus colour when focused, no
+     glow and no pulse on send. */
+  #composerShell {
+    border-radius: 10px;
+    padding: 8px 8px 6px 10px;
+    overflow: visible;
+    border-color: var(--vscode-input-border, var(--ct-composer-border));
+    box-shadow: none;
+  }
+  #composerShell.focused { border-color: var(--ct-accent); box-shadow: none; }
+  #composerShell.sending { animation: none; }
   #composerShell #promptInput {
     display: block;
     width: 100%;
@@ -78,14 +96,42 @@ export function chatLookStyles(): string {
   }
   #composerShell .attach-list { padding: 0 0 8px; }
   .composer-bar { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; min-width: 0; }
-  .composer-bar .bar-gap { flex: 1; min-width: 4px; }
-  .composer-icon { width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0; }
-  .composer-bar .pill { flex-shrink: 1; min-width: 0; }
-  .model-chip { gap: 4px; max-width: 160px; }
+  .composer-bar .bar-gap { flex: 1; min-width: 2px; }
+  .composer-icon { width: 28px; height: 28px; border-radius: 7px; flex-shrink: 0; }
+  /* Chips are quiet until hovered: no fill, no border. */
+  .composer-bar .pill { flex-shrink: 0; height: 26px; padding: 0 8px; border-color: transparent; background: transparent; color: var(--ct-muted); }
+  .composer-bar .pill:hover { background: var(--ct-accent-soft); border-color: transparent; color: var(--ct-ink); }
+  /* The model chip is the one that gives way: it ellipsizes down to a few
+     letters, and its tooltip names the model in full. */
+  .model-chip { gap: 3px; flex: 0 1 auto !important; min-width: 44px !important; max-width: 200px; }
   .model-chip #modelChipLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-chip .chev svg { width: 12px; height: 12px; }
-  .effort-pill { gap: 6px; }
-  #sendBtn.send-btn { width: 34px; height: 34px; margin: 0 0 0 2px; border-radius: 10px; padding: 0; }
+  /* Effort is its bars: the word overflowed the row, and the tooltip and the
+     accessible name still say the level. */
+  .effort-pill { gap: 0; padding: 0 7px !important; }
+  .effort-pill .effort-value { display: none; }
+  /* The mode chip says its mode in words, the one place that matters most --
+     in Auto, edits reach the files without a question. */
+  #autoApplyToggle.pill { color: var(--ct-ink); }
+  #autoApplyToggle.on { background: transparent; border-color: transparent; color: var(--ct-ink); }
+  #autoApplyToggle.on:hover { background: var(--ct-accent-soft); }
+  /* The context ring: a percentage only once it is worth reading. */
+  .context-btn { width: auto; min-width: 28px; padding: 0 4px; }
+  .context-btn .context-pct { display: none; }
+  .context-btn.warn .context-pct, .context-btn.hot .context-pct { display: inline; }
+  .context-popup-summary { flex-wrap: wrap; justify-content: flex-start; gap: 2px 8px; }
+  .context-popup-summary #contextPct { white-space: nowrap; }
+  .context-ring-fill { stroke: var(--ct-muted); }
+  /* Send: VS Code's own primary button. */
+  #sendBtn.send-btn {
+    width: 28px; height: 28px; margin: 0 0 0 2px; border-radius: 7px; padding: 0;
+    background: var(--ct-accent-solid); color: var(--ct-on-accent);
+    border: 1px solid var(--vscode-button-border, transparent);
+    box-shadow: none;
+  }
+  #sendBtn.send-btn:hover:not(:disabled) { background: var(--ct-accent-solid-hover); box-shadow: none; transform: none; }
+  #sendBtn.send-btn.stop { background: var(--ct-danger); box-shadow: none; }
+  #sendBtn.send-btn svg { width: 14px; height: 14px; }
   .send-btn .i-stop { display: none; }
   .send-btn.stop .i-send { display: none; }
   .send-btn.stop .i-stop { display: inline-flex; }
@@ -110,46 +156,11 @@ export function chatLookStyles(): string {
   }
   .sp-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 6px 14px; }
   .sp-title { font-weight: 650; font-size: 13.5px; }
-  .sp-scroll { overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 14px; }
-  .sp-label {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--ct-muted);
-    margin: 0 2px 6px;
-  }
-  .sp-label-row { display: flex; justify-content: space-between; text-transform: none; letter-spacing: 0; font-size: 12px; }
-  .sp-label-row > span:first-child { text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
+  .sp-scroll { overflow-y: auto; padding: 0 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .model-popover { max-height: min(420px, 70vh); }
+  #switchProviderBtn { padding: 7px 8px; }
 
-  .provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
-  .provider-card {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px;
-    border: 1px solid var(--ct-border);
-    border-radius: 10px;
-    background: transparent;
-    color: var(--ct-ink);
-    text-align: left;
-    cursor: pointer;
-    min-width: 0;
-  }
-  .provider-card:hover, .provider-card:focus-visible { border-color: var(--ct-accent); outline: none; }
-  .provider-card.current { border-color: var(--ct-accent); background: var(--ct-accent-soft); }
-  .provider-mono {
-    width: 24px; height: 24px; border-radius: 7px; flex-shrink: 0;
-    display: inline-flex; align-items: center; justify-content: center;
-    background: var(--ct-accent-soft); color: var(--ct-accent-strong); font-weight: 700; font-size: 12px;
-  }
-  .provider-card.current .provider-mono { background: var(--ct-accent-solid); color: var(--ct-on-accent); }
-  .provider-text { display: flex; flex-direction: column; min-width: 0; }
-  .provider-name { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-sub { font-size: 10.5px; color: var(--ct-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-card.current .provider-sub { color: var(--ct-ok); }
-
-  .model-list { max-height: 210px; overflow-y: auto; border: 1px solid var(--ct-border); border-radius: 10px; padding: 4px; }
+  .model-list { max-height: 260px; overflow-y: auto; border: none; border-bottom: 1px solid var(--ct-border); border-radius: 0; padding: 0 0 6px; }
   .model-list .mode-item.quiet { opacity: 0.55; }
   .model-list .mode-item { padding: 6px 10px; gap: 8px; align-items: center; }
   .model-list .mode-name { font-size: 12.5px; }
@@ -161,48 +172,39 @@ export function chatLookStyles(): string {
   }
   .model-list .model-empty { padding: 10px; color: var(--ct-muted); font-size: 12px; }
 
-  #contextPopup .context-bar { margin: 0 2px; }
-  #contextPopup .context-popup-summary { padding: 4px 2px 0; font-size: 11.5px; color: var(--ct-muted); }
-  #contextPopup .context-rows { padding: 4px 2px 0; }
-  #contextPopup .context-note { padding: 4px 2px 0; }
 
-  /* ---- the welcome ------------------------------------------------------- */
+  /* ---- the empty chat ---------------------------------------------------- */
   .first-run.welcome {
     max-width: none;
     background: transparent;
     border: none;
-    padding: 18px 4px 8px;
+    padding: 10vh 4px 8px;
     text-align: center;
     color: var(--ct-ink);
   }
-  .welcome-logo { width: 64px; height: 64px; display: block; margin: 8px auto 10px; }
-  .welcome-title { font-size: 19px; font-weight: 650; margin: 0 0 6px; color: var(--ct-ink); line-height: 1.3; }
-  .welcome-sub { font-size: 12.5px; color: var(--ct-muted) !important; margin: 0 0 18px !important; }
-  .welcome-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; text-align: left; }
-  .welcome-card {
+  .welcome-logo { width: 56px; height: 56px; display: block; margin: 0 auto 10px; }
+  .welcome-title { font-size: 16px; font-weight: 600; margin: 0; color: var(--ct-ink); line-height: 1.3; }
+  .recent-chats { max-width: 420px; margin: 28px auto 0; text-align: left; }
+  .recent-head { font-size: 11.5px; color: var(--ct-muted); margin: 0 8px 4px; }
+  .recent-list { display: flex; flex-direction: column; }
+  .recent-row {
     display: flex;
-    align-items: flex-start;
+    align-items: baseline;
     gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--ct-border);
-    border-radius: 12px;
-    background: var(--ct-surface);
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
     color: var(--ct-ink);
-    font: inherit;
+    font-size: 12.5px;
     text-align: left;
     cursor: pointer;
-    transition: border-color 120ms ease, transform 120ms ease;
   }
-  .welcome-card:hover, .welcome-card:focus-visible { border-color: var(--ct-accent); outline: none; transform: translateY(-1px); }
-  .wc-icon {
-    width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
-    display: inline-flex; align-items: center; justify-content: center;
-    background: color-mix(in srgb, var(--ct-rose) 18%, transparent); color: var(--ct-rose);
-  }
-  .wc-icon svg { width: 17px; height: 17px; }
-  .wc-text { display: flex; flex-direction: column; min-width: 0; }
-  .wc-title { font-size: 13px; font-weight: 600; }
-  .wc-desc { font-size: 11.5px; color: var(--ct-muted); margin-top: 2px; }
+  .recent-row:hover { background: var(--vscode-list-hoverBackground, var(--ct-accent-soft)); }
+  .recent-row:focus-visible { outline: 1px solid var(--ct-accent); outline-offset: -1px; }
+  .recent-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recent-age { flex-shrink: 0; font-size: 11.5px; color: var(--ct-muted); }
 
   /* ---- messages ----------------------------------------------------------- */
   .msg.user { display: flex; justify-content: flex-end; }
@@ -367,10 +369,12 @@ export function chatLookStyles(): string {
   .mcp-switch:focus-visible { outline: 2px solid var(--ct-accent); outline-offset: 2px; }
   .mcp-acts .row-act { padding: 2px 6px; font-size: 11px; }
 
-  /* ---- narrow side bars --------------------------------------------------- */
-  @media (max-width: 360px) {
-    .composer-bar .effort-pill { display: none; }
-    .model-chip { max-width: 110px; }
+  /* ---- narrow side bars: nothing hides but the mode's word ---------------- */
+  @media (max-width: 340px) {
+    #modeBtnLabel { display: none; }
+    #autoApplyToggle.pill { padding: 0 6px; }
+    #appHeader { padding-left: 10px; padding-right: 8px; }
+    #composer { padding: 8px 8px 10px; }
   }
 `;
 }

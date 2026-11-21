@@ -25,24 +25,28 @@ suite('the chat look (Stage 9)', () => {
     assert.match(css, /\.icon-btn svg, \.composer-icon svg[^{]*\{ flex-shrink: 0;/);
   });
 
-  test('every welcome card fills in a command that exists, with an argument', () => {
-    // Four cards. The four "Other ideas" chips under them were removed (UI
-    // audit 2026-11-21: a second set of starters; every command is in the /
-    // menu), so the count is the cards'.
-    const starters = [...html.matchAll(/data-cmd="\/([a-z-]+) " data-arg="([^"]+)"/g)];
-    assert.strictEqual(starters.length, 4, `expected the 4 cards, found ${starters.length}`);
-    const known = new Set(SLASH_CATALOG.map((d) => d.name));
-    for (const [, name, arg] of starters) {
-      assert.ok(known.has(name), `/${name} is not a command`);
-      assert.ok(arg.trim().length > 0, `/${name} has no default argument`);
-    }
+  test('the empty chat is the lotus, one line and the recent chats -- no starter cards', () => {
+    // UI audit 2026-11-21, step 2, and the owner's choice of 2026-11-22: the
+    // terminal app's first screen ("What can I do for you?") and the last few
+    // chats in this folder. The four starter cards were a menu of commands the
+    // / menu already is.
+    const at = html.indexOf('id="firstRun"');
+    const welcome = html.slice(at, html.indexOf('id="notices"'));
+    assert.ok(at > 0, 'no empty-chat block');
+    assert.match(welcome, /<h1 class="welcome-title">What can I do for you\?<\/h1>/);
+    assert.match(welcome, /id="recentChats"[^>]*hidden/, 'the recent list must start hidden: it is shown only when there are chats');
+    assert.match(welcome, /id="recentList"[^>]*role="list"/);
+    assert.doesNotMatch(welcome, /data-cmd=|welcome-card/);
   });
 
-  test('a welcome card only fills the composer; it never sends', () => {
-    const js = media('controls.js');
-    const section = js.slice(js.indexOf('// ---- the welcome'), js.indexOf('return {'));
-    assert.match(section, /hooks\.prefill\(/);
-    assert.ok(!/postMessage|sendText|send\(/.test(section), 'a welcome card sends on its own');
+  test('a recent chat only opens that chat; nothing is sent', () => {
+    const js = media('main.js');
+    const recent = js.slice(js.indexOf('  function renderRecent('), js.indexOf('  // The folder this chat works in'));
+    assert.ok(recent.length > 100, 'renderRecent moved; this test reads it up to showFolder');
+    assert.match(recent, /postMessage\(\{ type: 'historyResume', id: e\.id \}\)/);
+    assert.ok(!/type: 'prompt'|sendText|send\(/.test(recent), 'a recent chat sends a prompt');
+    assert.match(recent, /textContent = e\.title/, 'a title goes in as text, never as markup');
+    assert.ok(!/innerHTML/.test(recent));
   });
 
   test('the ⋯ menu keeps the openers pages.js looks up, and the bookmark main.js does', () => {
@@ -59,6 +63,7 @@ suite('the chat look (Stage 9)', () => {
       assert.ok(host.includes(`case '${kind}':`), `the ＋ menu offers "${kind}", which onAddContext does not handle`);
     }
     assert.ok(host.includes(`case 'mention':`), '@ has no source on the host');
+    assert.deepStrictEqual(offered[0], 'mention', 'a file by name (@) is the first thing ＋ offers: it has no button of its own');
   });
 
   test('every code block carries its own Copy, of that block alone', () => {

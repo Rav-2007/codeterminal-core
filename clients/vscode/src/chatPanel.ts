@@ -610,7 +610,8 @@ export class ChatPanel {
     this.host.webview.postMessage({ type: 'history', turns: persisted });
     this.postActiveSpec();
     this.postModelTier();
-    // The header star shows whether the chat that was just restored is bookmarked.
+    // The header star shows whether the chat that was just restored is
+    // bookmarked, and the empty chat lists the recent ones: both read this.
     void this.onHistoryList('');
   }
 
@@ -697,6 +698,8 @@ export class ChatPanel {
       this.postSlashCatalog();
       this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length, file: activeFileName() });
       this.postUiSettings();
+      // The folder this chat works in, for the header ("Mochiii · my-project").
+      this.postSafe({ type: 'folder', name: path.basename(workspacePath()), path: workspacePath() });
     } else if (msg.type === 'addContext' && typeof msg.remaining === 'number') {
       void this.onAddContext(msg.remaining, typeof msg.kind === 'string' ? msg.kind : undefined);
     } else if (msg.type === 'focused') {
@@ -986,6 +989,8 @@ export class ChatPanel {
     this.lastGrounding = undefined;
     this.postSafe({ type: 'clearTranscript' });
     this.postSafe({ type: 'currentBookmark', on: false });
+    // The empty chat lists recent chats, and the one just left is now among them.
+    void this.onHistoryList('');
     if (saved) {
       this.postSafe({ type: 'info', text: 'New chat · the previous one is saved in History' });
     }
@@ -1207,6 +1212,8 @@ export class ChatPanel {
       },
       clearScreen: () => {
         void this.host.webview.postMessage({ type: 'clearTranscript' });
+        // The empty chat is back on screen, with its recent chats.
+        void this.onHistoryList('');
       },
       // /exit. A panel closes; a SIDEBAR VIEW CANNOT be closed by an extension
       // -- it is part of the user's layout, and rearranging that on their
@@ -2324,6 +2331,8 @@ export class ChatPanel {
         this.postSafe({ type: 'notice', text: r.error });
       }
       this.postSafe({ type: 'historyChanged' });
+      // A deleted chat leaves the empty chat's recent list too.
+      void this.onHistoryList('');
     } catch (err) {
       this.postSafe({ type: 'notice', text: `Could not delete that chat: ${(err as Error).message}` });
     }
@@ -2431,17 +2440,23 @@ export function chatPanelStyles(): string {
        selection, links, the effort and context indicators, your own messages.
        Rose is the brand: the lotus, the header mark, Mochiii's avatar. Every
        surface comes from the VS Code theme, so a dark theme gets dark controls --
-       hard-coded #fff here is what made the pills glare as white blobs. */
+       hard-coded #fff here is what made the pills glare as white blobs.
+
+       THE BLUE IS THE THEME'S OWN (UI audit, 2026-11-21, step 2): a filled
+       button is the theme's button, focus is its focus border, accent text is
+       its link colour -- so Dark Modern, Light Modern and High Contrast each
+       get their own, and the panel looks like part of the editor. The literals
+       are only fallbacks for a build that does not define a variable. */
     --ct-bg: var(--vscode-editor-background, #f7f9fc);
     --ct-surface: var(--vscode-sideBar-background, #ffffff);
     --ct-rose: #e8919a;
     --ct-rose-deep: #d4727d;
     --ct-brand-gradient: linear-gradient(145deg, #e8919a, #d4727d);
-    --ct-accent: #2563eb;
-    --ct-accent-strong: #1d4ed8;
-    --ct-accent-solid: #2563eb;
-    --ct-accent-solid-hover: #1d4ed8;
-    --ct-on-accent: #ffffff;
+    --ct-accent: var(--vscode-focusBorder, #2563eb);
+    --ct-accent-strong: var(--vscode-textLink-foreground, #1d4ed8);
+    --ct-accent-solid: var(--vscode-button-background, #2563eb);
+    --ct-accent-solid-hover: var(--vscode-button-hoverBackground, #1d4ed8);
+    --ct-on-accent: var(--vscode-button-foreground, #ffffff);
     --ct-accent-soft: color-mix(in srgb, var(--ct-accent) 13%, transparent);
     --ct-warn: #b45309;
     --ct-danger: #c0392b;
@@ -2466,13 +2481,9 @@ export function chatPanelStyles(): string {
     --ct-composer-text: var(--vscode-input-foreground, inherit);
     --ct-composer-muted: var(--vscode-input-placeholderForeground, #8a93a6);
   }
-  /* Dark and high-contrast themes: lighter blues, so text and rings keep
-     WCAG contrast on a dark background (#5b9bff on #1e1e1e is about 6.4:1). */
+  /* Dark and high-contrast themes: warn, danger and OK lighter, so they keep
+     contrast on a dark background. The blues are the theme's own (above). */
   body.vscode-dark, body.vscode-high-contrast {
-    --ct-accent: #5b9bff;
-    --ct-accent-strong: #93bbff;
-    --ct-accent-solid: #3574e8;
-    --ct-accent-solid-hover: #4a86f0;
     --ct-warn: #f5a524;
     --ct-danger: #f26d6d;
     --ct-ok: #4ec97a;
@@ -2488,6 +2499,11 @@ export function chatPanelStyles(): string {
     color: var(--ct-ink);
     background: var(--ct-bg);
     margin: 0;
+    /* VS Code gives every webview's body "padding: 0 20px" (its default
+       styles); unset, it took 40px from a side bar a few hundred wide and
+       stopped the header's rule short of both edges. The header, transcript
+       and composer pad themselves. */
+    padding: 0;
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -3266,7 +3282,7 @@ export function chatPanelStyles(): string {
   .connect-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
   .connect-btn { border-radius: 9px; padding: 6px 14px; font: inherit; font-size: 12.5px; cursor: pointer; border: 1px solid var(--ct-control-border); }
   .connect-btn.ghost { background: transparent; color: var(--ct-ink); }
-  .connect-btn.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); border-color: transparent; }
+  .connect-btn.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); border-color: var(--vscode-button-border, transparent); }
   .connect-btn.primary:hover { background: var(--ct-accent-solid-hover); }
   .connect-btn:disabled { opacity: 0.6; cursor: default; }
   /* HISTORY PANEL (Claude Code style): under the header, a search box and the
@@ -3667,22 +3683,23 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
   <header id="appHeader">
     <div class="brand">
       ${logoUri ? `<img src="${logoUri}" alt="" class="brand-logo" />` : `<span class="brand-mark" aria-hidden="true">✦</span>`}
-      <div class="brand-text"><span class="brand-name">Mochiii</span></div>
+      <div class="brand-text"><span class="brand-name">Mochiii</span><span class="brand-folder" id="brandFolder" hidden></span></div>
     </div>
+    <!-- THREE BUTTONS: a new chat, the chats, and everything else. There was a
+         fourth, a gear, and it and ⋯ both led to settings; the model is chosen
+         from the model chip under the prompt, and the pages are in ⋯. -->
     <div class="header-actions">
       <button type="button" id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">${ICONS.plus}</button>
       <button type="button" id="historyBtn" class="icon-btn" title="History" aria-label="Chat history"
         aria-haspopup="dialog" aria-expanded="false" aria-controls="historyPopup">${ICONS.history}</button>
-      <button type="button" id="gearBtn" class="icon-btn" title="Model and settings" aria-label="Model and settings"
-        aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPopup">${ICONS.gear}</button>
       <button type="button" id="moreBtn" class="icon-btn" title="More" aria-label="More"
         aria-haspopup="true" aria-expanded="false" aria-controls="moreMenu">${ICONS.more}</button>
     </div>
-    <!-- ⋯: this chat's bookmark, and the pages. -->
+    <!-- ⋯: the pages, then this chat's bookmark. -->
     <div id="moreMenu" class="pop-menu more-menu" hidden>
-      <button type="button" id="bookmarkBtn" class="menu-item" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">${ICONS.star}<span class="mi-text"><span class="mi-name" id="bookmarkLabel">Bookmark this chat</span></span></button>
-      <div class="menu-sep" role="separator"></div>
       ${headerPageButtons()}
+      <div class="menu-sep" role="separator"></div>
+      <button type="button" id="bookmarkBtn" class="menu-item" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">${ICONS.star}<span class="mi-text"><span class="mi-name" id="bookmarkLabel">Bookmark this chat</span></span></button>
     </div>
     <!-- History, Claude Code style: every chat, newest first, bookmarks pinned
          on top; the search matches what was said, not only titles. -->
@@ -3716,21 +3733,17 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
        on every mutation (which aria-atomic="true" would do, and which is
        unusable at streaming rates). -->
   <div id="transcript" role="log" aria-live="polite" aria-atomic="false" aria-label="Conversation transcript">
-    <!-- THE WELCOME (Stage 9, mockup "empty state"). Each card fills the
-         composer with a command and a default argument, selected so that typing
-         replaces it; nothing is sent until the user sends. The open file already
-         goes with every question (editorContext), so no card attaches it again.
-         Four cards and nothing else: a second row of "Other ideas" was four more
-         starters under the four, and every command is in the / menu anyway. -->
+    <!-- THE EMPTY CHAT: the lotus, one line -- the terminal app's own first
+         screen says the same -- and the last few chats in this folder, to pick
+         one up with a click (main.js renderRecent, from the history the ⏱ list
+         reads). Nothing else: four starter cards and four more "ideas" were a
+         menu of commands the / menu already is. -->
     <div id="firstRun" class="first-run welcome">
       ${logoUri ? `<img src="${logoUri}" alt="" class="welcome-logo" />` : ''}
-      <h1 class="welcome-title">What are we building today?</h1>
-      <p class="welcome-sub">Ask questions, understand your code, make changes, or run tasks.</p>
-      <div class="welcome-cards">
-        <button type="button" class="welcome-card" data-cmd="/explain " data-arg="the code in the current file"><span class="wc-icon">${ICONS.code}</span><span class="wc-text"><span class="wc-title">Explain this code</span><span class="wc-desc">Get a clear explanation</span></span></button>
-        <button type="button" class="welcome-card" data-cmd="/fix " data-arg="the problems in the current file"><span class="wc-icon">${ICONS.bug}</span><span class="wc-text"><span class="wc-title">Find &amp; fix bugs</span><span class="wc-desc">Detect and solve issues</span></span></button>
-        <button type="button" class="welcome-card" data-cmd="/test " data-arg="the current file"><span class="wc-icon">${ICONS.flask}</span><span class="wc-text"><span class="wc-title">Write unit tests</span><span class="wc-desc">Generate tests for this file</span></span></button>
-        <button type="button" class="welcome-card" data-cmd="/refactor " data-arg="the current file for readability"><span class="wc-icon">${ICONS.spark}</span><span class="wc-text"><span class="wc-title">Refactor code</span><span class="wc-desc">Improve and simplify</span></span></button>
+      <h1 class="welcome-title">What can I do for you?</h1>
+      <div id="recentChats" class="recent-chats" hidden>
+        <div class="recent-head" id="recentHead">Recent</div>
+        <div id="recentList" class="recent-list" role="list" aria-labelledby="recentHead"></div>
       </div>
     </div>
   </div>
@@ -3786,18 +3799,29 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
         </div>
       </div>
     </div>
-    <!-- THE COMPOSER (Stage 9, mockup sheet 1): one box -- what goes with the
-         question, the question, then one row: add context, @ a file, the model,
-         the effort, the mode, send. MCP servers are not here: they live in
-         Customize (the ⋯ menu) and /mcp, and a plug button here opened a third
-         copy of the same list in a row that had no room for it. -->
+    <!-- THE COMPOSER: one box -- what goes with the question, the question,
+         then one row (below). MCP servers are not here: they live in Customize
+         (the ⋯ menu) and /mcp, and a plug button here opened a third copy of the
+         same list in a row that had no room for it. -->
     <div id="composerShell">
       <div id="attachList" class="attach-list" hidden></div>
       <label for="promptInput" class="sr-only">Ask a question about your code</label>
-      <textarea id="promptInput" rows="2" placeholder="Ask Mochiii anything… or type /"></textarea>
+      <textarea id="promptInput" rows="2" placeholder="Ask Mochiii… / for commands, @ for files"></textarea>
+      <!-- ONE ROW. What this message is sent with on the left -- the mode, the
+           model, the effort -- and what acts on the right: add context, how full
+           the context is, send. The model chip is the one that gives way when
+           the side bar is narrow (it ellipsizes; the full name is its tooltip),
+           the mode chip drops its word under 340px, and the effort chip is its
+           bars alone: nothing overlaps or hides from 280px up. @ is typed (or
+           is the first item under ＋), not a button of its own. -->
       <div class="composer-bar">
-        <button type="button" class="composer-icon" id="contextAddBtn" title="Add context: the current file, the selection, files, images, problems" aria-label="Add context" aria-haspopup="menu" aria-expanded="false" aria-controls="contextMenu">${ICONS.plus}</button>
-        <button type="button" class="composer-icon" id="atBtn" title="Mention a file (or type @)" aria-label="Mention a file">${ICONS.at}</button>
+        <!-- The mode stays in sight: in Auto, edits reach the files without a
+             question, and that is not a state to hide behind a menu. -->
+        <button id="autoApplyToggle" class="pill mode-btn on" aria-haspopup="listbox" aria-expanded="false"
+          aria-label="Select mode"
+          title="Select agent mode (Manual, Plan, Auto)">
+          <span class="bolt" aria-hidden="true" id="modeBtnIcon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></span><span id="modeBtnLabel">Auto</span>
+        </button>
         <button type="button" class="pill model-chip" id="modelChip" title="Model and settings" aria-label="Choose model"
           aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPopup">
           <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">${ICONS.chevron}</span>
@@ -3813,17 +3837,20 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
           </svg>
           <span class="effort-value" id="effortValue">Auto</span>
         </button>
-        <!-- The mode stays in sight: in Auto, edits reach the files without a
-             question, and that is not a state to hide behind a menu. -->
-        <button id="autoApplyToggle" class="pill mode-btn on" aria-haspopup="listbox" aria-expanded="false"
-          aria-label="Select mode"
-          title="Select agent mode (Manual, Plan, Auto)">
-          <span class="bolt" aria-hidden="true" id="modeBtnIcon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></span><span id="modeBtnLabel">Auto</span>
-        </button>
         <span class="bar-gap"></span>
         <button type="button" class="pill notices-chip" id="noticesChip" hidden aria-expanded="false" aria-controls="notices"
           title="Notices about the last answer">
           ${ICONS.info}<span id="noticesCount">0</span>
+        </button>
+        <button type="button" class="composer-icon" id="contextAddBtn" title="Add context: a file by name, the current file, the selection, files, images, problems" aria-label="Add context" aria-haspopup="menu" aria-expanded="false" aria-controls="contextMenu">${ICONS.plus}</button>
+        <button type="button" class="composer-icon context-btn" id="contextBtn" title="Context usage" aria-label="Context usage" aria-haspopup="dialog" aria-expanded="false" aria-controls="contextPopup">
+          <svg class="context-ring" viewBox="0 0 24 24" aria-hidden="true">
+            <circle class="context-ring-track" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"/>
+            <circle class="context-ring-fill" id="contextRingFill" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"
+              stroke-linecap="round" transform="rotate(-90 12 12)"
+              stroke-dasharray="50.27" stroke-dashoffset="50.27"/>
+          </svg>
+          <span class="context-pct" id="contextPctShort" aria-hidden="true">0%</span>
         </button>
         <button type="button" id="sendBtn" class="send-btn" title="Send" aria-label="Send"><span class="i-send">${ICONS.send}</span><span class="i-stop">${ICONS.stop}</span></button>
       </div>
@@ -3832,6 +3859,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
          works today. The host does the reading (chatPanel.ts onAddContext). -->
     <div id="contextMenu" class="pop-menu context-menu" hidden role="menu" aria-label="Add context">
       <div class="pop-title">Add context</div>
+      <button type="button" class="menu-item" role="menuitem" data-context="mention">${ICONS.at}<span class="mi-text"><span class="mi-name">A file by name</span><span class="mi-desc">Search this folder (or type @)</span></span></button>
       <button type="button" class="menu-item" role="menuitem" data-context="currentFile">${ICONS.file}<span class="mi-text"><span class="mi-name">Current file</span><span class="mi-desc" id="ctxCurrentFile">The file open in the editor</span></span></button>
       <button type="button" class="menu-item" role="menuitem" data-context="selection">${ICONS.selection}<span class="mi-text"><span class="mi-name">Selection</span><span class="mi-desc">Use the selected code</span></span></button>
       <button type="button" class="menu-item" role="menuitem" data-context="files">${ICONS.paperclip}<span class="mi-text"><span class="mi-name">Files</span><span class="mi-desc">Documents, code, PDFs</span></span></button>
@@ -3839,33 +3867,33 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       <button type="button" class="menu-item" role="menuitem" data-context="openFile">${ICONS.code}<span class="mi-text"><span class="mi-name">An open file</span><span class="mi-desc">Any file open in a tab</span></span></button>
       <button type="button" class="menu-item" role="menuitem" data-context="problems">${ICONS.warning}<span class="mi-text"><span class="mi-name">Diagnostics</span><span class="mi-desc">Errors and warnings in the current file</span></span></button>
     </div>
-    <!-- MODEL & SETTINGS (⚙ and the model chip): the provider, its models, and
-         how full the context is. id="modelPopup" because the model menu's code
-         opens and closes it. Effort and mode are not repeated here: each has its
-         own chip beside the model chip, and a second control for the same
-         setting is a second place to look. The pages are in the ⋯ menu. -->
-    <div id="modelPopup" class="settings-popover" hidden role="dialog" aria-label="Model and settings">
+    <!-- THE MODEL MENU (the model chip, or /model): the models of the provider
+         in use, and the way to another provider or key. It used to be a "Model &
+         settings" popover behind a gear as well, with provider cards, effort,
+         mode, the context meter and links to the pages -- each of which has its
+         own home now. id="modelPopup" because the model menu's code opens and
+         closes it. -->
+    <div id="modelPopup" class="settings-popover model-popover" hidden role="dialog" aria-label="Choose a model">
       <div class="sp-head">
-        <div class="sp-title">Model &amp; settings</div>
+        <div class="sp-title">Model</div>
         <button type="button" class="connect-icon" id="settingsClose" aria-label="Close" title="Close">✕</button>
       </div>
       <div class="sp-scroll">
-        <div class="sp-section">
-          <div class="sp-label">Provider</div>
-          <div class="provider-grid" id="providerGrid" role="list" aria-label="Providers"></div>
-        </div>
-        <div class="sp-section">
-          <div class="sp-label">Model</div>
-          <div class="modes-list model-list" id="modelList" role="listbox" aria-label="Models"></div>
-        </div>
-        <div class="sp-section" id="contextPopup" role="group" aria-label="Context usage">
-          <div class="sp-label sp-label-row"><span>Context</span><span id="contextPct">0% Full</span></div>
-          <div class="context-bar" id="contextBar" aria-hidden="true"></div>
-          <div class="context-popup-summary"><span id="contextTotals">~0 / 128K Tokens</span></div>
-          <div class="context-rows" id="contextRows"></div>
-          <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
-        </div>
+        <div class="modes-list model-list" id="modelList" role="listbox" aria-label="Models"></div>
+        <button type="button" class="menu-item" id="switchProviderBtn">${ICONS.key}<span class="mi-text"><span class="mi-name">Switch provider or key…</span><span class="mi-desc" id="currentProvider"></span></span></button>
       </div>
+    </div>
+    <!-- CONTEXT (the ring beside Send): how full the model's window is, and
+         what fills it. -->
+    <div id="contextPopup" class="context-popup" hidden role="dialog" aria-label="Context usage">
+      <div class="context-popup-head">
+        <div class="context-popup-title">Context</div>
+        <button type="button" class="context-popup-close" id="contextPopupClose" aria-label="Close context usage" title="Close">✕</button>
+      </div>
+      <div class="context-popup-summary"><span id="contextPct">0% Full</span> <span id="contextTotals">~0 / 128K Tokens</span></div>
+      <div class="context-bar" id="contextBar" aria-hidden="true"></div>
+      <div class="context-rows" id="contextRows"></div>
+      <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
     </div>
     <div id="modesPopup" class="modes-popup" hidden role="dialog" aria-label="Select mode">
       <div class="modes-popup-head">
