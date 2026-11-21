@@ -1063,6 +1063,14 @@ type ToolApprovalResponse struct {
 	CallID          string `json:"call_id"`
 	ArgumentsSHA256 string `json:"arguments_sha256"`
 	Decision        string `json:"decision"`
+	// Auto says the client's auto-approve mode gave this answer, not a person
+	// reading this call: the person turned the mode on (ctrl+space in the
+	// terminal client, 2026-11-21) and it answers ApprovalApprove for them. It
+	// is NOT a different permission -- the answer is verified exactly as a
+	// person's is -- only a different story in the audit log (auto_approve
+	// rather than user_approve). Omitted, it is false, which is what a daemon
+	// older than it reads it as anyway.
+	Auto bool `json:"auto,omitempty"`
 }
 
 // Stable, machine-readable reason slugs for IncompleteInfo.Reason. Named for
