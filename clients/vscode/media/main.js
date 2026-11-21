@@ -1267,32 +1267,6 @@
     return '';
   }
 
-  const brandLogo = /** @type {HTMLImageElement | null} */ (document.querySelector('.brand-logo'));
-  /** @param {boolean} timed false for a restored turn: its time is not known */
-  function replyHead(timed) {
-    const head = document.createElement('div');
-    head.className = 'reply-head';
-    head.setAttribute('aria-hidden', 'true');
-    if (brandLogo && brandLogo.src) {
-      const img = document.createElement('img');
-      img.className = 'reply-logo';
-      img.src = brandLogo.src;
-      img.alt = '';
-      head.appendChild(img);
-    }
-    const name = document.createElement('span');
-    name.className = 'reply-name';
-    name.textContent = 'Mochiii';
-    head.appendChild(name);
-    if (timed) {
-      const time = document.createElement('span');
-      time.className = 'reply-time';
-      time.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      head.appendChild(time);
-    }
-    return head;
-  }
-
   /** @param {string} role @param {string} text @param {boolean} [restored] */
   function addBubble(role, text, restored) {
     if (role === 'user' || role === 'assistant') {
@@ -1315,11 +1289,11 @@
       role === 'user' ? 'Your message' : role === 'error' ? 'Error' : 'Mochiii\u2019s reply'
     );
 
-    // MOCHIII'S REPLY CARRIES A HEAD (Stage 9, the mockups): the lotus, the
-    // name and the time. The user's turn is a bubble on the right instead.
-    if (role === 'assistant') {
-      card.appendChild(replyHead(!restored));
-    }
+    // NO HEAD ON A REPLY (UI audit, step 3): the lotus, the name and the time
+    // took a line per answer to say who was speaking, which the shape already
+    // says -- your message is a box, Mochiii's reply is plain text. The group's
+    // aria-label above still names the speaker.
+    void restored;
 
     const visibleLabel = roleLabel(role);
     if (visibleLabel) {
@@ -1747,12 +1721,26 @@
   // this helpful?", and a click only coloured the button: nothing was sent,
   // saved or logged, and the choice was gone on reload. A question nobody
   // receives is not asked any more.
-  function attachCopyFooter(card, rawText) {
+  //
+  // And, beside it, what the answer stood on: how much of the project it was
+  // given, or that it was given none. That line used to float above the
+  // composer as "not grounded", counted among the notices, about whichever
+  // answer came last; here it sits under the answer it describes.
+  /** @param {HTMLElement | null} card @param {string} rawText @param {any} [grounding] */
+  function attachCopyFooter(card, rawText, grounding) {
     if (!card || card.querySelector('.msg-footer')) {
       return;
     }
     const footer = document.createElement('div');
     footer.className = 'msg-footer';
+    const used = groundingLine(grounding);
+    if (used) {
+      const line = document.createElement('span');
+      line.className = 'msg-grounding' + (grounding && grounding.workspace_mismatch ? ' warn' : '');
+      line.textContent = used;
+      if (grounding && grounding.reason) line.title = String(grounding.reason);
+      footer.appendChild(line);
+    }
 
     const copyBtn = document.createElement('button');
     copyBtn.type = 'button';
@@ -1767,9 +1755,31 @@
         });
       }
     });
+    copyBtn.className = 'msg-copy';
+    copyBtn.setAttribute('aria-label', 'Copy this answer');
     footer.appendChild(copyBtn);
 
     card.appendChild(footer);
+  }
+
+  // groundingLine says, in words, what an answer was given from the project.
+  // '' when there is nothing to say (a reopened chat has no grounding report).
+  /** @param {any} info */
+  function groundingLine(info) {
+    if (!info) {
+      return '';
+    }
+    let text;
+    if (info.grounded) {
+      const n = Number(info.chunks) || 0;
+      text = 'Used ' + n + ' passage' + (n === 1 ? '' : 's') + ' from this project' + (info.truncated ? ', trimmed to fit' : '');
+    } else {
+      text = 'Answered without this project\u2019s files';
+    }
+    if (info.workspace_mismatch) {
+      text += ' \u00b7 \u26a0 the index is of a different folder' + (info.workspace ? ' (' + info.workspace + ')' : '');
+    }
+    return text;
   }
 
   function finalizeAssistant() {
@@ -1777,7 +1787,7 @@
       if (!currentAssistantPlain) {
         renderFencedContent(currentAssistantBubble, currentAssistantRaw);
       }
-      attachCopyFooter(currentAssistantCard, currentAssistantRaw);
+      attachCopyFooter(currentAssistantCard, currentAssistantRaw, lastGroundingInfo);
     }
     currentAssistantPlain = false;
     currentAssistantBubble = null;
@@ -1817,7 +1827,11 @@
   function setGrounding(info) {
     lastGroundingInfo = info || null;
     refreshContextUsage();
-    if (!info) {
+    // What the answer stood on is said under the answer (groundingLine, on
+    // 'done'). The strip -- a notice, counted on the composer's chip -- keeps
+    // only the warning below: a routine "not grounded" there read as an
+    // alarm about nothing in particular.
+    if (!info || !info.workspace_mismatch) {
       groundingEl.textContent = '';
       return;
     }
@@ -1998,7 +2012,7 @@
 
     const title = document.createElement('div');
     title.className = 'conn-cta-title';
-    title.textContent = 'Mochiii needs an API key to answer';
+    title.textContent = 'Connect a model to start';
     cta.appendChild(title);
 
     // WRITTEN FOR SOMEONE WHO JUST INSTALLED AN EXTENSION: what is missing,
@@ -2010,14 +2024,14 @@
     // or processes: nothing a first-time reader can act on is in there.
     const body = document.createElement('div');
     body.className = 'conn-cta-body';
+    // ONE SENTENCE (UI audit, step 3): it was a paragraph of plain text.
     body.textContent =
-      'Mochiii answers by sending your question to a model provider, and that needs an API key from your account there. ' +
-      'Connect a model opens a box where you paste the key — it stays on this machine and is never written into your project files.';
+      'Use your own key from a model provider, or a model server on this computer; a key stays on this machine.';
     cta.appendChild(body);
 
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'conn-cta-button';
+    button.className = 'conn-cta-button primary';
     button.textContent = 'Connect a model';
     // addEventListener, never an onclick attribute: this webview's CSP is
     // `default-src none; script-src nonce-...`, under which an inline handler
@@ -2179,6 +2193,73 @@
   // (e.g. "Edit 2 of 3") -- the host walks the full block list one at a
   // time (see startEditReview/postCurrentBlockOrSummary in chatPanel.ts)
   // and this function is called once per block as the host advances.
+  // EDIT_DIFF_SHOWN: the rows a proposal shows before "Show all".
+  const EDIT_DIFF_SHOWN = 8;
+
+  // editDiff draws a proposal's change as -/+ rows: the lines the two sides
+  // share at the start and the end are trimmed to two of context, and what is
+  // left is what goes and what comes. Every line goes in through textContent:
+  // it is the model's text, and the user's file.
+  /** @param {string} before @param {string} after @param {string} file */
+  function editDiff(before, after, file) {
+    const a = String(before || '').split('\n');
+    const b = String(after || '').split('\n');
+    let start = 0;
+    while (start < a.length && start < b.length && a[start] === b[start]) start++;
+    let endA = a.length;
+    let endB = b.length;
+    while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+      endA--;
+      endB--;
+    }
+    /** @type {[string, string][]} */
+    const rows = [];
+    for (let i = Math.max(0, start - 2); i < start; i++) rows.push(['ctx', a[i]]);
+    for (let i = start; i < endA; i++) rows.push(['del', a[i]]);
+    for (let i = start; i < endB; i++) rows.push(['add', b[i]]);
+    for (let i = endA; i < Math.min(a.length, endA + 2); i++) rows.push(['ctx', a[i]]);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'edit-diff-wrap';
+    const box = document.createElement('div');
+    box.className = 'edit-diff';
+    box.setAttribute('role', 'region');
+    box.setAttribute('aria-label', 'The change to ' + file);
+    const signs = { ctx: ' ', del: '-', add: '+' };
+    rows.forEach(([kind, text], i) => {
+      const row = document.createElement('div');
+      row.className = 'diff-row ' + kind + (i >= EDIT_DIFF_SHOWN ? ' more' : '');
+      const sign = document.createElement('span');
+      sign.className = 'diff-sign';
+      sign.setAttribute('aria-hidden', 'true');
+      sign.textContent = signs[kind];
+      const line = document.createElement('span');
+      line.className = 'diff-text';
+      line.textContent = text;
+      row.append(sign, line);
+      if (kind !== 'ctx') {
+        row.setAttribute('aria-label', (kind === 'add' ? 'added: ' : 'removed: ') + text);
+      }
+      box.appendChild(row);
+    });
+    wrap.appendChild(box);
+    if (rows.length > EDIT_DIFF_SHOWN) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'edit-diff-more link';
+      more.textContent = 'Show all ' + rows.length + ' lines';
+      more.setAttribute('aria-expanded', 'false');
+      more.addEventListener('click', () => {
+        const open = !box.classList.contains('expanded');
+        box.classList.toggle('expanded', open);
+        more.textContent = open ? 'Show fewer lines' : 'Show all ' + rows.length + ' lines';
+        more.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      wrap.appendChild(more);
+    }
+    return wrap;
+  }
+
   function showEditProposal(edit, index, total) {
     clearEditProposal();
 
@@ -2199,26 +2280,36 @@
         `${removedCount} line(s) removed, ${addedCount} line(s) added`
     );
 
-    const indexEl = document.createElement('div');
-    indexEl.className = 'edit-index';
-    indexEl.textContent = `Edit ${index + 1} of ${total}`;
-    container.appendChild(indexEl);
-
+    // The file, and which edit of how many.
+    const head = document.createElement('div');
+    head.className = 'edit-head';
     const pathEl = document.createElement('div');
     pathEl.className = 'file-path';
     pathEl.textContent = edit.file_path;
-    container.appendChild(pathEl);
+    const indexEl = document.createElement('div');
+    indexEl.className = 'edit-index';
+    indexEl.textContent = total > 1 ? `Edit ${index + 1} of ${total}` : '';
+    head.append(pathEl, indexEl);
+    container.appendChild(head);
 
-    // The diff itself is now handled natively via the extension host,
-    // so we just offer a button to view it instead of red/green lines.
+    // THE CHANGE ITSELF, IN THE CARD (UI audit, step 3). It used to be behind
+    // a "View Native Diff" button, so an edit was approved from its file name
+    // alone. The first lines show; the rest open with one click; the editor's
+    // own diff is still a click away.
+    container.appendChild(editDiff(edit.search, edit.replace, edit.file_path));
+
     const diffBtn = document.createElement('button');
-    diffBtn.textContent = 'View Native Diff';
+    diffBtn.type = 'button';
+    diffBtn.textContent = 'Open diff';
     diffBtn.className = 'view-diff-btn';
-    diffBtn.setAttribute('aria-label', `View diff for ${edit.file_path}`);
+    diffBtn.setAttribute('aria-label', `Open the diff for ${edit.file_path} in the editor`);
     diffBtn.addEventListener('click', () => {
       vscode.postMessage({ type: 'viewDiff', index: index });
     });
-    container.appendChild(diffBtn);
+    const footer = document.createElement('div');
+    footer.className = 'edit-footer';
+    footer.appendChild(diffBtn);
+    container.appendChild(footer);
 
     // HARD SAFETY REQUIREMENT: during an auto-apply run, no clickable
     // Apply/Skip buttons are rendered at all -- the host is already firing
@@ -2230,7 +2321,7 @@
       const pending = document.createElement('div');
       pending.className = 'result auto-pending';
       pending.textContent = 'auto-applying…';
-      container.appendChild(pending);
+      footer.appendChild(pending);
     } else {
       const actions = document.createElement('div');
       actions.className = 'actions';
@@ -2240,14 +2331,17 @@
       actions.setAttribute('role', 'group');
       actions.setAttribute('aria-label', `Approve or reject the proposed edit to ${edit.file_path}`);
       const applyBtn = document.createElement('button');
+      applyBtn.type = 'button';
+      applyBtn.className = 'primary';
       applyBtn.textContent = 'Apply';
       applyBtn.setAttribute('aria-label', `Apply edit ${index + 1} of ${total} to ${edit.file_path}`);
       const skipBtn = document.createElement('button');
+      skipBtn.type = 'button';
       skipBtn.textContent = 'Skip';
       skipBtn.setAttribute('aria-label', `Skip edit ${index + 1} of ${total} to ${edit.file_path}`);
-      actions.appendChild(applyBtn);
       actions.appendChild(skipBtn);
-      container.appendChild(actions);
+      actions.appendChild(applyBtn);
+      footer.appendChild(actions);
 
       applyBtn.addEventListener('click', () => {
         applyBtn.disabled = true;
@@ -2507,23 +2601,32 @@
     heading.textContent = question;
     container.appendChild(heading);
 
+    // THE RISK LINE. The sentences are the terminal's, word for word
+    // (clients/tui/chat.go approvalRisks; approvalwhy_test.go holds the two to
+    // the same words), and none is softened. What changed (UI audit, step 3)
+    // is how they are drawn: one line with a sign, instead of every risk as a
+    // red block -- red for what leaves the machine, writes the real project or
+    // is marked destructive; amber for what runs outside the sandbox or starts
+    // a program. One colour for every risk made the dangerous ones look like
+    // the routine ones.
     const lane = document.createElement('div');
     lane.id = laneId;
-    lane.className = 'approval-lane unconfined';
+    lane.className = 'approval-lane';
+    /** @type {{ text: string, level: 'danger' | 'warn' }[]} */
     const risks = [];
     if (req.reaches_network) {
-      risks.push('LEAVES YOUR MACHINE: sent to a third party over the internet');
+      risks.push({ level: 'danger', text: 'LEAVES YOUR MACHINE: sent to a third party over the internet' });
       // A remote MCP server's call (FEATURE_MCP_REMOTE): where, by name. Kept
       // word for word with the TUI's renderApprovalPanel.
       if (req.remote) {
-        risks.push('SENT TO ' + req.remote + ', the remote MCP server you added: what it does with this is up to its operator');
+        risks.push({ level: 'danger', text: 'SENT TO ' + req.remote + ', the remote MCP server you added: what it does with this is up to its operator' });
       }
     } else if (req.launches_subprocess) {
-      risks.push(req.program
+      risks.push({ level: 'warn', text: req.program
         ? 'STARTS ' + req.program + ', which keeps running until the daemon exits'
-        : 'STARTS ANOTHER PROGRAM: a language server (gopls, tsserver or pyright)');
+        : 'STARTS ANOTHER PROGRAM: a language server (gopls, tsserver or pyright)' });
     } else if (req.program) {
-      risks.push('ASKS ' + req.program + ', WHICH IS ALREADY RUNNING: starts nothing new');
+      risks.push({ level: 'warn', text: 'ASKS ' + req.program + ', WHICH IS ALREADY RUNNING: starts nothing new' });
     } else if (req.outside_path) {
       // The question already names the path; nothing to add.
     } else if (req.confined) {
@@ -2533,29 +2636,49 @@
       // NEVER SOFTENED: a third-party MCP server is an ordinary subprocess
       // with the user's full access, and this approval is all that stands in
       // front of it.
-      risks.push('NOT SANDBOXED: a separate program with your full access');
+      risks.push({ level: 'warn', text: 'NOT SANDBOXED: a separate program with your full access' });
     }
     // A command with no private copy to run in. Kept word for word with the
     // TUI's inPlaceRisk.
     if (req.in_place) {
-      risks.push('RUNS IN YOUR REAL PROJECT, not in a private copy: whatever it writes stays, unreviewed — ' +
-        'including .git/hooks, which run later with your full access');
+      risks.push({ level: 'danger', text: 'RUNS IN YOUR REAL PROJECT, not in a private copy: whatever it writes stays, unreviewed — ' +
+        'including .git/hooks, which run later with your full access' });
     }
     if (req.destructive) {
-      risks.push('marked destructive');
+      risks.push({ level: 'danger', text: 'marked destructive' });
     }
     if (risks.length > 0) {
-      lane.textContent = risks.join(' · ');
+      const worst = risks.some((r) => r.level === 'danger') ? 'danger' : 'warn';
+      lane.classList.add(worst);
+      const sign = document.createElement('span');
+      sign.className = 'approval-sign';
+      sign.setAttribute('aria-hidden', 'true');
+      sign.textContent = '\u26a0';
+      lane.appendChild(sign);
+      const words = document.createElement('span');
+      words.className = 'approval-risks';
+      risks.forEach((r, i) => {
+        if (i > 0) words.appendChild(document.createTextNode(' \u00b7 '));
+        const part = document.createElement('span');
+        part.className = 'risk ' + r.level;
+        part.textContent = r.text;
+        words.appendChild(part);
+      });
+      lane.appendChild(words);
       container.appendChild(lane);
     }
 
     const actions = document.createElement('div');
     actions.className = 'approval-actions';
 
-    const deny = approvalButton('No', 'deny', req, 'Do not run this tool call');
-    const approve = approvalButton('Yes', 'approve', req, 'Run this tool call with these exact arguments');
+    // Allow is the one primary button; the rest are the theme's secondary
+    // buttons, and Stop task is a link. Deny comes first in the DOM, in tab
+    // order and on screen, and takes the focus: a reflex Enter denies.
+    const deny = approvalButton('Deny', 'deny', req, 'Do not run this tool call');
+    const approve = approvalButton('Allow', 'approve', req, 'Run this tool call with these exact arguments');
+    approve.classList.add('primary');
     const forTurn = approvalButton(
-      'Yes for this task',
+      'Allow for this task',
       'approve_for_turn',
       req,
       // For a tool that runs commands the daemon covers only this exact
@@ -2565,24 +2688,35 @@
     // Offered only where the daemon offered it and a spec is active.
     const forSpec = req.spec_grant
       ? approvalButton(
-          'Yes while this spec is active',
+          'Allow while this spec is active',
           'approve_for_spec',
           req,
           'Run this exact command now, and again without asking while the active spec stays on; any other command still asks'
         )
       : null;
-    const cancel = approvalButton('Stop the task', 'cancel_turn', req, 'Deny this call and abandon the whole task');
+    const cancel = approvalButton('Stop task', 'cancel_turn', req, 'Deny this call and abandon the whole task');
+    cancel.classList.add('link');
 
     // Deny first in DOM order as well as focus order: tab order should reach
     // the safe option before the permissive one.
     actions.appendChild(deny);
-    actions.appendChild(approve);
     actions.appendChild(forTurn);
     if (forSpec) {
       actions.appendChild(forSpec);
     }
+    actions.appendChild(approve);
     actions.appendChild(cancel);
     container.appendChild(actions);
+
+    // Esc denies, from anywhere in the card. No single key allows: text typed
+    // into the composer can never approve anything.
+    container.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && currentApprovalCallId === req.call_id) {
+        e.preventDefault();
+        e.stopPropagation();
+        answerToolApproval(req, 'deny', 'Deny');
+      }
+    });
 
     transcriptEl.appendChild(container);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
@@ -2644,6 +2778,7 @@
 
   function approvalButton(label, decision, req, description) {
     const btn = document.createElement('button');
+    btn.type = 'button';
     btn.className = 'approval-btn ' + decision;
     btn.textContent = label;
     btn.setAttribute('aria-label', label + ': ' + description);

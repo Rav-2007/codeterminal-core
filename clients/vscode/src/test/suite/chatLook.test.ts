@@ -92,3 +92,76 @@ suite('the chat look (Stage 9)', () => {
     assert.ok(!/innerHTML/.test(mark), 'markMatch builds markup from a string');
   });
 });
+
+// THE CONVERSATION (UI audit 2026-11-21, step 3). Structural, like the rest of
+// this file: the screenshots in the pull request are what show how it looks.
+suite('the conversation (UI audit, step 3)', () => {
+  const js = media('main.js');
+  const panel = fs.readFileSync(path.join(ROOT, 'src', 'chatPanel.ts'), 'utf8');
+  const fnBody = (name: string, next: string): string => {
+    const from = js.indexOf(`  function ${name}(`);
+    const to = js.indexOf(`  function ${next}(`, from + 1);
+    assert.ok(from > 0 && to > from, `${name} or ${next} moved; this test reads between them`);
+    return js.slice(from, to);
+  };
+
+  test('an approval: Deny first and focused, Allow the one primary, Stop task a link, Esc denies', () => {
+    const fn = fnBody('showToolApproval', 'approvalQuestion');
+    const order = ['actions.appendChild(deny)', 'actions.appendChild(forTurn)', 'actions.appendChild(approve)', 'actions.appendChild(cancel)'].map((s) => fn.indexOf(s));
+    assert.ok(order.every((i) => i > 0) && order.every((v, i) => i === 0 || v > order[i - 1]), 'the buttons must be Deny, Allow for this task, Allow, then Stop task');
+    assert.match(fn, /approvalButton\('Deny', 'deny'/);
+    assert.match(fn, /approvalButton\('Allow', 'approve'/);
+    assert.match(fn, /approve\.classList\.add\('primary'\)/);
+    assert.match(fn, /cancel\.classList\.add\('link'\)/);
+    assert.match(fn, /deny\.focus\(\)/);
+    assert.match(fn, /e\.key === 'Escape'[\s\S]{0,120}answerToolApproval\(req, 'deny', 'Deny'\)/, 'Esc in the card must deny');
+    assert.ok(!/key === '[yYaA]'|key === 'Enter'/.test(fn), 'no single key may allow');
+  });
+
+  test('the risk line keeps the terminal\'s sentences, word for word, and only adds a colour', () => {
+    const fn = fnBody('showToolApproval', 'approvalQuestion');
+    for (const sentence of [
+      "'LEAVES YOUR MACHINE: sent to a third party over the internet'",
+      "'NOT SANDBOXED: a separate program with your full access'",
+      "'STARTS ANOTHER PROGRAM: a language server (gopls, tsserver or pyright)'",
+      "'marked destructive'",
+    ]) {
+      assert.ok(fn.includes(sentence), `${sentence} is not said as it was`);
+    }
+    assert.match(fn, /level: 'warn', text: 'NOT SANDBOXED/, 'running outside the sandbox is a warning (amber)');
+    assert.match(fn, /level: 'danger', text: 'LEAVES YOUR MACHINE/, 'leaving the machine is danger (red)');
+    assert.match(fn, /level: 'danger', text: 'RUNS IN YOUR REAL PROJECT/, 'writing the real project is danger (red)');
+    assert.match(fn, /part\.textContent = r\.text/, 'a risk goes in as text');
+  });
+
+  test('an edit shows its change inline, built from text nodes, with Open diff and Apply as the primary', () => {
+    const diff = fnBody('editDiff', 'showEditProposal');
+    assert.match(diff, /line\.textContent = text/);
+    assert.ok(!/innerHTML|insertAdjacentHTML/.test(diff), 'the diff assembles markup from the model\'s text');
+    assert.match(diff, /EDIT_DIFF_SHOWN/);
+    const card = fnBody('showEditProposal', 'showEditResult');
+    assert.match(card, /editDiff\(edit\.search, edit\.replace, edit\.file_path\)/);
+    assert.match(card, /diffBtn\.textContent = 'Open diff'/);
+    assert.match(card, /applyBtn\.className = 'primary'/);
+    assert.match(card, /if \(currentRunAuto\)/, 'an auto-apply run still renders no Apply or Skip');
+  });
+
+  test('a button is the theme\'s secondary unless it is the primary', () => {
+    const styles = panel.slice(panel.indexOf('  button {'), panel.indexOf('  button:disabled'));
+    assert.match(styles, /background: var\(--vscode-button-secondaryBackground/);
+    assert.match(styles, /button\.primary \{ background: var\(--ct-accent-solid\)/);
+    assert.match(styles, /:where\(button:hover:not\(:disabled\)\)/, 'the default hover must not outrank a styled button\'s own');
+  });
+
+  test('a reply has no header, and what it stood on is said under it', () => {
+    assert.ok(!/function replyHead\(/.test(js), 'the per-reply lotus, name and time are back');
+    assert.match(js, /attachCopyFooter\(currentAssistantCard, currentAssistantRaw, lastGroundingInfo\)/);
+    const set = fnBody('setGrounding', 'setHistoryInfo');
+    assert.match(set, /if \(!info \|\| !info\.workspace_mismatch\) \{\s*groundingEl\.textContent = '';/, 'a routine grounding report must not become a notice');
+  });
+
+  test('the host says when no key is in use, and when one connects', () => {
+    assert.match(panel, /if \(session\.needsApiKey\) \{\s*this\.postSafe\(\{ type: 'connection', state: 'noKey' \}\)/);
+    assert.ok((panel.match(/type: 'connection', state: 'ready'/g) || []).length >= 3, 'every path that puts a key in use must say so');
+  });
+});
