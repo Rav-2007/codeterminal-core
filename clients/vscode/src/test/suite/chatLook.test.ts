@@ -63,7 +63,11 @@ suite('the chat look (Stage 9)', () => {
 
   test('every code block carries its own Copy, of that block alone', () => {
     const js = media('main.js');
-    const fenced = js.slice(js.indexOf('  function renderFencedContent('), js.indexOf('  function attachFeedbackFooter('));
+    const from = js.indexOf('  function renderFencedContent(');
+    const to = js.indexOf('  function attachCopyFooter(');
+    // A renamed function must fail here, not widen the slice to the whole file.
+    assert.ok(from > 0 && to > from, 'renderFencedContent or attachCopyFooter moved; this test reads between them');
+    const fenced = js.slice(from, to);
     assert.match(fenced, /className = 'code-copy'/);
     assert.match(fenced, /const text = code;/);
     assert.match(fenced, /writeText\(text\)/);
