@@ -1277,8 +1277,10 @@ turn (`daemon/machinereach.go`), built from the tools that turn really has: aske
 
 A tool you do not list resolves to `ask` — the default is a question. `ask`
 suspends the turn and shows you the tool, the **complete** arguments, its lane,
-and which step this is. A timeout, a garbled answer, an answer to a different
-call, and a closed client are all denials. An "allow for this task" grant covers
+and which step this is. The question waits for your answer for as long as you
+take; the time is added back to the turn's budget. A garbled answer, an answer to
+a different call, a closed client (Mochiii quit, the chat panel closed) and the
+daemon stopping are all denials. An "allow for this task" grant covers
 one tool for one turn and is never written to disk — and for a command or a web
 call it covers exactly the command, query or address you were shown, not the
 tool.

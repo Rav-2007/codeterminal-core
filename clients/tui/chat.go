@@ -604,7 +604,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setupTiersMsg:
 		return m.handleSetupTiers(msg)
 
-	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg, localCheckMsg, rateWaitTickMsg:
+	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg, localCheckMsg, rateWaitTickMsg, approvalLostMsg:
 		return m.handleSideAnswer(msg)
 
 	case mcpResultMsg:
@@ -2786,7 +2786,7 @@ func renderTurnBlock(t turn, width int) string {
 		// A model's answer is markdown and is drawn as markdown (markdown.go).
 		// It needs the width: a table is laid out to fit it.
 		return renderAnswer(t.text, width)
-	case roleSystem, roleActivity:
+	case roleSystem, roleActivity, roleApprovalLost:
 		return renderSystemTurn(t, width) // a tool call's line is drawn from its parts
 	case roleSevered:
 		return renderSevered(t.text, width, severedNotSent)

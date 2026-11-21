@@ -235,8 +235,8 @@ func TestNilApproverDenies(t *testing.T) {
 	}
 }
 
-// A shutdown mid-turn must not open a five-minute window on a connection that
-// is about to be torn down.
+// A shutdown mid-turn must not open a question on a connection that is about
+// to be torn down.
 func TestCancelledContextDeniesWithoutAsking(t *testing.T) {
 	appr, _ := approvalPipe(t, time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())

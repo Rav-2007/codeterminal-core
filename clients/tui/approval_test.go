@@ -163,7 +163,8 @@ func TestTheApprovalPanelIsCompleteAndHonestAboutTheLane(t *testing.T) {
 // the declaration has to track what the CALLER can do, not what the binary
 // can: an interactive chat can render a modal, a piped one-shot run has stdin
 // already spent on the prompt and nobody to ask. Declaring it without a person
-// there hangs every tool call until the five-minute deadline expires.
+// there leaves every tool call waiting for an answer nobody can give: the
+// daemon waits for as long as the person takes (daemon/toolapproval.go).
 //
 // This drives the three real entry points against a fake daemon and reads the
 // handshake each one actually sent.

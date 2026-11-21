@@ -921,6 +921,14 @@ const (
 	EgressReviewQuery = "query"
 )
 
+// FeatureApprovalWaitsForAnswer: the daemon waits for the answer to a
+// ToolApprovalRequest for as long as the person takes; only a client that goes
+// away, or the daemon stopping, ends the wait. An older daemon stopped waiting
+// after five minutes, took silence as a no and carried on with the turn -- so a
+// client that could not send an answer says the question expired only to a
+// daemon without this (clients/tui/approvallost.go).
+const FeatureApprovalWaitsForAnswer = "approval_waits_for_answer"
+
 type ToolApprovalRequest struct {
 	CallID          string `json:"call_id"`
 	Server          string `json:"server"`

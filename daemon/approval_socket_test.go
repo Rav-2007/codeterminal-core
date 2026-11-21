@@ -22,7 +22,7 @@ import (
 // the same connection the tokens are streaming down.
 //
 // Getting that wiring wrong fails in the two worst possible ways -- a daemon
-// that hangs for five minutes per call because it is reading from the wrong
+// that waits forever on every call because it is reading from the wrong
 // place, or one that never asks at all -- and neither is visible from either
 // side alone.
 func agentSocketServer(t *testing.T, apiBase string, cfg MCPConfig) (sockAddr protocol.Address, auditPath string, srv *Server) {
@@ -40,6 +40,13 @@ func agentSocketServerLogged(t *testing.T, apiBase string, cfg MCPConfig, logger
 // agentSocketServerWith also sets the system prompt, before Serve starts. The
 // other helpers send none, so their requests open with the user's message.
 func agentSocketServerWith(t *testing.T, apiBase string, cfg MCPConfig, logger *log.Logger, systemPrompt string) (sockAddr protocol.Address, auditPath string, srv *Server) {
+	t.Helper()
+	return agentSocketServerConfigured(t, apiBase, cfg, logger, systemPrompt, nil)
+}
+
+// agentSocketServerConfigured also lets configure change the Server before
+// Serve starts, which is the only race-free moment to set its limits.
+func agentSocketServerConfigured(t *testing.T, apiBase string, cfg MCPConfig, logger *log.Logger, systemPrompt string, configure func(*Server)) (sockAddr protocol.Address, auditPath string, srv *Server) {
 	t.Helper()
 
 	root, err := editapply.ResolveRealWorkspaceRoot(t.TempDir())
@@ -61,6 +68,9 @@ func agentSocketServerWith(t *testing.T, apiBase string, cfg MCPConfig, logger *
 		cfg:           &Config{MCP: cfg},
 		counters:      &counters{},
 		toolAudit:     newToolAuditSink(auditPath),
+	}
+	if configure != nil {
+		configure(srv)
 	}
 
 	sockAddr = testAddress(t)
@@ -114,7 +124,7 @@ func TestApprovalRoundTripOverTheRealSocket(t *testing.T) {
 	enc, dec, conn := agentClient(t, sockAddr, "what is in inside.txt?", []string{protocol.CapToolApproval})
 
 	// Nothing should take anywhere near this; it exists so a wiring bug shows up
-	// as a failed test rather than a five-minute hang.
+	// as a failed test rather than a hang.
 	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
 		t.Fatal(err)
 	}

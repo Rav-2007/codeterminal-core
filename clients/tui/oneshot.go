@@ -7,10 +7,11 @@
 //
 // THAT CONDITION IS THE WHOLE POINT OF THIS FILE. CapToolApproval is a promise:
 // the daemon runs the agentic loop only for a client that declares it, and then
-// suspends a turn waiting for a reply. A client that declares it and cannot
-// reply leaves every tool call hanging until the five-minute human deadline
-// expires, and then denied -- so a piped, scripted, or otherwise non-interactive
-// run must not declare it, and gets the ordinary single-turn path it always had.
+// suspends a turn waiting for a reply, for as long as the person takes
+// (daemon/toolapproval.go). A client that declares it and cannot reply leaves
+// every tool call waiting on an answer that never comes -- so a piped,
+// scripted, or otherwise non-interactive run must not declare it, and gets the
+// ordinary single-turn path it always had.
 //
 // Same reasoning as the CLI's `edits apply`, which refuses to confirm an edit
 // when it cannot reach a terminal (daemon/apply_cmd.go).
@@ -23,6 +24,7 @@ import (
 	"io"
 	"strings"
 	"syscall"
+	"time"
 
 	"mochiii/protocol"
 )
@@ -143,6 +145,7 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 			}
 		}
 		if tok.ToolApproval != nil {
+			asked := time.Now()
 			decision := askOneShotApproval(*tok.ToolApproval, reader, env.err)
 			if err := sess.enc.Encode(protocol.ToolApprovalResponse{
 				ProtocolVersion: protocol.ProtocolVersion,
@@ -151,7 +154,9 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 				ArgumentsSHA256: tok.ToolApproval.ArgumentsSHA256,
 				Decision:        decision,
 			}); err != nil {
-				say(env.err, "\nerror: sending approval: %v\n", err)
+				// The daemon stopped waiting for this answer (approvallost.go).
+				say(env.err, "\n%s\n", approvalLostText(*tok.ToolApproval, time.Since(asked), err,
+					hasFeature(sess.handshake, protocol.FeatureApprovalWaitsForAnswer), false))
 				return 1
 			}
 		}
