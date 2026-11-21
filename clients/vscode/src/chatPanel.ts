@@ -449,8 +449,8 @@ export class ChatPanel {
       // Hidden without it, the webview is destroyed and every message posted
       // meanwhile is lost, and this panel can be in the middle of things that
       // cannot be rebuilt from saved state: a tool approval the daemon is HOLDING
-      // OPEN until it is answered (dropping that panel stalls the turn until the
-      // daemon's five-minute deadline denies it), an answer still streaming,
+      // OPEN until it is answered (dropping that panel would leave the turn
+      // waiting for a click that can never come), an answer still streaming,
       // and an edit review one block in. Reloading from getState would show a
       // panel that looks ready while the daemon waits for a click it can no
       // longer receive. What a restart CAN rebuild -- the chat itself -- is

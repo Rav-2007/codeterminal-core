@@ -92,10 +92,10 @@ type connApprover struct {
 	lc     *limitedConn
 	logger *log.Logger
 
-	// idleTimeout overrides approvalIdleTimeout. Zero means the default -- the
-	// same "0 => default" convention the connection limits use (server_limits.go).
-	// Production leaves it zero; tests set milliseconds, so a five-minute human
-	// deadline and everything that follows from it stay testable.
+	// idleTimeout bounds the wait for one answer. ZERO -- what production
+	// leaves it -- MEANS NO BOUND: the question waits for as long as the person
+	// takes (see Ask). Tests set milliseconds to reach the paths a failed read
+	// takes, which a client that goes away reaches in production.
 	idleTimeout time.Duration
 
 	// closed latches the first read failure, after which every later Ask denies
@@ -103,19 +103,11 @@ type connApprover struct {
 	//
 	// This is not an optimisation, it is a correctness fix. encoding/json's
 	// Decoder caches its first error and returns that same error from every
-	// subsequent Decode, so one 5-minute timeout makes this channel permanently
-	// unreadable. Without the latch, a turn whose user stepped away would then
-	// stall approvalIdleTimeout again for every remaining call -- a single
-	// walk-away turning into half an hour of a daemon waiting on a decoder that
-	// can no longer produce anything.
+	// subsequent Decode, so one failed read -- a client gone, a shutdown --
+	// makes this channel permanently unreadable. Without the latch, every
+	// remaining call in the turn would try to ask again on a decoder that can
+	// no longer produce anything.
 	closed bool
-}
-
-func (a *connApprover) resolvedIdleTimeout() time.Duration {
-	if a.idleTimeout > 0 {
-		return a.idleTimeout
-	}
-	return approvalIdleTimeout
 }
 
 // Ask sends one approval request and waits for its answer.
@@ -129,8 +121,8 @@ func (a *connApprover) Ask(ctx context.Context, req protocol.ToolApprovalRequest
 	if a == nil || a.closed {
 		return denied(denyByNoChannel, 0)
 	}
-	// A shutdown mid-turn must not open a five-minute window on a connection
-	// that is about to be torn down.
+	// A shutdown mid-turn must not open a question on a connection that is
+	// about to be torn down.
 	if ctx.Err() != nil {
 		a.closed = true
 		return denied(denyByNoChannel, 0)
@@ -148,29 +140,51 @@ func (a *connApprover) Ask(ctx context.Context, req protocol.ToolApprovalRequest
 		return denied(denyByTimeout, 0)
 	}
 
-	// A HUMAN deadline for a human question, restored immediately afterwards so
-	// it cannot leak into the machine-scale reads that follow, plus a read
-	// budget for the answer we just asked for (see grantReadBudget).
-	defer a.lc.withIdleTimeout(a.resolvedIdleTimeout())()
+	// THE QUESTION WAITS FOR ITS ANSWER, HOWEVER LONG THAT TAKES (owner's
+	// decision, 2026-11-21). It used to give up after five minutes, take silence
+	// as a no, and carry on with the turn -- and the TUI, which does not read
+	// the connection while its approval panel is up, then let the turn's output
+	// back up until the 60-second write deadline ended the turn. The answer the
+	// person finally gave went into a closed socket: "✓ approved", then LINK
+	// SEVERED, and the edit they approved was never made.
+	//
+	// A limit was never what ended a wait that should end, and no limit costs
+	// none of that:
+	//   - a client that goes away -- a terminal closed, a TUI quit, a VS Code
+	//     chat panel closed (it aborts its connection) -- is a closed socket, so
+	//     this read fails AT ONCE and the call is denied;
+	//   - a shutdown ends the wait through cancelReads, below, and the daemon's
+	//     drain is bounded by its own grace whatever any connection does;
+	//   - a client that cannot answer never declares CapToolApproval, so it is
+	//     never asked (a piped or scripted one-shot run, oneshot.go);
+	//   - nothing is spent meanwhile: no model call is open while the loop asks,
+	//     and the time is given back to the turn's and the task's deadlines.
+	// What remains is a client that stays connected and never answers (a
+	// suspended terminal): its turn stays paused until it answers, goes away,
+	// or the daemon stops. Silence is still never consent -- only a correctly
+	// bound yes runs a call.
+	//
+	// Plus a read budget for the answer we just asked for (see grantReadBudget).
+	if a.idleTimeout > 0 {
+		defer a.lc.withIdleTimeout(a.idleTimeout)()
+	} else {
+		defer a.lc.withoutReadDeadline()()
+	}
 	a.lc.grantReadBudget(maxApprovalResponseBytes)
 
-	// A shutdown arriving mid-question must not leave the daemon sitting out a
-	// five-minute human deadline on a connection it is about to abandon. Nothing
-	// can interrupt a blocked socket read from the outside, so this pushes the
-	// read deadline into the past instead, which is what actually unblocks it.
-	//
-	// Residual race, stated rather than papered over: limitedConn.Read re-arms
-	// the deadline immediately before each underlying read, so a cancellation
-	// landing in the window between this Ask's ctx check and that re-arm is
-	// overwritten and the wait runs its full length. The window is a few
-	// instructions wide and the outcome of losing it is a slow shutdown, never a
-	// wrong decision -- an unanswered ask is a denial either way.
+	// A shutdown arriving mid-question ends the wait. Nothing can interrupt a
+	// blocked socket read from the outside, so cancelReads moves the read
+	// deadline into the past -- and latches, so a read that re-arms its deadline
+	// a moment later cannot undo it (limitedConn.Read checks the latch after
+	// arming). Without the latch, a cancellation that landed just before the
+	// re-arm was overwritten, and with no deadline left to fall back on the
+	// wait would have outlived the shutdown.
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = a.lc.SetReadDeadline(time.Now().Add(-time.Second))
+			a.lc.cancelReads()
 		case <-stopWatch:
 		}
 	}()
@@ -211,7 +225,7 @@ func (a *connApprover) Ask(ctx context.Context, req protocol.ToolApprovalRequest
 			a.closed = true
 			// Client-safe by construction: the tool's own name and a duration. The
 			// underlying error stays local, like every other daemon-side detail.
-			a.logger.Printf("agent: no approval for %s__%s after %s (%v) -- treating silence as no, and asking nothing further this turn",
+			a.logger.Printf("agent: no approval for %s__%s after %s (%v) -- the client went away or the daemon is stopping; that is a no, and nothing further is asked this turn",
 				req.Server, req.Tool, waited.Round(time.Second), err)
 			return denied(denyByTimeout, waited)
 		}

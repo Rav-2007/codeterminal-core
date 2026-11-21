@@ -327,7 +327,8 @@ func askForApprovalTraced(ctx context.Context, sess *daemonSession, req protocol
 		// Not a streamErrMsg: the connection was fine until the daemon stopped
 		// waiting for this answer, and the user needs to hear that the call did
 		// not run, not that the link died (approvallost.go).
-		deliver(ctx, ch, approvalLostMsg{req: req, waited: time.Since(shown), err: err})
+		deliver(ctx, ch, approvalLostMsg{req: req, waited: time.Since(shown), err: err,
+			daemonWaits: hasFeature(sess.handshake, protocol.FeatureApprovalWaitsForAnswer)})
 		return false
 	}
 	return true

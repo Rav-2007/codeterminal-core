@@ -65,8 +65,9 @@ func Main(args []string) {
 	// on the prompt itself, so there is nothing left to read an answer from --
 	// and a --prompt run from a script has no person at the other end either.
 	// Only --prompt from a real terminal leaves a human who can be asked.
-	// Declaring the capability without one would hang every tool call until the
-	// daemon's five-minute deadline expired. See oneshot.go.
+	// Declaring the capability without one would leave every tool call waiting
+	// for an answer nobody can give -- the daemon waits for as long as the
+	// person takes. See oneshot.go.
 	interactive := *promptFlag != "" && isatty.IsTerminal(os.Stdin.Fd())
 	// --workspace selects WHICH DAEMON to talk to, in one-shot mode too. That is
 	// a different question from grounding, which one-shot still does not send

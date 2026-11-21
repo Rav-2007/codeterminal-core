@@ -67,9 +67,9 @@ export interface HandshakeRequest {
   //
   // CAP_TOOL_APPROVAL is a promise, not a feature flag. The daemon runs its
   // agentic loop only for a client that declares it, and then SUSPENDS a turn
-  // waiting for an answer -- so a client that declares it and cannot render an
-  // approval leaves every tool call hanging until the daemon's five-minute
-  // human deadline expires. Declare it only where it can be honoured.
+  // waiting for an answer, for as long as the person takes -- so a client that
+  // declares it and cannot render an approval leaves every tool call waiting
+  // for an answer that never comes. Declare it only where it can be honoured.
   capabilities?: string[];
 }
 
@@ -1046,7 +1046,8 @@ export interface StreamHandlers {
   // onToolApproval is the one handler that OWES AN ANSWER. The daemon has
   // suspended the turn and is holding a tool call open until respond() is
   // called, so a handler that returns without calling it stalls the turn until
-  // the daemon's five-minute human deadline expires and then denies.
+  // the connection closes (the daemon waits for as long as the person takes;
+  // a closed connection is a no).
   //
   // respond takes only the decision: the call id and the argument digest are
   // echoed from the request by streamPrompt itself, so a client cannot
@@ -1089,7 +1090,8 @@ export interface StreamHandlers {
 //                           built-in runs without a message
 //
 // The clock is STOPPED while an approval card waits on the user: that wait is
-// theirs, and the daemon bounds it at five minutes (approvalIdleTimeout).
+// theirs, and the daemon does not bound it (daemon/toolapproval.go) -- closing
+// the panel aborts the connection, which the daemon takes as a no.
 //
 // A variable so a test can shorten it; production never changes it.
 export const streamSilenceLimits = { idleMs: 10 * 60_000, toolRunningMs: 35 * 60_000 };

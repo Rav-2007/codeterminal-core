@@ -11,8 +11,7 @@ import (
 )
 
 // AN ANSWER THAT COULD NOT BE SENT is reported as what it is: the call did not
-// run, and -- when the question had been open past the daemon's wait -- it
-// expired.
+// run, and -- when an older daemon's wait had run out -- the question expired.
 //
 // FOUND 2026-11-21 on the owner's screen: "✓ approved builtin__propose_edit",
 // then LINK SEVERED, "write unix …sock: write: broken pipe" and "the prompt
@@ -22,8 +21,8 @@ import (
 //  1. The approval panel waits for a key with no time limit, and while it
 //     waits nothing reads the connection (askForApproval runs inside the
 //     stream's read loop, stream.go).
-//  2. The daemon waits protocol.ApprovalWait for the answer, takes silence as
-//     a no, and carries on with the turn.
+//  2. The daemon waited five minutes for the answer, took silence as a no, and
+//     carried on with the turn.
 //  3. With nobody reading, its output fills the socket buffer (a few hundred
 //     tokens), a write blocks, and at its 60-second write deadline the daemon
 //     takes the client for gone, ends the turn and closes the connection.
@@ -32,10 +31,21 @@ import (
 // Nothing on the screen said the one thing the user needed to know: the edit
 // they had just approved was not made.
 //
+// A daemon with protocol.FeatureApprovalWaitsForAnswer no longer gives up
+// (daemon/toolapproval.go), so step 2 cannot happen there -- but a TUI can be
+// talking to an older daemon that is still running, and the connection can
+// still go for other reasons (the daemon restarted while the question was up).
+//
 // The daemon cannot be told after the fact, so this is the client's to say, and
-// it says only what it knows. WHY is worded from how long the question was
-// open: past protocol.ApprovalWait it expired; sooner than that the connection
-// went for some other reason (a daemon restart), and "expired" would be untrue.
+// it says only what it knows. WHY: the question expired only if the daemon is
+// one that gives up AND it had been open for that daemon's whole wait;
+// otherwise the connection went for some other reason, and "expired" would be
+// untrue.
+
+// olderDaemonApprovalWait is how long a daemon without
+// protocol.FeatureApprovalWaitsForAnswer waited for an answer before it took
+// silence as a no.
+const olderDaemonApprovalWait = 5 * time.Minute
 
 // approvalLostMsg is an approval answer the stream could not send.
 type approvalLostMsg struct {
@@ -43,6 +53,10 @@ type approvalLostMsg struct {
 	// waited runs from the question reaching the screen to the failed send.
 	waited time.Duration
 	err    error
+	// daemonWaits is whether the daemon declared
+	// protocol.FeatureApprovalWaitsForAnswer: if it did, the question cannot
+	// have expired.
+	daemonWaits bool
 }
 
 // roleApprovalLost is the transcript's record of that answer. Display-only,
@@ -68,7 +82,7 @@ func (m chatModel) handleApprovalLost(msg approvalLostMsg) (tea.Model, tea.Cmd) 
 		m.turns[m.streamAssistant].incomplete = protocol.IncompleteProviderError
 	}
 	task := m.taskRunning()
-	m.appendTurn(turn{role: roleApprovalLost, text: approvalLostText(msg.req, msg.waited, msg.err, !task)})
+	m.appendTurn(turn{role: roleApprovalLost, text: approvalLostText(msg.req, msg.waited, msg.err, msg.daemonWaits, !task)})
 	m.stopsInChat++
 	m.chatRev, m.chatQuiet = "", true
 	if task {
@@ -84,24 +98,30 @@ func (m chatModel) handleApprovalLost(msg approvalLostMsg) (tea.Model, tea.Cmd) 
 }
 
 // approvalLostText says that req did not run and why: one headline line, then
-// the detail. retryHint adds what to do next; a long task says it on its own
-// line instead (handleApprovalLost).
-func approvalLostText(req protocol.ToolApprovalRequest, waited time.Duration, err error, retryHint bool) string {
+// the detail. daemonWaits is approvalLostMsg's. retryHint adds what to do next;
+// a long task says it on its own line instead (handleApprovalLost).
+func approvalLostText(req protocol.ToolApprovalRequest, waited time.Duration, err error, daemonWaits, retryHint bool) string {
 	name := req.Server + "__" + req.Tool
 	outcome := name + " did not run"
 	if req.Server == "builtin" && req.Tool == "propose_edit" {
 		outcome = "the edit was not made (" + name + " did not run)"
 	}
 	var head, why string
-	if waited >= protocol.ApprovalWait {
+	if !daemonWaits && waited >= olderDaemonApprovalWait {
 		head = "✗ approval expired — " + outcome
-		why = fmt.Sprintf("Mochiii waits %s for an answer; this one came after %s, when the turn had already ended",
-			waitText(protocol.ApprovalWait), waited.Round(time.Second))
+		why = fmt.Sprintf("this version of Mochiii waits %s for an answer; this one came after %s, when the turn had already ended",
+			waitText(olderDaemonApprovalWait), waited.Round(time.Second))
 	} else {
 		head = "✗ your answer did not reach Mochiii — " + outcome
 		why = "the connection closed while the question was open (was Mochiii restarted?)"
 		if err != nil {
-			why += ": " + err.Error()
+			// The cause only ("broken pipe"): the rest of a socket error is the
+			// socket's path, a terminal line long, and says nothing more.
+			cause := err.Error()
+			if i := strings.LastIndex(cause, ": "); i >= 0 {
+				cause = cause[i+2:]
+			}
+			why += " — " + cause
 		}
 	}
 	text := head + "\n" + why

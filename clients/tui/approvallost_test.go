@@ -60,7 +60,8 @@ func TestAnAnswerToAClosedConnectionIsReportedAsLostNotSevered(t *testing.T) {
 	defer clientEnd.Close()
 	daemonEnd := <-accepted
 
-	sess := &daemonSession{conn: clientEnd, enc: json.NewEncoder(clientEnd), dec: json.NewDecoder(clientEnd)}
+	sess := &daemonSession{conn: clientEnd, enc: json.NewEncoder(clientEnd), dec: json.NewDecoder(clientEnd),
+		handshake: protocol.HandshakeResponse{Features: []string{protocol.FeatureApprovalWaitsForAnswer}}}
 	req := proposeEditRequest()
 	ch := make(chan tea.Msg, 1)
 	cont := make(chan bool, 1)
@@ -82,6 +83,9 @@ func TestAnAnswerToAClosedConnectionIsReportedAsLostNotSevered(t *testing.T) {
 		if !errors.Is(lost.err, syscall.EPIPE) {
 			t.Errorf("err = %v, want the broken pipe the owner saw (else this test is not their case)", lost.err)
 		}
+		if !lost.daemonWaits {
+			t.Error("the daemon declared that it waits for answers, and the lost answer does not say so -- it would be called expired")
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("nothing reached the UI after the answer could not be sent")
 	}
@@ -90,8 +94,9 @@ func TestAnAnswerToAClosedConnectionIsReportedAsLostNotSevered(t *testing.T) {
 	}
 }
 
-// What the owner should have read instead: the approval expired and the edit
-// was not made -- and no LINK SEVERED, because the link was never the problem.
+// What the owner should have read instead (their daemon gave up after five
+// minutes): the approval expired and the edit was not made -- and no LINK
+// SEVERED, because the link was never the problem.
 func TestAnExpiredApprovalSaysTheEditWasNotMade(t *testing.T) {
 	m, _ := pendingApprovalModel(t, proposeEditRequest())
 	next, _ := m.answerApproval(protocol.ApprovalApprove) // "✓ approved builtin__propose_edit"
@@ -187,5 +192,28 @@ func TestALostAnswerFromAnAbandonedTurnIsIgnored(t *testing.T) {
 	next, _ := m.Update(approvalLostMsg{req: proposeEditRequest(), waited: 6 * time.Minute, err: syscall.EPIPE})
 	if got := len(next.(chatModel).turns); got != before {
 		t.Errorf("an abandoned turn's lost answer added %d line(s) to the transcript", got-before)
+	}
+}
+
+// A DAEMON THAT WAITS FOR ITS ANSWER NEVER LETS A QUESTION EXPIRE, however
+// long it stood (protocol.FeatureApprovalWaitsForAnswer). An answer that could
+// not reach one is a connection that went -- a restart -- and calling it
+// expired would send the user looking for a time limit that does not exist.
+func TestAnApprovalToADaemonThatWaitsIsNeverCalledExpired(t *testing.T) {
+	m, _ := pendingApprovalModel(t, proposeEditRequest())
+	next, _ := m.answerApproval(protocol.ApprovalApprove)
+	next, _ = next.(chatModel).Update(approvalLostMsg{
+		req: proposeEditRequest(), waited: 3 * time.Hour, err: syscall.EPIPE, daemonWaits: true,
+	})
+	m = next.(chatModel)
+
+	screen := ansi.Strip(renderTranscript(m.turns, 160))
+	if strings.Contains(screen, "expired") || strings.Contains(screen, "5 minutes") {
+		t.Errorf("a daemon that waits for answers had its question called expired:\n%s", screen)
+	}
+	for _, want := range []string{"did not reach Mochiii", "the edit was not made", "restarted"} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("the transcript does not say %q:\n%s", want, screen)
+		}
 	}
 }

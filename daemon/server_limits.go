@@ -10,9 +10,8 @@ package main
 import (
 	"errors"
 	"net"
+	"sync/atomic"
 	"time"
-
-	"mochiii/protocol"
 )
 
 // Connection resource limits (FAIL-3, Gate 5 — DoS hardening). These bound
@@ -93,6 +92,15 @@ type limitedConn struct {
 	remaining   int64         // read-byte budget left before errRequestTooLarge
 	idleTimeout time.Duration // re-armed around each Read and Write
 
+	// noReadDeadline makes Read arm NO deadline: an approval question waits
+	// for its answer for as long as the person takes (withoutReadDeadline).
+	// Only the serving goroutine touches it, like idleTimeout.
+	noReadDeadline bool
+
+	// readsCancelled latches a shutdown (cancelReads). Atomic because it is
+	// the one field another goroutine writes: Ask's shutdown watcher.
+	readsCancelled atomic.Bool
+
 	// granted and grantCeiling bound how much the approval channel may add to
 	// remaining over the whole connection. See grantReadBudget.
 	granted      int64
@@ -111,12 +119,38 @@ func (c *limitedConn) Read(p []byte) (int, error) {
 	if int64(len(p)) > c.remaining {
 		p = p[:c.remaining]
 	}
-	if err := c.Conn.SetReadDeadline(time.Now().Add(c.idleTimeout)); err != nil {
+	deadline := time.Now().Add(c.idleTimeout)
+	if c.noReadDeadline {
+		deadline = time.Time{} // none: see withoutReadDeadline
+	}
+	if err := c.Conn.SetReadDeadline(deadline); err != nil {
 		return 0, err
+	}
+	// CHECKED AFTER ARMING, NEVER BEFORE. cancelReads sets the latch and then
+	// moves the deadline into the past; this arms and then checks the latch.
+	// Whichever way the two goroutines interleave, a past deadline is the one
+	// left in force: either cancelReads' own move came after the arming above,
+	// or the latch was already set when this looked. Checked before arming, a
+	// cancellation landing between the check and the arming was overwritten --
+	// and with no deadline to fall back on, the read would wait for an answer
+	// from a daemon that had already begun shutting down.
+	if c.readsCancelled.Load() {
+		if err := c.Conn.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+			return 0, err
+		}
 	}
 	n, err := c.Conn.Read(p)
 	c.remaining -= int64(n)
 	return n, err
+}
+
+// cancelReads makes every read on this connection fail at once, now and from
+// now on -- the only way to end a read that has no deadline from another
+// goroutine short of closing the connection. Safe to call concurrently with
+// Read (see the latch check there).
+func (c *limitedConn) cancelReads() {
+	c.readsCancelled.Store(true)
+	_ = c.Conn.SetReadDeadline(time.Now().Add(-time.Second))
 }
 
 // Write re-arms the write deadline before each underlying write, so a client
@@ -157,17 +191,6 @@ const maxApprovalResponseBytes = 4 * 1024
 // far less than unbounded.
 const approvalGrantFraction = 4
 
-// approvalIdleTimeout is how long a client may take to answer one approval
-// before the daemon stops waiting. Sized for a HUMAN reading a tool name and
-// its arguments and deciding — the ordinary 60s idle timeout is sized for a
-// machine that has already made up its mind, and applying it here would reap
-// the connection of any user who paused to think.
-//
-// Expiry is a DENIAL, never an error and never a hang: the loop feeds the model
-// a refusal and carries on. Silence is not consent, and a consent prompt that
-// blocks forever is a worse failure than one that gives up.
-const approvalIdleTimeout = protocol.ApprovalWait
-
 // grantReadBudget tops up the connection's remaining read allowance, up to a
 // cumulative ceiling.
 //
@@ -205,6 +228,16 @@ func (c *limitedConn) withIdleTimeout(d time.Duration) func() {
 	prev := c.idleTimeout
 	c.idleTimeout = d
 	return func() { c.idleTimeout = prev }
+}
+
+// withoutReadDeadline lifts the read deadline for a bounded window -- one
+// approval question -- returning a func that restores it. Callers must defer
+// the restore, for the reason withIdleTimeout gives. Writes keep theirs: a
+// client that stops draining is still reaped.
+func (c *limitedConn) withoutReadDeadline() func() {
+	prev := c.noReadDeadline
+	c.noReadDeadline = true
+	return func() { c.noReadDeadline = prev }
 }
 
 // shutdownGrace is how long shutdown waits for in-flight connections after the

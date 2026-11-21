@@ -7,10 +7,11 @@
 //
 // THAT CONDITION IS THE WHOLE POINT OF THIS FILE. CapToolApproval is a promise:
 // the daemon runs the agentic loop only for a client that declares it, and then
-// suspends a turn waiting for a reply. A client that declares it and cannot
-// reply leaves every tool call hanging until the five-minute human deadline
-// expires, and then denied -- so a piped, scripted, or otherwise non-interactive
-// run must not declare it, and gets the ordinary single-turn path it always had.
+// suspends a turn waiting for a reply, for as long as the person takes
+// (daemon/toolapproval.go). A client that declares it and cannot reply leaves
+// every tool call waiting on an answer that never comes -- so a piped,
+// scripted, or otherwise non-interactive run must not declare it, and gets the
+// ordinary single-turn path it always had.
 //
 // Same reasoning as the CLI's `edits apply`, which refuses to confirm an edit
 // when it cannot reach a terminal (daemon/apply_cmd.go).
@@ -154,7 +155,8 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 				Decision:        decision,
 			}); err != nil {
 				// The daemon stopped waiting for this answer (approvallost.go).
-				say(env.err, "\n%s\n", approvalLostText(*tok.ToolApproval, time.Since(asked), err, false))
+				say(env.err, "\n%s\n", approvalLostText(*tok.ToolApproval, time.Since(asked), err,
+					hasFeature(sess.handshake, protocol.FeatureApprovalWaitsForAnswer), false))
 				return 1
 			}
 		}
