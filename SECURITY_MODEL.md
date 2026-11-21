@@ -1336,6 +1336,38 @@ project. It could reach the internet, and it could change files in its working
 copy — and that change was then offered for review indistinguishable from the
 agent's own. It is now named as the command's (`WorkingCopyInfo.ByCommand`).
 
+## Auto-approve in the terminal client (2026-11-21)
+
+The owner asked for Cline's "auto-approve all": ctrl+space (or `/auto`) in the
+terminal client turns on a mode that answers the questions a person would be
+asked, as pressing `y` answers them. It is **off at every start** and never
+saved. What it does and does not change:
+
+| | With auto-approve on |
+|---|---|
+| A call the daemon refuses (a credential path, a denied tool, a refused command) | still refused: the mode answers questions, and a refusal is not one |
+| A call config `allow` already runs unasked | unchanged |
+| Any other call that would ask, from any server | answered yes, unasked; the call's own line in the chat (`● Run …`) is its record there — no separate "auto-approved" line (owner, 2026-11-21) |
+| A read outside the workspace | **still asked**: the row under the prompt says why |
+| A command that would run in the project itself (no working copy) | **still asked** |
+| An edit offered for review | applied as `y` applies it, backups kept; the summary names each file; `edits undo` restores |
+
+The two still asked are the two an instruction planted in a web page would most
+want answered for it, now that web calls under `allow` are not asked about: a
+file from elsewhere on the machine, and an unreviewed write to the project (its
+`.git/hooks` included). The owner's words for the reach were "almost everything".
+
+**The answer is verified exactly as a person's is** — call id, argument digest,
+decision — and carries `auto: true` (`protocol.ToolApprovalResponse.Auto`), so
+the audit log records `auto_approve`, not `user_approve`. A log that said a
+person approved a call nobody read would be false. A daemon older than the field
+ignores it and records `user_approve`.
+
+**What it gives up.** Third-party (Lane B) tools are unconfined subprocesses,
+and consent was the only thing in front of them; with the mode on, nothing is.
+The mode is the person's to turn on, and the line above the prompt says
+`▸▸ auto` in green for as long as it is.
+
 ## Accepted residuals
 
 - **A command has the network.** `go build`, `npm install` and `cargo fetch`

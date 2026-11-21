@@ -23,33 +23,36 @@ func modelRunBy(t *testing.T, who string, width, height int) chatModel {
 	return updated.(chatModel)
 }
 
-// statusRowText is the whole row under the prompt, as a reader sees it.
-func statusRowText(m chatModel) string { return ansi.Strip(m.statusRow()) }
+// keysRowText is the last row of the screen, as a reader sees it.
+func keysRowText(m chatModel) string { return ansi.Strip(m.keysRow(helpStyle.Render(helpText))) }
 
 // THE REPORT THIS ANSWERS (OWNER, 2026-10-13): "it should display the
 // user/desktop name in the bottom of the prompt bar". The row under the prompt
 // said which model and provider; nothing on the screen said who was running the
 // client or on which machine.
 //
-// Neuter check: return m.statusLine() from statusRow -- the name is not drawn
-// and this fails on its first assertion.
+// Since 2026-11-21 (owner: "the directory name in the bottom right corner, with
+// below the system and user name") the name is at the right end of the keys
+// line, the last row of the screen.
+//
+// Neuter check: return help from keysRow -- the name is not drawn and this
+// fails on its first assertion.
 func TestTheRowUnderThePromptSaysWhoIsAtWhichMachine(t *testing.T) {
 	const who = "ravi-kiran@SCARX"
-	m := modelRunBy(t, who, 80, 24)
+	m := modelRunBy(t, who, 100, 24)
 
-	row := statusRowText(m)
-	if !strings.HasPrefix(row, "z-ai/glm-5.3 · NVIDIA  ") || !strings.HasSuffix(row, "  "+who) {
-		t.Errorf("the row reads %q, want the line, then %q at its right end", row, who)
+	row := keysRowText(m)
+	if !strings.HasPrefix(row, helpText+"  ") || !strings.HasSuffix(row, "  "+who) {
+		t.Errorf("the row reads %q, want the keys, then %q at its right end", row, who)
 	}
-	if w := lipgloss.Width(m.statusRow()); w != 80 {
-		t.Errorf("the row is %d columns wide in an 80-column terminal: the name is not against the right edge", w)
+	if w := lipgloss.Width(row); w != 100-rightEdgeGap {
+		t.Errorf("the row is %d columns wide in a 100-column terminal: the name does not end one column in from the edge", w)
 	}
 
-	// It is this row the screen draws, directly above the help line.
+	// It is this row the screen draws, last.
 	lines := strings.Split(ansi.Strip(m.View()), "\n")
-	last := len(lines) - 1
-	if lines[last] != helpText || lines[last-1] != row {
-		t.Errorf("the row is not directly above the help line:\n%s", strings.Join(lines[max(0, last-3):], "\n"))
+	if last := lines[len(lines)-1]; last != row {
+		t.Errorf("the last row is %q, want %q", last, row)
 	}
 	// And the line itself says exactly what it said before.
 	if got := statusText(m); got != "z-ai/glm-5.3 · NVIDIA" {
@@ -57,25 +60,25 @@ func TestTheRowUnderThePromptSaysWhoIsAtWhichMachine(t *testing.T) {
 	}
 }
 
-// THE LINE IS NEVER SHORTENED TO MAKE ROOM FOR THE NAME. The model, the provider
-// and what the session has cost are what the row is for; the name takes the
-// columns they leave. So in every width: the line is whole, the name is whole
-// or cut with "…" or absent, and the frame is exactly as tall as the terminal.
+// THE KEYS ARE NEVER SHORTENED TO MAKE ROOM FOR THE NAME. They are what the row
+// is for; the name takes the columns they leave. So in every width: the keys
+// are whole, the name is whole or cut with "…" or absent, and the frame is
+// exactly as tall as the terminal.
 //
-// Neuter check: drop the whoamiMinCols test in statusRow -- at the widths that
-// leave one or two columns the row ends in a bare "…".
+// Neuter check: drop the whoamiMinCols test in withRightEnd -- at the widths
+// that leave one or two columns the row ends in a bare "…".
 func TestTheNameTakesOnlyTheColumnsTheLineLeaves(t *testing.T) {
 	const who, height = "ravi-kiran@SCARX", 24
 	sawWhole, sawCut, sawAbsent := false, false, false
 	for width := 10; width <= 100; width++ {
 		m := modelRunBy(t, who, width, height)
 		m.sessionUsage = usageTotals{turns: 3, prompt: 120000, completion: 9000, cost: 1.25}
-		line, row := statusText(m), statusRowText(m)
+		line, row := helpText, keysRowText(m)
 
 		if !strings.HasPrefix(row, line) {
-			t.Fatalf("at %d columns the line %q was changed to fit the name: %q", width, line, row)
+			t.Fatalf("at %d columns the keys %q were changed to fit the name: %q", width, line, row)
 		}
-		if w := lipgloss.Width(m.statusRow()); w > width {
+		if w := lipgloss.Width(row); w > max(width, lipgloss.Width(line)) {
 			t.Fatalf("at %d columns the row is %d wide: %q", width, w, row)
 		}
 		if n := len(strings.Split(m.View(), "\n")); n != height {
@@ -83,7 +86,7 @@ func TestTheNameTakesOnlyTheColumnsTheLineLeaves(t *testing.T) {
 		}
 
 		rest := strings.TrimPrefix(row, line)
-		room := width - lipgloss.Width(line) - whoamiGap
+		room := width - rightEdgeGap - lipgloss.Width(line) - whoamiGap
 		if rest == "" {
 			sawAbsent = true
 			if room >= whoamiMinCols {
@@ -103,8 +106,8 @@ func TestTheNameTakesOnlyTheColumnsTheLineLeaves(t *testing.T) {
 		if len(rest)-len(name) < whoamiGap {
 			t.Errorf("at %d columns the name runs into the line: %q", width, row)
 		}
-		if w := lipgloss.Width(row); w != width {
-			t.Errorf("at %d columns the name is not against the right edge (row is %d wide): %q", width, w, row)
+		if w := lipgloss.Width(row); w != width-rightEdgeGap {
+			t.Errorf("at %d columns the name does not end one column in from the edge (row is %d wide): %q", width, w, row)
 		}
 		if w := lipgloss.Width(name); w < whoamiMinCols {
 			t.Errorf("at %d columns the name was cut to %d column(s): %q", width, w, name)
@@ -116,32 +119,32 @@ func TestTheNameTakesOnlyTheColumnsTheLineLeaves(t *testing.T) {
 	}
 }
 
-// The name is this machine's own knowledge, so it does not wait for the daemon:
-// before any answer the row is the name alone, at the right edge.
+// The name is this machine's own knowledge, so it does not wait for the daemon
+// -- nor for anything to be on the row: with no keys it is the name alone, at
+// the right edge (a question waiting has no key line).
 func TestTheNameDoesNotWaitForTheDaemon(t *testing.T) {
 	const who = "ravi-kiran@SCARX"
 	m := newTestModel() // 80 columns, nothing heard from the daemon yet
 	m.whoami = who
-	if got, want := statusRowText(m), strings.Repeat(" ", 80-len(who))+who; got != want {
-		t.Errorf("before any answer the row reads %q, want %q", got, want)
+	if got, want := ansi.Strip(m.keysRow("")), strings.Repeat(" ", 80-rightEdgeGap-len(who))+who; got != want {
+		t.Errorf("with no keys the row reads %q, want %q", got, want)
 	}
 }
 
-// NO NAME, NO CHANGE: a client that could not find one draws the row exactly as
-// it was drawn before there was a name at all.
+// NO NAME, NO CHANGE: a client that could not find one draws the keys exactly as
+// they were drawn before there was a name at all.
 func TestWithoutANameTheRowIsTheLine(t *testing.T) {
 	m := connectedModel(t, nvidiaInForce(t))
-	m.sessionUsage = usageTotals{turns: 1, prompt: 3500, completion: 343, cost: 0.0027}
-	if m.statusRow() != m.statusLine() {
-		t.Errorf("with no name the row is %q, the line %q", m.statusRow(), m.statusLine())
+	if help := helpStyle.Render(helpText); m.keysRow(help) != help {
+		t.Errorf("with no name the row is %q, the keys %q", m.keysRow(help), help)
 	}
 }
 
-// The name is drawn in the line's grey, like everything on it but the model.
+// The name is drawn in the status line's grey.
 func TestTheNameIsDrawnInTheLinesColour(t *testing.T) {
-	m := modelRunBy(t, "ravi-kiran@SCARX", 80, 24)
+	m := modelRunBy(t, "ravi-kiran@SCARX", 100, 24)
 	var row string
-	withColorProfile(t, termenv.ANSI256, func() { row = m.statusRow() })
+	withColorProfile(t, termenv.ANSI256, func() { row = m.keysRow(helpText) })
 	const grey = "\x1b[38;5;243m"
 	if !strings.Contains(row, grey+"ravi-kiran@SCARX") {
 		t.Errorf("the name is not drawn in the line's grey: %q", row)
@@ -202,10 +205,13 @@ func TestThisMachineHasAName(t *testing.T) {
 // Neuter checks: read m.whoami from any other function (try renderHeader) --
 // it is named below; delete the assignment in runChat -- "never asks".
 func TestTheNameIsDrawnAndNothingElse(t *testing.T) {
-	// Reviewed 2026-10-13.
+	// Reviewed 2026-10-13; again 2026-11-21, when the name moved to the keys line.
 	reviewed := map[string]bool{
-		"statusRow": true, // draws it at the right end of the row under the prompt
-		"runChat":   true, // stores what lookupWhoami found, before anything is drawn
+		"keysRow": true, // draws it at the right end of the keys line (was statusRow, the model line)
+		"runChat": true, // stores what lookupWhoami found, before anything is drawn
+		// Measures it, to make the first screen's column wide enough to draw it
+		// at the right end of the keys line, as under the chat. Sends nothing.
+		"welcomeWidth": true,
 	}
 	fset, files := parsePackageSource(t)
 	var novel []string

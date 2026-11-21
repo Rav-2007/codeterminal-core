@@ -34,7 +34,9 @@ func TestARunOfToolCallsIsStackedAndSaysWhatItDid(t *testing.T) {
 	want := "● Read   clients/tui/chat.go · 17 KB\n" +
 		"● List   clients/tui · 2 KB\n" +
 		"○ Run    go test ./... …"
-	if !strings.Contains(got, "show me\n\n"+want+"\n\n") {
+	// The question is a bar the width of the window (userbar.go), then a blank line.
+	bar := promptMark + " show me" + strings.Repeat(" ", 80-len("show me")-2)
+	if !strings.Contains(got, bar+"\n\n"+want+"\n\n") {
 		t.Errorf("the run of calls is not three stacked lines between blank lines:\n%s", got)
 	}
 	if n := strings.Count(got, "chat.go"); n != 1 {

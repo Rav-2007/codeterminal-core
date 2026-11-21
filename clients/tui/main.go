@@ -40,13 +40,15 @@ func Main(args []string) {
 	indexFlag := fs.Bool("index", false, "index (or re-index) this folder for code search, then open the chat")
 	noIndexFlag := fs.Bool("no-index", false, "do not offer to index this folder (also MOCHIII_NO_INDEX=1)")
 	stopFlag := fs.Bool("stop", false, "stop Mochiii's background service for this folder, then exit")
+	fullscreenFlag := fs.Bool("fullscreen", false, "draw the chat on the terminal's full screen, with no scrollback (also MOCHIII_FULLSCREEN=1)")
 	_ = fs.Parse(args) // ExitOnError: a bad flag has already exited
 
 	if *versionFlag {
 		fmt.Println("mochiii", Version)
 		return
 	}
-	launch := launchOptions{forceIndex: *indexFlag, noIndex: *noIndexFlag || os.Getenv("MOCHIII_NO_INDEX") == "1"}
+	launch := launchOptions{forceIndex: *indexFlag, noIndex: *noIndexFlag || os.Getenv("MOCHIII_NO_INDEX") == "1",
+		fullscreen: fullscreenRequested(*fullscreenFlag)}
 	if *stopFlag {
 		os.Exit(runStop(*workspaceFlag))
 	}
@@ -181,7 +183,20 @@ func runChat(workspace string, launch launchOptions) {
 	// /mouse turns capture on. chatModel.mouseCaptured starts false to match.
 	// Focus reports: coming back to this terminal from the editor is when the
 	// shared chat may have moved on (chatsync.go).
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithReportFocus())
+	//
+	// THE CHAT IS PRINTED INTO THE TERMINAL'S SCROLLBACK (inline.go, owner
+	// 2026-11-21), so the terminal's scrollbar, wheel and selection reach all of
+	// it. --fullscreen keeps the alternate screen, as before.
+	model.inline.on = !launch.fullscreen
+	helpInline = model.inline.on
+	if model.inline.on {
+		openInline(&model, os.Stdout, isatty.IsTerminal(os.Stdout.Fd())) // the screen starts clean
+	}
+	opts := []tea.ProgramOption{tea.WithReportFocus()}
+	if launch.fullscreen {
+		opts = append(opts, tea.WithAltScreen())
+	}
+	p := tea.NewProgram(model, opts...)
 	// SIGHUP and SIGQUIT reach Bubble Tea's own shutdown through here; without
 	// it SIGHUP killed the process with the alternate screen still up. finish
 	// also re-raises a caught SIGQUIT, which is why it runs before the error

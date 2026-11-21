@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -313,6 +314,10 @@ func askForApprovalTraced(ctx context.Context, sess *daemonSession, req protocol
 	// answer belongs to the question the user was actually shown -- a client
 	// that recomputed the digest from its own copy would be attesting to its own
 	// rendering rather than to the daemon's bytes.
+	// Auto-approve's yes is y's, marked so the daemon's audit can tell them
+	// apart (autoapprove.go).
+	auto := strings.HasPrefix(decision, autoDecisionPrefix)
+	decision = strings.TrimPrefix(decision, autoDecisionPrefix)
 	if err := sess.enc.Encode(protocol.ToolApprovalResponse{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Approval: decision == protocol.ApprovalApprove || decision == protocol.ApprovalApproveForTurn ||
@@ -320,6 +325,7 @@ func askForApprovalTraced(ctx context.Context, sess *daemonSession, req protocol
 		CallID:          req.CallID,
 		ArgumentsSHA256: req.ArgumentsSHA256,
 		Decision:        decision,
+		Auto:            auto,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return false
@@ -340,6 +346,21 @@ func askForApprovalTraced(ctx context.Context, sess *daemonSession, req protocol
 // Cmd goroutine, not inside Update.
 func waitForNext(ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg { return <-ch }
+}
+
+// batchTwo is tea.Batch(a, b) in two allocations instead of three -- Batch
+// appends each command to a slice of its own, then wraps it. It runs for every
+// streamed token (handleToken), so it counts in the allocations per token
+// (renderbench_test.go, repaintceiling_test.go).
+func batchTwo(a, b tea.Cmd) tea.Cmd {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	}
+	cmds := tea.BatchMsg{a, b}
+	return func() tea.Msg { return cmds }
 }
 
 // deliver hands one message to the UI, and gives up if the turn is cancelled

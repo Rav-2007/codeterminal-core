@@ -28,10 +28,12 @@ func TestTheLineUnderThePromptNamesTheModelAndProvider(t *testing.T) {
 	if got := statusText(m); got != "z-ai/glm-5.3 · NVIDIA" {
 		t.Errorf("the line reads %q, want the model and the provider", got)
 	}
+	// The first row under the prompt (the project and auto-approve rows follow
+	// it since 2026-11-21, autoapprove.go); the help line is the last.
 	lines := strings.Split(ansi.Strip(m.View()), "\n")
 	last := len(lines) - 1
-	if lines[last] != helpText || !strings.HasPrefix(lines[last-1], "z-ai/glm-5.3 · NVIDIA") {
-		t.Errorf("the line is not directly above the help line:\n%s", strings.Join(lines[max(0, last-3):], "\n"))
+	if lines[last] != helpText || !strings.HasPrefix(lines[last-m.statusRows()], "z-ai/glm-5.3 · NVIDIA") {
+		t.Errorf("the line is not the first row under the prompt:\n%s", strings.Join(lines[max(0, last-5):], "\n"))
 	}
 
 	// Once the session has been billed, what it cost is on the line too.

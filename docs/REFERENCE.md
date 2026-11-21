@@ -632,7 +632,7 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /pr 31 log             # (TUI) why a pull request's CI failed, attached to your next question
 
 /help /mcp-server /explain /test /doc /security
-/review /plan /run /clear /compact /context /git /init /search /mouse /exit
+/review /plan /run /clear /compact /context /git /init /search /mouse /copy /exit
 ```
 
 **Usage.** `/usage` answers from the provider's own bill, not an estimate. It shows
@@ -739,25 +739,76 @@ machine, the daemon's environment, or the proxy — the model, whether a restart
 will remember it, and this session's and today's spend against their limits. It
 asks the daemon only; nothing is sent to the provider.
 
-**The prompt is drawn in a box (TUI)**, the width of the terminal, so where to
-type is set apart from the conversation above it. Its border is blue while the
-client is waiting for you — a prompt to type, a tool approval to answer — and
-grey while a turn is running. A terminal under 12 rows keeps the bare prompt
-and gives the rows to the answer.
+**Your questions in the chat (TUI)** are shaded bars the width of the window,
+starting with `➤`; Mochiii's answers start with `↬`, on the terminal's own
+background. While a turn runs, the chat ends in a spinner line — "thinking…"
+until the answer begins, "working…" after — with the key that stops it.
 
-**Selecting and copying (TUI).** The terminal keeps the mouse, so text in the
-chat is selected and copied the way it is anywhere else in the terminal: drag
-across it, then press the terminal's copy key, `ctrl+shift+c` (`cmd+c` on a
-Mac). Nothing has to be installed for it. The other keys:
+**A long prompt grows downwards (TUI)**: past the width of its row it wraps at
+spaces onto more rows, up to six (a quarter of a short window), showing the rows
+around the cursor beyond that; it is one row again once sent.
 
-- **↑ / ↓ and the mouse wheel** scroll the chat.
+**The prompt sits between two rules (TUI)**, after a `➤`, the width of the
+terminal, so where to type is set apart from the conversation above it. The
+rules are blue while the client is waiting for you — a prompt to type, a tool
+approval to answer — and grey while a turn is running. A terminal under 12 rows
+keeps the bare prompt and gives the rows to the answer.
+
+**Under the prompt (TUI)**, as the window has room: the model, its provider, a
+bar showing how full the model's context was at the last request (amber from
+75%, red from 90%; the count alone when the model's limit is not known) and the
+session's cost; whether auto-approve is on; then the keys. In the bottom right
+corner: the project's folder name (never a git branch), and under it your user
+and machine name. Neither is ever shortened into the text to its left: in a narrow
+window it is cut with "…", or left out.
+
+**Auto-approve (TUI)**: `ctrl+space`, or `/auto` (`/auto on`, `/auto off`) where
+the terminal or the system takes that key — a Mac switches keyboard language
+with it. While it is on, a tool call that would ask runs as if you had pressed
+`y`, and edits are applied without the review, backups kept (`edits undo`
+restores them); each call shows as its own line (`● Run …`), and the edits'
+summary names every file. Two still ask: reading a file
+outside this project, and a command that would run in the project folder itself
+because no private copy could be made. Calls Mochiii refuses stay refused. It is
+off every time Mochiii starts; the line above the prompt shows `▸▸ auto` while it
+is on.
+
+**The first screen (TUI)** is the lotus, what to do, and the prompt under them
+in the middle of the window, ready to type into. The first thing you send ends
+it; from then on the prompt and the two lines under it (the model, the keys)
+stay at the bottom of the window, with the chat above them.
+
+**Selecting and copying (TUI).** The chat is printed into the terminal itself,
+the way Claude Code prints its conversation: each message goes into the
+terminal's own scrollback once it is finished, and only the part that can still
+change — the answer being written, a question waiting for you, the prompt —
+is redrawn at the bottom. A long answer goes in a paragraph at a time while it
+arrives. So the terminal's scrollbar and mouse wheel move through the whole
+chat, and a drag selects any length of it (the terminal scrolls when the drag
+reaches its edge; or click at the start and shift+click at the end). Then press
+the terminal's copy key, `ctrl+shift+c` (`cmd+c` on a Mac). Nothing has to be
+installed for it. The chat stays in the terminal after Mochiii quits.
+
+The chat starts on a clean terminal: what was on screen and in the terminal's
+scrollback before it opened (the command that started it, "Starting Mochiii
+for …") is cleared, the way the `clear` command clears it. A startup line that
+was news rather than progress — this folder is not a project, another install
+is answering, indexing failed — is shown on the first screen and printed as the
+chat's first line.
+
 - **`ctrl+↑` / `ctrl+↓`** (or `alt+↑` / `alt+↓`) go back through the prompts you
   sent, as in a shell.
 - **`ctrl+shift+v`** (`cmd+v` on a Mac) pastes. `ctrl+v` pastes only where a
   clipboard program is installed.
-- **`/mouse`** gives the mouse to the app instead: the wheel then scrolls the
-  chat in terminals that do not send it as ↑/↓, and selecting needs shift+drag.
-  `/mouse` again gives the mouse back to the terminal.
+- **`/copy`** prints the whole chat again with no line cut at the window's edge,
+  so a copied paragraph stays one line.
+- **`mochiii --fullscreen`** (or `MOCHIII_FULLSCREEN=1`) draws the chat on the
+  terminal's full screen instead, as before 2026-11-21, opening on the splash. That screen has no
+  scrollback: ↑ / ↓ and the wheel scroll the chat, a drag selects only what is
+  on screen, and `/copy` shows the whole chat on the normal screen for copying
+  (`esc` returns).
+- **`/mouse`** gives the mouse to the app instead of the terminal; selecting then
+  needs shift+drag. `/mouse` again gives it back.
 
 `/help` lists the keys, and [ADR-001](ADR-001-mouse-capture.md) records why
 they are what they are.

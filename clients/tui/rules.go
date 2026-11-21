@@ -95,6 +95,10 @@ func (m chatModel) handleExtraSlash(name, args string) (tea.Model, tea.Cmd) {
 		return m, submitRules(m.clientName, protocol.RulesRequest{Action: protocol.RulesActionList})
 	case "agent", "web":
 		return m.handleLocalModeCommand(name, args) // localmodels.go
+	case "copy":
+		return m.openCopyView() // copyview.go
+	case "auto":
+		return m.autoCommand(args) // autoapprove.go
 	case "forget":
 		n, err := strconv.Atoi(args)
 		if err != nil || n < 1 {

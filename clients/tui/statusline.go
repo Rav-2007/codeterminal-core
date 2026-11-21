@@ -67,6 +67,15 @@ type chatExtras struct {
 	// rateWait is a rate-limit wait in progress: drawn while it lasts, never
 	// left in the chat (ratewait.go, 2026-10-25).
 	rateWait rateWaitState
+	// copyView is /copy: the chat printed on the terminal's normal screen,
+	// where a drag can select all of it (copyview.go, 2026-11-21).
+	copyView copyViewPhase
+	// inline is the chat printed into the terminal's own scrollback, the
+	// default since 2026-11-21 (inline.go).
+	inline inlineState
+	// autoApprove answers the questions a tool call or an edit would ask, as y
+	// would; off at every start (autoapprove.go, 2026-11-21).
+	autoApprove bool
 }
 
 // connInfo is what the daemon last said it is sending to.
@@ -212,6 +221,8 @@ func (m chatModel) handleSideAnswer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRateWaitTick(msg)
 	case approvalLostMsg: // an approval answer that could not be sent (approvallost.go)
 		return m.handleApprovalLost(msg)
+	case copyViewMsg: // /copy on its way back to the chat (copyview.go)
+		return m.handleCopyView(msg)
 	}
 	return m, nil
 }
@@ -221,6 +232,10 @@ const (
 	// it every row is transcript: the line says what /account says, and the
 	// answer being read does not.
 	statusLineMinHeight = 8
+	// statusAutoMinHeight is the shortest terminal the auto-approve row is
+	// drawn in (2026-11-21, after Cline's). Auto-approve being on is said above
+	// the prompt as well, in every window.
+	statusAutoMinHeight = 14
 
 	statusNoProvider = "no provider connected · /provider connects one"
 )
@@ -230,15 +245,18 @@ var (
 	statusModelStyle = lipgloss.NewStyle().Foreground(colorSteel)
 )
 
-// statusRows is how many rows the line takes: one, or none in a terminal too
-// short for it. It depends on the terminal's height ALONE, so the viewport --
-// sized when the terminal is -- and the frame drawn afterwards always agree
-// about whether the row is there.
+// statusRows is how many rows go under the prompt above the keys: the model
+// line and auto-approve -- fewer, or none, in a terminal too short for them. It depends on the terminal's height ALONE, so the viewport -- sized
+// when the terminal is -- and the frame drawn afterwards always agree about how
+// many rows are there.
 func (m chatModel) statusRows() int {
-	if m.height < statusLineMinHeight {
-		return 0
+	switch {
+	case m.height >= statusAutoMinHeight:
+		return 2
+	case m.height >= statusLineMinHeight:
+		return 1
 	}
-	return 1
+	return 0
 }
 
 // statusModel is the model prompts go to, by the id a user recognises: this
@@ -304,7 +322,13 @@ func (m chatModel) statusLine() string {
 		}
 	}
 	if t := m.sessionUsage; t.turns > 0 {
-		plain(compactTokens(t.prompt+t.completion) + " tokens")
+		// How full the context is, when a turn has said (autoapprove.go); the
+		// session's tokens otherwise, as before. /usage has both.
+		if gauge := m.contextGauge(); gauge != "" {
+			parts = append(parts, gauge)
+		} else {
+			plain(compactTokens(t.prompt+t.completion) + " tokens")
+		}
 		if cost := statusCost(t); cost != "" {
 			plain(cost)
 		}
@@ -332,11 +356,24 @@ func statusCost(t usageTotals) string {
 	return amount
 }
 
-// withStatusLine puts the row above the help line, when the terminal has the
-// row for it (statusRows): the line, and who is running the client (whoami.go).
+// withStatusLine is everything under the prompt, as many rows as the terminal
+// has room for (statusRows): the model line, auto-approve (autoapprove.go),
+// then the keys. THE BOTTOM RIGHT CORNER (owner, 2026-11-21) is the project's
+// folder name, at the right end of the row above the keys -- of the model
+// line when that row is not drawn -- and under it, at the right end of the keys,
+// who is running the client (whoami.go).
 func (m chatModel) withStatusLine(help string) string {
-	if m.statusRows() == 0 {
-		return help
+	if w := m.welcomeWidth(); m.welcoming() && m.width > w {
+		narrow := m // the first screen: the rows end where its prompt does (welcome.go)
+		narrow.width = w
+		return narrow.withStatusLine(help)
 	}
-	return m.statusRow() + "\n" + help
+	keys := m.keysRow(help)
+	switch m.statusRows() {
+	case 0:
+		return keys
+	case 1:
+		return m.withRightEnd(m.statusLine(), m.repoLabel()) + "\n" + keys
+	}
+	return m.statusLine() + "\n" + m.withRightEnd(m.autoRow(), m.repoLabel()) + "\n" + keys
 }

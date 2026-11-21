@@ -63,6 +63,9 @@ func (m chatModel) quitNow(erase bool) (tea.Model, tea.Cmd) {
 	if m.streamCancel != nil {
 		m.streamCancel()
 	}
+	// In inline mode the program's own lines are cleared on the way out, so
+	// the terminal is left with the chat and not a prompt box under it.
+	m.inline.quitting = m.inline.on
 	if erase {
 		return m, eraseThenQuit(m.clientName)
 	}

@@ -458,3 +458,23 @@ func TestResetHistoryOnDaemon_SurfacesDaemonSideError(t *testing.T) {
 		t.Errorf("err = %v, want it to mention the daemon's failure reason", errMsg.err)
 	}
 }
+
+// batchTwo is tea.Batch for two commands: the other one alone when one is nil,
+// both in one BatchMsg, in order, otherwise.
+func TestBatchTwoIsBatch(t *testing.T) {
+	a := func() tea.Msg { return "a" }
+	b := func() tea.Msg { return "b" }
+	if batchTwo(nil, nil) != nil {
+		t.Error("batchTwo(nil, nil) is a command; want nil, as tea.Batch gives")
+	}
+	if got := batchTwo(a, nil); got == nil || got() != "a" {
+		t.Error("batchTwo(a, nil) is not a")
+	}
+	if got := batchTwo(nil, b); got == nil || got() != "b" {
+		t.Error("batchTwo(nil, b) is not b")
+	}
+	msg, ok := batchTwo(a, b)().(tea.BatchMsg)
+	if !ok || len(msg) != 2 || msg[0]() != "a" || msg[1]() != "b" {
+		t.Errorf("batchTwo(a, b) gave %#v; want a BatchMsg of a then b", msg)
+	}
+}

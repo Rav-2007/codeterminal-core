@@ -336,20 +336,24 @@ func TestTheClientStartsAndDrawsAgainstARealDaemon(t *testing.T) {
 func TestANarrowTerminalDoesNotKillTheClient(t *testing.T) {
 	sc, cmd, master := startTUI(t, 4, 2)
 
-	// Wait for the first render to land and settle, then dismiss the splash --
-	// which is what puts the INPUT on screen, and the input is what panicked --
-	// then wait for that second render to settle too. Waiting on the output
-	// rather than on the clock is what makes the keystroke provably arrive
-	// after something was drawn.
+	// Wait for the first render to land and settle, then type into the INPUT --
+	// the input is what panicked -- and wait for that to settle too. Waiting on
+	// the output rather than on the clock is what makes the keystroke provably
+	// arrive after something was drawn.
+	//
+	// The first screen draws the input from its first frame (welcome.go; there
+	// is no splash to dismiss any more), so what proves the input was rendered
+	// is its mark on screen. Not that the key changed the screen: at two
+	// columns the prompt is "➤…" whatever is in it, and the key drew nothing
+	// new whenever no cursor blink happened to land in the wait (CI, 2026-11-21).
 	if !sc.waitForQuiet(250*time.Millisecond, 20*time.Second) {
 		t.Fatalf("the client never wrote a byte at 2 columns; nothing was rendered to survive")
 	}
-	before := sc.size()
 	_, _ = master.Write([]byte("x"))
 	sc.waitForQuiet(250*time.Millisecond, 10*time.Second)
-	if sc.size() == before && cmd.Process.Signal(syscall.Signal(0)) == nil {
-		t.Fatalf("the client drew nothing after the splash was dismissed, so the "+
-			"input was never rendered and this test proves nothing. Screen:\n%s", sc.text())
+	if !strings.Contains(sc.text(), promptMark) && cmd.Process.Signal(syscall.Signal(0)) == nil {
+		t.Fatalf("the input was never drawn at 2 columns, so this test proves "+
+			"nothing. Screen:\n%s", sc.text())
 	}
 
 	if strings.Contains(sc.text(), "panic:") {
@@ -400,19 +404,23 @@ func TestARealFirstRunOpensOnTheProviderList(t *testing.T) {
 	}
 }
 
-// And with a key in force nothing changed: the splash, then the chat. The setup
-// must not appear to a user who is already connected.
-func TestAConnectedClientStillOpensOnTheSplash(t *testing.T) {
-	sc, _, master := startTUI(t, 40, 100)
-	if !sc.waitFor("press any key to begin", 20*time.Second) {
-		t.Fatalf("a connected client did not open on the splash. Screen so far:\n%s", sc.text())
+// And with a key in force the setup is not shown: the client opens on its first
+// screen, the lotus with the prompt under it (welcome.go; until 2026-11-21 the
+// splash, which the full-screen chat still opens on). The setup must not appear
+// to a user who is already connected.
+func TestAConnectedClientOpensOnTheFirstScreen(t *testing.T) {
+	sc, _, _ := startTUI(t, 40, 100)
+	if !sc.waitFor(welcomeTitle, 20*time.Second) {
+		t.Fatalf("a connected client did not open on the first screen. Screen so far:\n%s", sc.text())
 	}
-	_, _ = master.Write([]byte("x\x7f"))
 	if !sc.waitFor(helpText, 10*time.Second) {
-		t.Fatalf("the chat did not come up. Screen:\n%s", sc.text())
+		t.Fatalf("the prompt's key line is not on the first screen. Screen:\n%s", sc.text())
 	}
 	if strings.Contains(sc.text(), setupProviderTitle) {
 		t.Error("the setup was shown to a client whose daemon already has a key")
+	}
+	if strings.Contains(sc.text(), splashTagline) {
+		t.Error("the inline chat still opens on the splash, which asks for a key before the prompt is there")
 	}
 }
 

@@ -58,13 +58,13 @@ func TestAnOverlongWordIsBrokenRatherThanOverflowing(t *testing.T) {
 // have rendered it, so a wrap that cut an escape sequence in half would either
 // bleed colour down the screen or print raw escapes.
 func TestWrappingPreservesStyling(t *testing.T) {
-	styled := assistantStyle.Render("Mochiii: " + strings.Repeat("word ", 40))
+	styled := assistantStyle.Render("↬ " + strings.Repeat("word ", 40))
 	wrapped := wrapToWidth(styled, 30)
 
 	if strings.Contains(wrapped, "\x1b[") != strings.Contains(styled, "\x1b[") {
 		t.Error("wrapping added or removed escape sequences")
 	}
-	if !strings.Contains(ansi.Strip(wrapped), "Mochiii:") {
+	if !strings.Contains(ansi.Strip(wrapped), "↬") {
 		t.Error("the visible text did not survive wrapping")
 	}
 }

@@ -18,7 +18,7 @@ func TestAnAnswerThatNeverCameLeavesNoThinkingBehind(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "what does this project do")
 	m, _ = pressEnter(m)
-	if !strings.Contains(m.View(), "💭 thinking") {
+	if !strings.Contains(m.View(), "thinking… (esc to stop)") {
 		t.Fatal("precondition: a turn in flight shows the thinking line")
 	}
 	const said = "the model sent back an empty answer. Ask again, or pick another model with /model."
@@ -28,7 +28,7 @@ func TestAnAnswerThatNeverCameLeavesNoThinkingBehind(t *testing.T) {
 	m = updated.(chatModel)
 
 	v := m.View()
-	if strings.Contains(v, "💭 thinking") {
+	if strings.Contains(v, "(esc to stop)") {
 		t.Errorf("the turn is over (state %v) and the screen still says it is thinking:\n%s", m.state, v)
 	}
 	if !strings.Contains(v, "empty answer") {

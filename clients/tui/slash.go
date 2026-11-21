@@ -85,6 +85,8 @@ var slashCatalog = []slashDef{
 	{Name: "clear", Kind: slashLocal, Summary: "start a new chat (same as ctrl+n)"},
 	{Name: "compact", Kind: slashLocal, Summary: "summarise the earlier part of this chat to save context (the full chat stays in History)"},
 	{Name: "mouse", Kind: slashLocal, Summary: "toggle mouse capture: off (the start) lets a drag select text; on scrolls by wheel where ↑/↓ do not"},
+	{Name: "auto", Kind: slashLocal, Summary: "auto-approve on or off: tool calls run and edits apply without asking (also ctrl+space)"},
+	{Name: "copy", Kind: slashLocal, Summary: "the whole chat on the terminal's own screen, to select and copy more than fits in the window (esc comes back)"},
 	{Name: "context", Kind: slashLocal, Summary: "show workspace, model tier, and last grounding"},
 	{Name: "git", Kind: slashLocal, Summary: "show git status for the workspace"},
 	{Name: "init", Kind: slashLocal, Summary: "quick start checklist for this workspace"},
@@ -294,7 +296,13 @@ func formatSlashHelp() string {
 	b.WriteString("  esc            stop the turn in flight; the transcript is kept\n")
 	b.WriteString("  ctrl+c         stop the turn in flight, or quit when nothing is running (asks first if this chat is not saved)\n")
 	b.WriteString("  ctrl+n         start a new chat (same as /clear); /save first to keep this one\n")
-	b.WriteString("  ↑ ↓            scroll the chat (the wheel sends these too)\n")
+	b.WriteString("  ctrl+space     auto-approve on or off (same as /auto); off at every start\n")
+	if helpInline {
+		b.WriteString("  wheel          the chat is in the terminal's scrollback: its scrollbar and wheel scroll it\n")
+		b.WriteString("  ↑ ↓            scroll a question or an answer taller than the space under the chat\n")
+	} else {
+		b.WriteString("  ↑ ↓            scroll the chat (the wheel sends these too)\n")
+	}
 	b.WriteString("  ctrl+↑ ctrl+↓  the prompts you sent before (alt+↑ alt+↓ too)\n")
 	b.WriteString("  drag           select text; " + copyKey() + " copies it (the terminal's own copy)\n")
 	b.WriteString(fmt.Sprintf("  %-15spaste (the terminal's own paste)\n", pasteKey()))

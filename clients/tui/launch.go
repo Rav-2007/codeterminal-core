@@ -13,6 +13,9 @@ import (
 type launchOptions struct {
 	forceIndex bool // --index: (re)build the folder's index without asking
 	noIndex    bool // --no-index or MOCHIII_NO_INDEX=1: never offer to
+	// fullscreen: --fullscreen or MOCHIII_FULLSCREEN=1 draws the chat on the
+	// alternate screen, as before 2026-11-21 (inline.go).
+	fullscreen bool
 }
 
 // prepareDaemon makes sure a daemon serves workspaceRoot before the client
@@ -27,7 +30,7 @@ func prepareDaemon(workspaceRoot string, launch launchOptions, interactive bool)
 	}
 	if !CodeSearch {
 		if launch.forceIndex {
-			say(os.Stderr, "Code search isn't in this build of Mochiii (the static one for musl Linux), so there is nothing to index.\n")
+			note(os.Stderr, "Code search isn't in this build of Mochiii (the static one for musl Linux), so there is nothing to index.\n")
 		}
 	} else if interactive && (launch.forceIndex || !launch.noIndex) {
 		home := homeDir()

@@ -463,8 +463,8 @@ type chatModel struct {
 func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []protocol.Turn) chatModel {
 	ti := textinput.New()
 	ti.Placeholder = defaultInputPlaceholder
-	ti.Prompt = "> "
-	ti.PromptStyle = accentStyle
+	ti.Prompt = promptMark + " " // the prompt's look: promptbox.go
+	ti.PromptStyle = promptChevronStyle
 	ti.TextStyle = userStyle
 	ti.CharLimit = 4000
 
@@ -540,7 +540,7 @@ func turnsFromProtocol(protoTurns []protocol.Turn) []turn {
 // line will not fit whatever we pass, and a client that draws badly is worth
 // more than one that is not there.
 func inputWidthFor(terminalWidth int, prompt string) int {
-	w := terminalWidth - len(prompt) - 2
+	w := terminalWidth - ansi.StringWidth(prompt) - 2 // columns, not bytes: ➤ is three
 	if w < 0 {
 		return 0
 	}
@@ -551,13 +551,13 @@ func (m chatModel) Init() tea.Cmd {
 	return tea.Batch(textinput.Blink, refreshConnCmd(m.clientName))
 }
 
-func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m chatModel) update(msg tea.Msg) (tea.Model, tea.Cmd) { // Update (inline.go) prints what became final after it
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return m.handleWindowSize(msg)
 
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		return m.keyOrCopyView(msg) // copyview.go: /copy answers its own keys, then handleKey
 
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
@@ -604,7 +604,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setupTiersMsg:
 		return m.handleSetupTiers(msg)
 
-	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg, localCheckMsg, rateWaitTickMsg, approvalLostMsg:
+	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg, localCheckMsg, rateWaitTickMsg, approvalLostMsg, copyViewMsg:
 		return m.handleSideAnswer(msg)
 
 	case mcpResultMsg:
@@ -1241,15 +1241,15 @@ func (m chatModel) handleResetErr(msg resetErrMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// THE WAIT SHOWS ONE LINE, NOT THE MODEL'S THINKING. Until the first word of
-// the answer arrives, the transcript ends in "💭 thinking" with dots cycling
-// "", ".", "..", "..." -- and nothing else: the reasoning tokens a thinking
-// model streams are still received and kept on the turn, but no longer drawn.
-// The moment answer text arrives the line is gone and the answer streams in
-// its place, token by token.
+// THE WAIT SHOWS ONE LINE, NOT THE MODEL'S THINKING: the reasoning tokens a
+// thinking model streams are received and kept on the turn, but not drawn.
+// Since 2026-11-21 the line stays for the whole turn (owner: "show any
+// indicator while it working"): a spinner, "thinking" until anything has
+// happened and "working" after, and the key that stops it (working.go). Until
+// then it was "💭 thinking" with dots cycling "", ".", "..", "...", gone at the
+// answer's first word -- so nothing moved while a tool ran after the answer had
+// begun. thinkingInterval is one frame of the spinner.
 const thinkingInterval = 400 * time.Millisecond
-
-var thinkingDots = [...]string{"", ".", "..", "..."}
 
 type thinkingTickMsg struct{ gen int }
 
@@ -1273,9 +1273,9 @@ func (m chatModel) awaitingAnswer() bool {
 	return i < 0 || i >= len(m.turns) || strings.TrimSpace(m.turns[i].text) == ""
 }
 
-// thinkingLine is the indicator as drawn for the current frame.
+// thinkingLine is the indicator as drawn for the current frame (working.go).
 func (m chatModel) thinkingLine() string {
-	return helpStyle.Render("💭 thinking" + thinkingDots[m.thinkingFrame%len(thinkingDots)])
+	return m.workingLine()
 }
 
 func (m chatModel) handleThinkingTick(msg thinkingTickMsg) (tea.Model, tea.Cmd) {
@@ -1287,8 +1287,8 @@ func (m chatModel) handleThinkingTick(msg thinkingTickMsg) (tea.Model, tea.Cmd) 
 		// the turn resumes, but draw nothing over the approval panel.
 		return m, thinkingTick(msg.gen)
 	}
-	if !m.awaitingAnswer() {
-		return m, nil // the answer has started; the indicator is done
+	if !m.workingShown() {
+		return m, nil // the turn is over; the indicator is done (working.go)
 	}
 	m.thinkingFrame++
 	m.refreshViewport()
@@ -2204,7 +2204,7 @@ func (m chatModel) handleToken(msg tokenMsg) (tea.Model, tea.Cmd) {
 		m.state = stateStreaming
 	}
 	m.appendAnswer(m.sanAnswer.Write(string(msg))) // below the calls, if all so far was whitespace
-	return m, tea.Batch(m.refreshSoon(), waitForNext(m.streamCh))
+	return m, batchTwo(m.refreshSoon(), waitForNext(m.streamCh))
 }
 
 // appendTurn is THE ONLY WAY A TURN ENTERS THE TRANSCRIPT, and it sanitizes.
@@ -2647,7 +2647,7 @@ func (m chatModel) applyCurrentReviewEdit() (tea.Model, tea.Cmd) {
 // finishReview appends an outcome summary to the transcript and returns to
 // idle chat.
 func (m chatModel) finishReview() (tea.Model, tea.Cmd) {
-	lines := []string{fmt.Sprintf("edits: %d applied, %d skipped, %d refused", m.reviewApplied, m.reviewSkipped, m.reviewRefused)}
+	lines := append([]string{fmt.Sprintf("edits: %d applied, %d skipped, %d refused", m.reviewApplied, m.reviewSkipped, m.reviewRefused)}, m.autoAppliedLines()...) // what nobody read, named (autoapprove.go)
 	for _, r := range m.reviewRefusals {
 		lines = append(lines, "  refused: "+r)
 	}
@@ -2690,12 +2690,12 @@ func (m *chatModel) refreshViewport() {
 		// drawing it would put an empty "Mochiii:" above the indicator.
 		turns = append(append([]turn(nil), turns[:m.streamAssistant]...), turns[m.streamAssistant+1:]...)
 	}
-	content := m.transcript.render(turns, m.viewport.Width)
-	if waiting || m.rateWaitShown() {
-		if content != "" {
-			content += turnSeparator
-		}
-		content += m.indicatorLine()
+	content := m.transcriptOf(turns)           // inline.go: in inline mode, only what is not printed yet
+	if m.workingShown() || m.rateWaitShown() { // for the whole turn (working.go)
+		// The blank line and the line itself in one concatenation: this runs for
+		// every streamed token, and each concatenation is an allocation
+		// (renderbench_test.go).
+		content = withIndicator(content, m.indicatorLine())
 	}
 	if m.turnInFlight() && len(m.tasks) > 0 {
 		content += "\n\n" + renderTaskList(m.tasks)
@@ -2709,7 +2709,7 @@ func (m *chatModel) refreshViewport() {
 	if m.state == stateToolApproval && m.pendingApproval != nil {
 		content += "\n\n" + renderApprovalPanel(*m.pendingApproval)
 	}
-	m.viewport.SetContent(wrapToWidth(content, m.viewport.Width))
+	m.setLive(wrapToWidth(content, m.viewport.Width)) // inline.go: and, in inline mode, its height
 	if follow {
 		m.viewport.GotoBottom()
 	}
@@ -2775,13 +2775,13 @@ const turnSeparator = "\n\n"
 func renderTurnBlock(t turn, width int) string {
 	switch t.role {
 	case roleUser:
-		return userStyle.Render("You: " + t.text)
+		return renderUserBlock(t.text, width) // a shaded bar, not "You:" (userbar.go)
 	case roleAssistant:
 		// The answer only. A thinking model's reasoning is kept on the turn but
 		// not drawn -- while it streams, refreshViewport shows the one-line
 		// "💭 thinking" indicator instead (see awaitingAnswer).
 		if t.plainAnswer() {
-			return assistantStyle.Render(assistantLabel + t.text)
+			return renderPlainAnswer(t.text)
 		}
 		// A model's answer is markdown and is drawn as markdown (markdown.go).
 		// It needs the width: a table is laid out to fit it.
@@ -3071,7 +3071,7 @@ func approvalQuestion(req protocol.ToolApprovalRequest) string {
 	return "Allow " + name + ": " + compact + " ?"
 }
 
-func (m chatModel) View() string {
+func (m chatModel) view() string { // View (inline.go) draws nothing once quitting
 	if m.state == stateSplash {
 		content := renderSplash()
 		if m.ready {
@@ -3108,9 +3108,9 @@ func (m chatModel) View() string {
 	} else {
 		popupStr, _ := m.renderSlashPopup()
 		if popupStr != "" {
-			bottomLine = popupStr + "\n" + m.promptBox(m.input.View())
+			bottomLine = popupStr + "\n" + m.promptBox(m.inputView())
 		} else {
-			bottomLine = m.promptBox(m.input.View())
+			bottomLine = m.promptBox(m.inputView()) // a long prompt over several rows (promptinput.go)
 		}
 		if m.turnInFlight() {
 			help = helpStyle.Render(interruptHelpText)
@@ -3136,7 +3136,7 @@ func (m chatModel) View() string {
 	if m.mcpPanel != nil {
 		transcript = m.renderMCPPanel(m.viewport.Width, m.viewport.Height)
 	}
-	return header + "\n" + transcript + "\n" + bottomLine + "\n" + m.withStatusLine(help)
+	return m.orCopyView(m.composeScreen(header, transcript, bottomLine, m.withStatusLine(help)))
 }
 
 func (m chatModel) slashMatches() []slashDef {
@@ -3205,7 +3205,7 @@ func (m chatModel) renderSlashPopup() (string, int) {
 // header is a single fixed row and noticeLines is shown on demand by /context.
 // Nothing was dropped: it is the same text, one command away.
 func (m chatModel) renderHeader() string {
-	brand := brandStyle.Render(lotusGlyph + " " + brandName)
+	brand := brandStyle.Render(lotusGlyph+" "+brandName) + m.autoHeaderBadge() // autoapprove.go
 	// The active spec is shown: it changes what every prompt does.
 	if m.activeSpec != "" {
 		brand += "  " + helpStyle.Render("spec: "+sanitizeText(strings.TrimSuffix(path.Base(m.activeSpec), ".md")))
@@ -3337,7 +3337,7 @@ func (m *chatModel) resizeViewport() {
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
-	m.viewport.Height = vpHeight
+	m.viewport.Height = m.liveHeight(vpHeight) // inline.go: no more than its content needs, in inline mode
 }
 
 // historyLabel is a subtle indicator of how much conversation memory is

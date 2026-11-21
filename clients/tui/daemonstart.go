@@ -239,12 +239,12 @@ func useRunningDaemon(self string, status io.Writer, stop func() error) bool {
 			say(status, "Mochiii was upgraded from %s to %s: restarting its background service for this folder.\n", serving, Version)
 		}
 		if err := stop(); err != nil && !errors.Is(err, errNoDaemonRunning) {
-			say(status, "Could not stop the %s service (%v); carrying on with it.\n", serving, err)
+			note(status, "Could not stop the %s service (%v); carrying on with it.\n", serving, err)
 			return true
 		}
 		return false
 	case servingForeign:
-		say(status, "Note: Mochiii %s, from another install, is answering in this folder; this is %s.\n", serving, Version)
+		note(status, "Note: Mochiii %s, from another install, is answering in this folder; this is %s.\n", serving, Version)
 	}
 	return true
 }

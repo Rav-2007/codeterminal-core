@@ -261,6 +261,12 @@ var summaryMayDiffer = map[string]string{
 		"extension's still prints the tiers, so its summary must not promise a list",
 	"exit": "the command genuinely does different things: the TUI quits the " +
 		"process, the extension closes a panel and leaves the editor running",
+	"copy": "the extension puts the last reply on the system clipboard, which a webview " +
+		"can reach. The terminal client cannot on a stock desktop (GNOME Terminal " +
+		"ignores OSC 52, no clipboard program is installed, and needing one was " +
+		"refused: \"no new clipboards\", 2026-10-25), so its /copy prints the whole " +
+		"chat on the terminal's normal screen, for the terminal's own selection " +
+		"and copy key (2026-11-21)",
 	"mcp-server": "the TUI's asks the RUNNING daemon for its tools and adds, " +
 		"changes or removes the user's own MCP servers in the terminal " +
 		"(2026-10-11); the extension's opens its Customize page on the MCP " +
@@ -317,7 +323,6 @@ var vscodeOnlyCommands = map[string]string{
 // a way to silence it.
 var notYetPortedToTUI = map[string]string{
 	"diff":   "shows the workspace's uncommitted changes; the terminal has /git for status and gets this with it",
-	"copy":   "copies the last reply to the system clipboard; a terminal can do it and does not yet",
 	"export": "writes the conversation to a Markdown file through a save dialog; the terminal needs its own path prompt first",
 	"effort": "sets reasoning_effort from the chat; the terminal sets it per tier in models.json and has no per-turn command",
 	"mode":   "sets the edit mode from the chat; the terminal has no mode picker to agree with yet",
@@ -336,6 +341,10 @@ var notYetPorted = map[string]string{
 	// "new chat" still never sends a reset, so it neither deleted chats before
 	// nor saves them now.
 	"history": "VS Code port is the next step of the /history plan (README, /history)",
+	// Auto-approve arrived in the terminal client first (owner, 2026-11-21,
+	// after Cline's): ctrl+space there. The extension's approval cards get it
+	// next; the daemon side (protocol.ToolApprovalResponse.Auto) is shared.
+	"auto": "auto-approve is terminal-first (2026-11-21); the extension's approval cards get it next",
 	// /save is /history save under a shorter name (2026-10-05); it has nothing
 	// to save through until /history itself is ported, and goes with it.
 	"save":   "the short form of /history save; ported together with /history",

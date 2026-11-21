@@ -58,8 +58,18 @@ import (
 // raw HTML are drawn as written. Text that already carries colour of its own
 // (the SGR the sanitiser lets through) is passed on untouched.
 
-// assistantLabel opens every answer.
-const assistantLabel = "Mochiii: "
+// assistantLabel opens every answer: a curved arrow, not a name (owner,
+// 2026-11-21: "remove the mochiii in reply, it should just reply with the
+// curved arrow", with a picture of an arrow that loops before it points right
+// -- ↬, RIGHTWARDS ARROW WITH LOOP). Until then "Mochiii: ". Drawn in the
+// list markers' blue (penMarker); a question is the shaded ➤ bar (userbar.go).
+const assistantLabel = "↬ "
+
+// renderPlainAnswer is an answer drawn as it came, not as markdown -- a
+// command's own output: the label, then the text, each in its own colour.
+func renderPlainAnswer(text string) string {
+	return mdStyles[penMarker].Render(assistantLabel) + assistantStyle.Render(text)
+}
 
 // mdTab is what a tab is drawn as. Lip Gloss turned a tab into four spaces
 // inside Style.Render, which is where an answer used to go, so Go code kept
@@ -304,14 +314,14 @@ func (r *mdRenderer) render(src string) {
 		}
 
 		// A paragraph line. The first one of an answer carries the label, as
-		// "Mochiii: the answer" always has.
+		// "↬ the answer" ("Mochiii: the answer" until 2026-11-21).
 		body := strings.TrimLeft(line, " ")
 		r.runs = r.inline(r.runs[:0], body, penBody)
 		if !r.labelled {
 			r.labelled = true
 			r.startLine()
 			r.flow.begin(&r.b, r.pens, r.width, r.width, "", nil)
-			r.flow.feed(assistantLabel, penBody)
+			r.flow.feed(assistantLabel, penMarker)
 			for _, run := range r.runs {
 				r.flow.feedRun(run)
 			}
@@ -323,9 +333,9 @@ func (r *mdRenderer) render(src string) {
 	}
 	if !r.labelled {
 		// Nothing but blank lines, or nothing: the label alone, as before.
-		r.b.WriteString(r.pens.open[penBody])
+		r.b.WriteString(r.pens.open[penMarker])
 		r.b.WriteString(assistantLabel)
-		r.b.WriteString(r.pens.close[penBody])
+		r.b.WriteString(r.pens.close[penMarker])
 		r.blank = false
 	}
 }
@@ -421,9 +431,9 @@ func (r *mdRenderer) labelOwnLine() {
 	}
 	r.labelled = true
 	r.startLine()
-	r.b.WriteString(r.pens.open[penBody])
+	r.b.WriteString(r.pens.open[penMarker])
 	r.b.WriteString(strings.TrimRight(assistantLabel, " "))
-	r.b.WriteString(r.pens.close[penBody])
+	r.b.WriteString(r.pens.close[penMarker])
 	r.afterLabel = true
 }
 

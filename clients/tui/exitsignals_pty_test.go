@@ -60,7 +60,10 @@ func waitOrFail(t *testing.T, cmd *exec.Cmd, d time.Duration, sig syscall.Signal
 	}
 }
 
-func launchForSignal(t *testing.T) (*screen, *exec.Cmd, *os.File) {
+// launchForSignal starts the client on the alternate screen (--fullscreen):
+// the tests below are about leaving it. inlineExitSignals_test.go covers the
+// default, which never enters it.
+func launchForSignal(t *testing.T, extraEnv ...string) (*screen, *exec.Cmd, *os.File) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("builds a binary and starts a subprocess")
@@ -81,7 +84,8 @@ func launchForSignal(t *testing.T) (*screen, *exec.Cmd, *os.File) {
 	}
 	cmd := exec.Command(bin, "--workspace", real)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "GOTRACEBACK=all")
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "GOTRACEBACK=all", "MOCHIII_FULLSCREEN=1")
+	cmd.Env = append(cmd.Env, extraEnv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -266,4 +270,32 @@ func processIsRunning(t *testing.T, pid int) bool {
 	}
 	f := strings.Fields(string(b))
 	return len(f) > 2 && f[2] != "Z"
+}
+
+// THE DEFAULT SINCE 2026-11-21 IS INLINE (inline.go): the chat is printed into
+// the terminal's scrollback and the alternate screen is never entered, so there
+// is none to leave. A signal must still put the cursor and the mouse back.
+func TestInlineExitSignalRestoresTheTerminal(t *testing.T) {
+	sc, cmd, master := launchForSignal(t, "MOCHIII_FULLSCREEN=0")
+	toIdleForSignal(t, sc, master)
+	before := sc.size()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signalling: %v", err)
+	}
+	waitOrFail(t, cmd, 10*time.Second, syscall.SIGTERM)
+	time.Sleep(400 * time.Millisecond)
+
+	out := sc.text()
+	if strings.Contains(out, "\x1b[?1049h") {
+		t.Error("inline mode entered the alternate screen")
+	}
+	tail := out[before:]
+	for _, r := range restoreSequences {
+		if r.seq == "\x1b[?1049l" {
+			continue
+		}
+		if !strings.Contains(tail, r.seq) {
+			t.Errorf("SIGTERM in inline mode did not restore %s (%q). Bytes after the signal: %q", r.name, r.seq, tail)
+		}
+	}
 }

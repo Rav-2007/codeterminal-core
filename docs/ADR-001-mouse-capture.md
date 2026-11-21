@@ -1,6 +1,6 @@
 # ADR-001 — Mouse capture in the terminal client
 
-**Status:** accepted (toggle shipped); default decided 2026-09-27 (capture ON, up/down as prompt history), **revised 2026-10-25: capture OFF from the start, up/down scroll, prompt history on ctrl+up/down** (see "Revised 2026-10-25").
+**Status:** accepted (toggle shipped); default decided 2026-09-27 (capture ON, up/down as prompt history), **revised 2026-10-25: capture OFF from the start, up/down scroll, prompt history on ctrl+up/down** (see "Revised 2026-10-25"); **2026-11-21: `/copy` prints the whole chat where a drag can select more than one screen** (see "Added 2026-11-21"). **Later on 2026-11-21: the chat lives in the terminal's scrollback by default** (see "Built 2026-11-21").
 **Date:** 2026-09-04.
 **Scope:** `clients/tui` only. The VS Code client is a webview and has no such trade.
 
@@ -143,6 +143,58 @@ These were the options offered:
 **What this does not do:** the alternate screen has no scrollback, so a
 selection covers only what is on screen. A long answer is copied a screen at a
 time. Option 4 is the fix for that.
+
+## Added 2026-11-21: /copy, for more than one screen
+
+The limit above reached the owner: "i can't be able to copy the complete
+information, i can only be able to select the visible part". `/copy` (TUI,
+`clients/tui/copyview.go`) is the step short of option 4:
+
+- It leaves the alternate screen and prints the whole chat on the terminal's
+  normal screen, which has scrollback. A drag selects any length of it (the
+  terminal scrolls when a drag reaches its edge), and the terminal's own copy
+  key copies. No clipboard program and no OSC 52 are involved.
+- The chat is printed with no width limit. The terminal wraps long lines itself,
+  so a copied paragraph comes out as one line, as written, and is not cut where
+  the window ended.
+- esc (also enter, q or ctrl+c) returns to the chat as it was. On this screen
+  ctrl+c never quits. Mouse capture, if `/mouse` turned it on, is released while
+  `/copy` shows and restored afterwards.
+- What `/copy` printed stays in the terminal's scrollback after Mochiii quits.
+
+Option 4 (the chat lives in the terminal's scrollback all the time, so no
+command is needed) is still the full fix and is still not built.
+
+## Built 2026-11-21: option 4, the chat in the terminal's scrollback
+
+The same day, after `/copy`, the owner asked for the scrollbar itself: "There is
+no side scroll thing, like available in the claude... add the scroll view in the
+side then be able to select and copy the content". The terminal's scrollbar only
+works for its normal screen, so the chat now lives there (`clients/tui/inline.go`):
+
+- A finished turn is printed once, above the program's own lines, and is then
+  the terminal's: its scrollbar, wheel, selection and copy key reach all of it,
+  and it stays after Mochiii quits.
+- What can still change is redrawn below it: the answer being written, a call
+  still running, a question waiting for an answer, the prompt box. An answer is
+  printed a paragraph at a time as it arrives (at a blank line, never inside a
+  code block), so a long one is in the scrollback while it is still arriving.
+- What has been printed is tracked by a fingerprint per turn, because the list
+  of turns is also trimmed and replaced (the transcript bound, `/clear`,
+  `/resume`, `/compact`, another window). Nothing printed is printed again; a
+  replaced chat is printed below a rule.
+- `--fullscreen` / `MOCHIII_FULLSCREEN=1` keeps the alternate screen, for a
+  terminal where printing above the program misbehaves. There, everything above
+  in this record still holds.
+
+The chat opens on a cleared terminal (screen and scrollback, as `clear` does),
+owner's request the same day: "clear the upper stuff". Startup lines that are
+news, not progress, are said with `note()` and repeated in the chat.
+
+What it costs: the chat is drawn at the window's width when it is printed, so
+widening the window later does not reflow it, and keys like ↑/↓ scroll only the
+part still being drawn. The wheel no longer arrives as ↑/↓, because that is a
+feature of the alternate screen; the terminal scrolls its scrollback itself.
 
 ## What would change this decision
 
