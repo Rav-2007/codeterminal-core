@@ -11,6 +11,8 @@ import (
 	"errors"
 	"net"
 	"time"
+
+	"mochiii/protocol"
 )
 
 // Connection resource limits (FAIL-3, Gate 5 — DoS hardening). These bound
@@ -164,7 +166,7 @@ const approvalGrantFraction = 4
 // Expiry is a DENIAL, never an error and never a hang: the loop feeds the model
 // a refusal and carries on. Silence is not consent, and a consent prompt that
 // blocks forever is a worse failure than one that gives up.
-const approvalIdleTimeout = 5 * time.Minute
+const approvalIdleTimeout = protocol.ApprovalWait
 
 // grantReadBudget tops up the connection's remaining read allowance, up to a
 // cumulative ceiling.

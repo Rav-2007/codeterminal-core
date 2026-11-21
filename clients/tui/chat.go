@@ -662,6 +662,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamErrMsg:
 		return m.handleStreamErr(msg)
 
+	case approvalLostMsg:
+		return m.handleApprovalLost(msg)
+
 	case resetErrMsg:
 		return m.handleResetErr(msg)
 
@@ -2792,6 +2795,8 @@ func renderTurnBlock(t turn, width int) string {
 		return renderSevered(t.text, width, severedNotSent)
 	case roleUnanswered:
 		return renderSevered(t.text, width, severedUnanswered)
+	case roleApprovalLost:
+		return renderApprovalLost(t.text)
 	}
 	return ""
 }

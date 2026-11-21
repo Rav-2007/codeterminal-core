@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // ProtocolVersion is the version implemented by this build. Bump it whenever
@@ -920,6 +921,15 @@ const (
 	// the query may carry what was read.
 	EgressReviewQuery = "query"
 )
+
+// ApprovalWait is how long the daemon waits for the answer to one
+// ToolApprovalRequest. After it, silence is a no: the call is refused and the
+// turn carries on without it.
+//
+// Here rather than only in the daemon so a client can say truthfully why an
+// answer given later did not count -- the TUI names this wait when an answer
+// could not be sent (clients/tui/approvallost.go).
+const ApprovalWait = 5 * time.Minute
 
 type ToolApprovalRequest struct {
 	CallID          string `json:"call_id"`
