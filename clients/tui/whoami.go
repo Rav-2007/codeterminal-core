@@ -10,7 +10,10 @@ import (
 )
 
 // WHO IS RUNNING THE CLIENT, AND ON WHICH MACHINE: "ravi@laptop", at the right
-// end of the row under the prompt.
+// end of the keys line, the last row of the screen -- under the project's name
+// at the right end of the row above it (owner, 2026-11-21: "the directory name
+// in the bottom right corner, with below the system and user name"). It was at
+// the right end of the model line until then.
 //
 // WHY (OWNER, 2026-10-13): "it should display the user/desktop name in the
 // bottom of the prompt bar". The chat takes the whole terminal, shell prompt
@@ -41,6 +44,14 @@ import (
 const (
 	// whoamiGap is the least space between the line and the name.
 	whoamiGap = 2
+	// rightEdgeGap is the column the bottom right corner leaves empty at the
+	// window's edge. THE LAST CELL OF THE LAST ROW IS ERASED: when the screen
+	// gets shorter -- in inline mode, every time a message is printed -- Bubble
+	// Tea writes "erase below" straight after its last row, and a terminal like
+	// GNOME Terminal leaves the cursor ON that row's last cell after drawing
+	// it, so the erase took the cell with it. The owner's screen read
+	// "ravi-kiran@SCAR" (2026-11-21).
+	rightEdgeGap = 1
 	// whoamiMinCols is the narrowest a CUT name is drawn. Under it what is left
 	// is a few letters and a "…", which says neither who nor where.
 	whoamiMinCols = 8
@@ -98,25 +109,35 @@ func oneCleanLine(s string) string {
 	return strings.Join(strings.Fields(sanitizeText(s)), " ")
 }
 
-// statusRow is the whole row under the prompt: the line (statusLine), and at
-// the right edge the name, in the columns the line has left.
-func (m chatModel) statusRow() string {
-	line := m.statusLine()
+// keysRow is the last row of the screen: the keys (help), and at the right edge
+// who is running the client, in the columns the keys have left.
+func (m chatModel) keysRow(help string) string {
 	if m.whoami == "" {
+		return help
+	}
+	return m.withRightEnd(help, statusLineStyle.Render(m.whoami))
+}
+
+// withRightEnd puts right at the right edge of a row -- one column in from the
+// window's, rightEdgeGap -- in the columns line has left. THE LINE IS NEVER
+// SHORTENED for it: right is drawn whole, or cut with "…" when at least
+// whoamiMinCols are left, or not at all.
+func (m chatModel) withRightEnd(line, right string) string {
+	if right == "" {
 		return line
 	}
+	edge := m.width - rightEdgeGap
 	used := lipgloss.Width(line)
-	room := m.width - used
+	room := edge - used
 	if used > 0 {
 		room -= whoamiGap
 	}
-	name := m.whoami
-	if lipgloss.Width(name) > room {
+	if lipgloss.Width(right) > room {
 		if room < whoamiMinCols {
 			return line
 		}
-		name = ansi.Truncate(name, room, "…")
+		right = ansi.Truncate(right, room, "…")
 	}
-	pad := m.width - used - lipgloss.Width(name)
-	return line + strings.Repeat(" ", pad) + statusLineStyle.Render(name)
+	pad := edge - used - lipgloss.Width(right)
+	return line + strings.Repeat(" ", pad) + right
 }

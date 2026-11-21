@@ -21,13 +21,14 @@ import (
 // NOTHING IT TAKES CAN CARRY TEXT OUT. The repository is fixed, the numbers are
 // numbers, `what` is an enum, and a label must look like a label. So a model
 // that has read something it should not obey has no way to send what it read
-// through this tool -- the leak web_fetch had (webegress.go).
+// through this tool, as it can through web_fetch (webegress.go).
 //
 // WHAT IT RETURNS IS FENCED, because anybody can write an issue on a public
 // repository: scrubbed, then neutralised, then wrapped in <github_content>,
-// under a note that says it is information and never an instruction. Reading
-// it also counts as having read something (webegress.go, hasRead), so a web
-// call after it is asked about.
+// under a note that says it is information and never an instruction. A web
+// call after reading it is NOT asked about (the owner removed those asks on
+// 2026-11-21, webegress.go): the fence is what stands between an issue's text
+// and the web tools.
 
 // githubLabelPattern is what a label filter may be.
 var githubLabelPattern = regexp.MustCompile(`^[\w .:/+-]{1,50}$`)

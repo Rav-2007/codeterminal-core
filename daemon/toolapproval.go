@@ -47,6 +47,7 @@ type approvalDecision struct {
 	// work, and killing the turn of a user who paused to read the arguments
 	// would punish exactly the care this prompt is asking them to take.
 	Waited time.Duration
+	Auto   bool // a plain yes the client's auto-approve mode gave (answeredByAutoApprove)
 }
 
 func (d approvalDecision) approved() bool {
@@ -200,8 +201,7 @@ func (a *connApprover) Ask(ctx context.Context, req protocol.ToolApprovalRequest
 	// the same way: one duplicate desynchronised the rest of the turn.
 	//
 	// Confirmed over a real socket before this existed (H5, 2026-08-01): two
-	// answers to call 1, and call 2 came back denied_ask despite being
-	// approved.
+	// answers to call 1, and call 2 came back denied_ask despite being approved.
 	//
 	// This does NOT weaken any check. A stale answer still cannot approve
 	// anything -- verifyApproval runs unchanged on whatever is finally read, and
@@ -216,9 +216,9 @@ func (a *connApprover) Ask(ctx context.Context, req protocol.ToolApprovalRequest
 	var (
 		decision, cause string
 		waited          time.Duration
+		raw             json.RawMessage // each Decode replaces it whole (RawMessage.UnmarshalJSON)
 	)
 	for skipped := 0; ; skipped++ {
-		var raw json.RawMessage
 		err := a.dec.Decode(&raw)
 		waited = time.Since(started)
 		if err != nil {
@@ -251,7 +251,7 @@ func (a *connApprover) Ask(ctx context.Context, req protocol.ToolApprovalRequest
 	if cause != "" {
 		a.logger.Printf("agent: refusing %s__%s: %s", req.Server, req.Tool, cause)
 	}
-	return approvalDecision{Decision: decision, Cause: cause, Waited: waited}
+	return approvalDecision{Decision: decision, Cause: cause, Waited: waited, Auto: decision == protocol.ApprovalApprove && answeredByAutoApprove(raw)}
 }
 
 // answersAnotherQuestion reports whether raw is a well-formed approval response
@@ -331,4 +331,14 @@ func verifyApproval(req protocol.ToolApprovalRequest, raw json.RawMessage) (deci
 	default:
 		return protocol.ApprovalDeny, denyByMalformed
 	}
+}
+
+// answeredByAutoApprove reports whether raw -- an answer already verified as a
+// plain yes to the question asked -- came from the client's auto-approve mode,
+// which the person turned on, rather than from the person reading this call
+// (protocol.ToolApprovalResponse.Auto). The answer is verified exactly as a
+// person's is; the mark only changes what the audit log says.
+func answeredByAutoApprove(raw json.RawMessage) bool {
+	var resp protocol.ToolApprovalResponse
+	return json.Unmarshal(raw, &resp) == nil && resp.Auto
 }

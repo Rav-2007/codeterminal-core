@@ -62,7 +62,7 @@ func traceApprovalResult(tr *trace.Turn, d toolDecision, call int) {
 	switch {
 	case !d.run:
 		tr.Emit(trace.Event{Stage: trace.StageApprovalResult, Status: trace.StatusFail, Tool: traceToolOf(d.tool), Call: call, Err: trace.ClassOf(d.source)})
-	case d.source == auditUserApprove || d.source == auditUserForTurn || d.source == auditUserForSpec:
+	case d.source == auditUserApprove || d.source == auditAutoApprove || d.source == auditUserForTurn || d.source == auditUserForSpec:
 		tr.Emit(trace.Event{Stage: trace.StageApprovalResult, Status: trace.StatusOK, Tool: traceToolOf(d.tool), Call: call})
 	}
 }

@@ -173,10 +173,10 @@ func TestClear_AnUnsavedChatIsAskedSaveOrClear(t *testing.T) {
 			t.Errorf("the screen does not say %q:\n%s", want, screen)
 		}
 	}
-	// The question is where the prompt was, in its box -- not a line of chat.
-	rows := bottomRows(m, 5)
-	if !strings.HasPrefix(rows[1], "│ "+newChatQuestion) || !strings.HasPrefix(rows[0], "╭") {
-		t.Errorf("the question is not in the prompt's box:\n%s", strings.Join(rows, "\n"))
+	// The question is where the prompt was, between its rules -- not a line of chat.
+	rows := promptAndBelow(m)
+	if !strings.HasPrefix(rows[1], newChatQuestion) || !strings.HasPrefix(rows[0], promptRule) {
+		t.Errorf("the question is not in the prompt's place:\n%s", strings.Join(rows, "\n"))
 	}
 	for _, old := range []string{"/clear again", "/save keeps it"} {
 		if strings.Contains(screen, old) {

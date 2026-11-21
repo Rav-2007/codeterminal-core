@@ -56,9 +56,9 @@ func TestQuit_AnUnsavedChatIsAskedBeforeLeaving(t *testing.T) {
 			t.Errorf("the screen does not say %q:\n%s", want, screen)
 		}
 	}
-	rows := bottomRows(m, 5)
-	if !strings.HasPrefix(rows[1], "│ "+quitChatQuestion) || !strings.HasPrefix(rows[0], "╭") {
-		t.Errorf("the question is not in the prompt's box:\n%s", strings.Join(rows, "\n"))
+	rows := promptAndBelow(m)
+	if !strings.HasPrefix(rows[1], quitChatQuestion) || !strings.HasPrefix(rows[0], promptRule) {
+		t.Errorf("the question is not in the prompt's place:\n%s", strings.Join(rows, "\n"))
 	}
 	if len(m.turns) != 2 {
 		t.Errorf("asking changed the chat: %d turns, want 2", len(m.turns))

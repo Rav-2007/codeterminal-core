@@ -58,8 +58,8 @@ func TestChat_ReasoningRendersSeparatelyAndNotInAnswer(t *testing.T) {
 	}
 }
 
-// While no answer text has arrived, the transcript ends in ONE line --
-// "💭 thinking" plus cycling dots -- and never the reasoning itself.
+// While no answer text has arrived, the transcript ends in ONE line -- a
+// spinner and "thinking" (working.go) -- and never the reasoning itself.
 func TestChat_WaitShowsOnlyTheThinkingIndicator(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "what is today's date?")
@@ -69,36 +69,38 @@ func TestChat_WaitShowsOnlyTheThinkingIndicator(t *testing.T) {
 	m = updated.(chatModel)
 
 	view := ansi.Strip(m.viewport.View())
-	if !strings.Contains(view, "💭 thinking") {
+	if !strings.Contains(view, "thinking… (esc to stop)") {
 		t.Fatalf("no thinking indicator while waiting:\n%s", view)
 	}
 	if strings.Contains(view, "Let me search") {
 		t.Errorf("the model's reasoning is on screen; want only the indicator:\n%s", view)
 	}
-	if strings.Contains(view, "Mochiii:") {
-		t.Errorf("an empty \"Mochiii:\" is drawn above the indicator:\n%s", view)
+	if strings.Contains(view, assistantLabel) {
+		t.Errorf("an empty reply label is drawn above the indicator:\n%s", view)
 	}
 
-	// The dots cycle "", ".", "..", "..." and back.
+	// The spinner turns, a frame a tick.
 	var seen []string
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 3; i++ {
 		line := ""
 		for _, l := range strings.Split(ansi.Strip(m.viewport.View()), "\n") {
-			if strings.Contains(l, "💭 thinking") {
+			if strings.Contains(l, "thinking…") {
 				line = strings.TrimSpace(l)
 			}
 		}
-		seen = append(seen, strings.TrimPrefix(line, "💭 thinking"))
+		seen = append(seen, strings.Fields(line + " ?")[0])
 		updated, _ = m.Update(thinkingTickMsg{m.thinkingGen})
 		m = updated.(chatModel)
 	}
-	if want := []string{"", ".", "..", "...", ""}; strings.Join(seen, "|") != strings.Join(want, "|") {
-		t.Errorf("dots went %q, want %q", seen, want)
+	if want := []string{workingFrames[0], workingFrames[1], workingFrames[2]}; strings.Join(seen, "|") != strings.Join(want, "|") {
+		t.Errorf("the spinner went %q, want %q", seen, want)
 	}
 }
 
-// The first word of the answer replaces the indicator, and the answer is on
-// screen as it arrives -- not held until the turn ends.
+// The answer is on screen as it arrives -- not held until the turn ends -- and
+// from its first word the line under it says "working" instead of "thinking",
+// for as long as the turn runs (owner, 2026-11-21: "show any indicator while it
+// working"; working.go). It goes, and its loop stops, when the turn ends.
 func TestChat_AnswerStreamsInPlaceOfTheIndicator(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "hi")
@@ -110,10 +112,10 @@ func TestChat_AnswerStreamsInPlaceOfTheIndicator(t *testing.T) {
 	m = updated.(chatModel)
 
 	view := ansi.Strip(m.viewport.View())
-	if strings.Contains(view, "thinking") {
-		t.Errorf("indicator still drawn after the answer started:\n%s", view)
+	if strings.Contains(view, "thinking") || !strings.Contains(view, "working… (esc to stop)") {
+		t.Errorf("after the answer started the line should say working, not thinking:\n%s", view)
 	}
-	if !strings.Contains(view, "Mochiii: Today is") {
+	if !strings.Contains(view, "↬ Today is") {
 		t.Fatalf("partial answer not on screen mid-stream:\n%s", view)
 	}
 
@@ -125,9 +127,18 @@ func TestChat_AnswerStreamsInPlaceOfTheIndicator(t *testing.T) {
 		t.Errorf("second token not on screen mid-stream:\n%s", view)
 	}
 
-	// And the indicator's loop stops rather than ticking forever.
+	// The loop keeps the spinner turning while the turn runs...
+	if _, cmd := m.Update(thinkingTickMsg{m.thinkingGen}); cmd == nil {
+		t.Error("the spinner stopped while the turn was still running")
+	}
+	// ...and stops, with the line gone, once it is over.
+	updated, _ = m.Update(streamDoneMsg{})
+	m = updated.(chatModel)
 	if _, cmd := m.Update(thinkingTickMsg{m.thinkingGen}); cmd != nil {
-		t.Error("thinking tick re-armed after the answer started")
+		t.Error("the spinner's tick re-armed after the turn ended")
+	}
+	if v := ansi.Strip(m.View()); strings.Contains(v, "(esc to stop)") {
+		t.Errorf("the working line outlived the turn:\n%s", v)
 	}
 }
 

@@ -65,55 +65,55 @@ func TestAnAnswersMarkdownIsDrawnNotPrinted(t *testing.T) {
 		want     string
 	}{
 		{"strong and emphasis lose their marks", "This is **important** and *subtle*, ***both***.", 80,
-			"Mochiii: This is important and subtle, both."},
+			"↬ This is important and subtle, both."},
 		{"a heading that opens the answer sits under the label", "## Skills\ntext", 80,
-			"Mochiii:\nSkills\ntext"},
+			"↬\nSkills\ntext"},
 		{"a heading stands apart from what is above it", "intro\n## Skills\nmore", 80,
-			"Mochiii: intro\n\nSkills\nmore"},
+			"↬ intro\n\nSkills\nmore"},
 		{"a closing run of hashes is not part of the title", "# Title ##", 80,
-			"Mochiii:\nTitle"},
+			"↬\nTitle"},
 		{"every bullet character is one bullet", "Steps:\n- one\n* two\n+ three", 80,
-			"Mochiii: Steps:\n• one\n• two\n• three"},
+			"↬ Steps:\n• one\n• two\n• three"},
 		{"a number is drawn as written", "7. seventh\n8) eighth", 80,
-			"Mochiii:\n7. seventh\n8) eighth"},
+			"↬\n7. seventh\n8) eighth"},
 		{"a nested item keeps its indent", "- a\n  - b\n    1. c", 80,
-			"Mochiii:\n• a\n  • b\n    1. c"},
+			"↬\n• a\n  • b\n    1. c"},
 		{"an item that wraps hangs under its text", "- one two three four five six", 14,
-			"Mochiii:\n• one two\n  three four\n  five six"},
+			"↬\n• one two\n  three four\n  five six"},
 		{"code loses its backticks and nothing else", "run `go test ./...` and ``a ` b`` now", 80,
-			"Mochiii: run go test ./... and a ` b now"},
+			"↬ run go test ./... and a ` b now"},
 		{"a link shows where it goes", "see [the docs](https://x.dev/a \"title\") here", 80,
-			"Mochiii: see the docs (https://x.dev/a) here"},
+			"↬ see the docs (https://x.dev/a) here"},
 		{"an address that is its own text is shown once", "[https://x.dev](https://x.dev) and <https://y.dev>", 80,
-			"Mochiii: https://x.dev and https://y.dev"},
+			"↬ https://x.dev and https://y.dev"},
 		{"an image is its description and its address", "![a chart](img/c.png)", 80,
-			"Mochiii: a chart (img/c.png)"},
+			"↬ a chart (img/c.png)"},
 		{"a rule is a line across the width", "a\n\n---\n\nb", 12,
-			"Mochiii: a\n\n────────────\n\nb"},
+			"↬ a\n\n────────────\n\nb"},
 		{"a quote has a bar", "> quoted **text**\n>> deeper", 80,
-			"Mochiii:\n│ quoted text\n│ │ deeper"},
+			"↬\n│ quoted text\n│ │ deeper"},
 		{"a task list shows its boxes", "- [x] done\n- [ ] todo", 80,
-			"Mochiii:\n☑ done\n☐ todo"},
+			"↬\n☑ done\n☐ todo"},
 		{"a break and an entity", "a &amp; b<br>c &lt;d&gt;", 80,
-			"Mochiii: a & b\nc <d>"},
+			"↬ a & b\nc <d>"},
 		{"struck text", "~~old~~ new", 80,
-			"Mochiii: old new"},
+			"↬ old new"},
 		{"an escaped mark is the mark", `\*not emphasis\* and \# not a heading`, 80,
-			"Mochiii: *not emphasis* and # not a heading"},
+			"↬ *not emphasis* and # not a heading"},
 		{"emphasis nests", "*a **b** c* and **d *e* f**", 80,
-			"Mochiii: a b c and d e f"},
+			"↬ a b c and d e f"},
 		{"emphasis works without spaces to stand on", "这是**重点**内容", 80,
-			"Mochiii: 这是重点内容"},
+			"↬ 这是重点内容"},
 		{"blank lines collapse to one, and none lead or trail", "\n\na\n\n\n\nb\n\n\n", 80,
-			"Mochiii: a\n\nb"},
+			"↬ a\n\nb"},
 		{"a paragraph's own line breaks are kept", "step one\nstep two", 80,
-			"Mochiii: step one\nstep two"},
+			"↬ step one\nstep two"},
 		{"an indented line keeps its indent, and so do its wraps", "x\n    one two three four", 14,
-			"Mochiii: x\n    one two\n    three four"},
+			"↬ x\n    one two\n    three four"},
 		{"nothing at all is still the label", "", 80,
-			"Mochiii: "},
+			"↬ "},
 		{"nothing but blank lines is still the label", "\n \n", 80,
-			"Mochiii: "},
+			"↬ "},
 	}
 	for _, c := range cases {
 		if got := renderAnswer(c.in, c.width); got != c.want {
@@ -186,35 +186,35 @@ func TestCodeAndEditBlocksAreDrawnCharacterForCharacter(t *testing.T) {
 	}
 	for _, fence := range []string{"```", "~~~", "````"} {
 		in := "before\n\n" + fence + "go\n" + strings.Join(code, "\n") + "\n" + fence + "\n\n**after**"
-		want := "Mochiii: before\n\n" + fence + "go\n" + strings.Join(code, "\n") + "\n" + fence + "\n\nafter"
+		want := "↬ before\n\n" + fence + "go\n" + strings.Join(code, "\n") + "\n" + fence + "\n\nafter"
 		if got := renderAnswer(in, 200); got != want {
 			t.Errorf("a %s fence was not drawn as written:\n  got: %q\n want: %q", fence, got, want)
 		}
 	}
 
 	// A tab is four spaces, as it was when Lip Gloss drew the answer.
-	if got := renderAnswer("```\nif x {\n\treturn\n}\n```", 80); got != "Mochiii:\n```\nif x {\n    return\n}\n```" {
+	if got := renderAnswer("```\nif x {\n\treturn\n}\n```", 80); got != "↬\n```\nif x {\n    return\n}\n```" {
 		t.Errorf("a tab inside code: %q", got)
 	}
 	// A fence still open (the answer is still arriving) is code to the end.
-	if got := renderAnswer("```\n**a**\n# b", 80); got != "Mochiii:\n```\n**a**\n# b" {
+	if got := renderAnswer("```\n**a**\n# b", 80); got != "↬\n```\n**a**\n# b" {
 		t.Errorf("an unclosed fence: %q", got)
 	}
 	// A fence under a list item is indented, by whatever the model chose.
-	if got := renderAnswer("1. run it:\n   ```sh\n   make **all**\n   ```", 80); got != "Mochiii:\n1. run it:\n   ```sh\n   make **all**\n   ```" {
+	if got := renderAnswer("1. run it:\n   ```sh\n   make **all**\n   ```", 80); got != "↬\n1. run it:\n   ```sh\n   make **all**\n   ```" {
 		t.Errorf("an indented fence: %q", got)
 	}
 	// "```x```" on one line is inline code, not a fence that never closes.
-	if got := renderAnswer("```x```\n**b**", 80); got != "Mochiii: x\nb" {
+	if got := renderAnswer("```x```\n**b**", 80); got != "↬ x\nb" {
 		t.Errorf("a one-line triple backtick: %q", got)
 	}
 
 	edit := "path: daemon/x.go\n<<<<<<< SEARCH\n# old **line**\n- item\n=======\n# new _line_\n\n| a | b |\n>>>>>>> REPLACE"
-	if got := renderAnswer("**Here**:\n\n"+edit+"\n\n**done**", 200); got != "Mochiii: Here:\n\n"+edit+"\n\ndone" {
+	if got := renderAnswer("**Here**:\n\n"+edit+"\n\n**done**", 200); got != "↬ Here:\n\n"+edit+"\n\ndone" {
 		t.Errorf("an edit block was not drawn as written:\n  got: %q", got)
 	}
 	// Still arriving: everything after the SEARCH marker is the block.
-	if got := renderAnswer("<<<<<<< SEARCH\n**a**\n=======\n**b**", 80); got != "Mochiii:\n<<<<<<< SEARCH\n**a**\n=======\n**b**" {
+	if got := renderAnswer("<<<<<<< SEARCH\n**a**\n=======\n**b**", 80); got != "↬\n<<<<<<< SEARCH\n**a**\n=======\n**b**" {
 		t.Errorf("an unfinished edit block: %q", got)
 	}
 }
@@ -222,7 +222,7 @@ func TestCodeAndEditBlocksAreDrawnCharacterForCharacter(t *testing.T) {
 func TestATableIsBoxedToFitTheWidth(t *testing.T) {
 	const small = "| Name | Qty | Note |\n|:--|--:|:-:|\n| apple | 3 | ok |\n| kiwi | 12 | **best** |"
 	want := strings.Join([]string{
-		"Mochiii:",
+		"↬",
 		"┌───────┬─────┬──────┐",
 		"│ Name  │ Qty │ Note │",
 		"├───────┼─────┼──────┤",
@@ -239,7 +239,7 @@ func TestATableIsBoxedToFitTheWidth(t *testing.T) {
 	// their width.
 	const wide = "| Key | Meaning |\n|---|---|\n| a | one two three four five six seven eight nine ten |\n| bb | x |"
 	want = strings.Join([]string{
-		"Mochiii:",
+		"↬",
 		"┌─────┬──────────────────────┐",
 		"│ Key │ Meaning              │",
 		"├─────┼──────────────────────┤",
@@ -257,7 +257,7 @@ func TestATableIsBoxedToFitTheWidth(t *testing.T) {
 	// A break inside a cell, a short row and a long one.
 	const ragged = "| a | b |\n|---|---|\n| one<br>two |\n| x | y | dropped |"
 	want = strings.Join([]string{
-		"Mochiii:",
+		"↬",
 		"┌─────┬───┐",
 		"│ a   │ b │",
 		"├─────┼───┤",
@@ -272,7 +272,7 @@ func TestATableIsBoxedToFitTheWidth(t *testing.T) {
 	}
 
 	// Too narrow to box: each row as "header: value", nothing dropped.
-	want = "Mochiii:\nName: apple\nQty: 3\nNote: ok\n\nName: kiwi\nQty: 12\nNote: best"
+	want = "↬\nName: apple\nQty: 3\nNote: ok\n\nName: kiwi\nQty: 12\nNote: best"
 	if got := renderAnswer(small, 14); got != want {
 		t.Errorf("a table at width 14 should be listed by row:\n got: %q\nwant: %q", got, want)
 	}
@@ -513,7 +513,7 @@ func TestAnAnswerIsDrawnInBlueAndGreyOnly(t *testing.T) {
 // exactly as it always was.
 func TestACommandsOutputIsNotDrawnAsMarkdown(t *testing.T) {
 	const text = "## main...origin/main\n M file_one.go\n- removed **line**\n| a | b |\n|---|---|"
-	old := assistantStyle.Render(assistantLabel + text)
+	old := renderPlainAnswer(text)
 	for _, tn := range []turn{
 		{role: roleAssistant, text: text, local: true},
 		{role: roleAssistant, text: text, verbatim: true},

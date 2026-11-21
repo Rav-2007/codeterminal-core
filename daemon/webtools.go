@@ -186,12 +186,6 @@ func (s *Server) builtinWebSearch(ctx context.Context, raw json.RawMessage) (mcp
 	if len(results) == 0 {
 		return toolError("that search returned no results; try different words")
 	}
-	// These are the engine's choice of address, not the model's, so a later
-	// web_fetch of one of them carries nothing the model wrote (webegress.go).
-	for _, r := range results {
-		noteWebResultURL(ctx, r.URL)
-	}
-
 	var b strings.Builder
 	if len(kinds) > 0 {
 		b.WriteString(fmt.Sprintf("[a secret-shaped value (%s) was removed from this query before it was sent]\n\n",

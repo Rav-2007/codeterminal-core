@@ -148,7 +148,7 @@ func TestRawByteStructuresHaveNoNewReaders(t *testing.T) {
 	reviewed := map[string]bool{
 		"renderReviewPanel":      true, // sanitizes every field it draws
 		"renderApprovalPanel":    true, // sanitizes every field it draws
-		"View":                   true, // sanitizes the two status lines
+		"view":                   true, // sanitizes the two status lines (View until 2026-11-21: inline.go wraps it)
 		"refreshViewport":        true, // delegates to the two panels above
 		"checkForEditBlocks":     true, // assigns; renders nothing
 		"advanceReview":          true, // assigns; renders nothing
@@ -170,6 +170,20 @@ func TestRawByteStructuresHaveNoNewReaders(t *testing.T) {
 		// both sanitize -- only so its lines can be counted, and returns the
 		// pointer to be compared. Draws nothing itself.
 		"pendingQuestion": true,
+		// Reviewed 2026-11-21 (auto-approve, autoapprove.go). None draws the
+		// request's or the edit's bytes: setAutoApprove reads the request only
+		// for autoSkips; answerAuto clears it after sending the answer;
+		// autoApplyEdits checks reviewPrepared for nil and hands the edit to
+		// applyCurrentReviewEdit, the writer y uses; autoRow reads OutsidePath
+		// and InPlace only to pick one of two fixed sentences (autoSkips).
+		"setAutoApprove": true,
+		"answerAuto":     true,
+		"autoApplyEdits": true,
+		"autoRow":        true,
+		// Reviewed 2026-11-21 (a long prompt over several rows, promptinput.go):
+		// checks the two only for nil, to know whether a question stands where
+		// the prompt is. Draws nothing.
+		"inputShown": true,
 	}
 	fset, files := parsePackageSource(t)
 	seen := map[string]string{}

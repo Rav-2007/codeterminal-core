@@ -29,7 +29,7 @@ import (
 // EVERY URL IS BUILT HERE, from a repository name checked against GitHub's own
 // rules and numbers the caller parsed. Nothing the model writes becomes a path
 // or a host, so a read cannot carry text anywhere but GitHub's API -- the
-// exfiltration web_fetch had (webegress.go) has no way in.
+// exfiltration web_fetch allows (webegress.go) has no way in through here.
 
 // githubAPIBase is where every call goes. A var so a test can point it at a
 // stand-in; nothing else changes it.

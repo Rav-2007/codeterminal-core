@@ -67,7 +67,7 @@ func TestAnAnswerOfOnlyWhitespaceDrawsNothing(t *testing.T) {
 	if strings.Contains(got, assistantLabel) {
 		t.Errorf("an answer of only whitespace drew its label:\n%s", got)
 	}
-	want := "You: create a login page\n\n● List   /home/u/proj · 487 bytes\n\n■ stopped — you interrupted this turn"
+	want := promptMark + " create a login page" + strings.Repeat(" ", 80-21) + "\n\n● List   /home/u/proj · 487 bytes\n\n■ stopped — you interrupted this turn"
 	if got != want {
 		t.Errorf("transcript:\n%q\nwant:\n%q", got, want)
 	}

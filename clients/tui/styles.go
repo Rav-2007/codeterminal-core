@@ -11,6 +11,10 @@ var (
 	colorTeal = lipgloss.Color("44")  // ~#5FD7D7
 	colorGray = lipgloss.Color("252")
 	colorRed  = lipgloss.Color("203")
+	// green is auto-approve while it is on, and amber a context getting full
+	// (autoapprove.go): the two states under the prompt worth noticing.
+	colorGreen = lipgloss.Color("78")  // ~#5FD787
+	colorAmber = lipgloss.Color("214") // ~#FFAF00
 )
 
 // The answer's own palette (markdown.go): blue for what the model marked as

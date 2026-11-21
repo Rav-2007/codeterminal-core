@@ -28,6 +28,7 @@ import (
 const (
 	auditConfigAllow  = "config_allow"          // policy allow: never prompted
 	auditUserApprove  = "user_approve"          // the human said yes to this call
+	auditAutoApprove  = "auto_approve"          // the client's auto-approve mode, turned on by the human, said yes
 	auditUserForTurn  = "user_approve_for_turn" // the human said yes and widened it to the turn
 	auditTurnGrant    = "turn_grant"            // covered by an earlier approve_for_turn
 	auditUserForSpec  = "user_approve_for_spec" // the human said yes while the spec is active
@@ -188,6 +189,9 @@ func auditFor(iteration int, mode string, qualified string, tool mcp.Tool, polic
 func auditSourceFor(d approvalDecision) (source, outcome string) {
 	switch d.Decision {
 	case protocol.ApprovalApprove:
+		if d.Auto {
+			return auditAutoApprove, auditOutcomeOK
+		}
 		return auditUserApprove, auditOutcomeOK
 	case protocol.ApprovalApproveForTurn:
 		return auditUserForTurn, auditOutcomeOK

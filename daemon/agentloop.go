@@ -514,10 +514,6 @@ func (s *Server) runAgentLoop(
 		grants:          ledger.grants,
 		priorIterations: ledger.iterations,
 	}
-	// The addresses the user wrote may be fetched without asking (webegress.go).
-	if ledger.iterations == 0 && ledger.segment == nil {
-		turn.vetUserURLs(messages)
-	}
 	// turn.iteration is the loop counter and is one AHEAD of the calls actually
 	// completed at every exit point (the loop increments before the budget check
 	// that returns), which is why every return path reports iteration-1 or
@@ -1248,26 +1244,11 @@ func (s *Server) dispatchToolCall(
 	if decision.outsideRead != "" {
 		callCtx = withApprovedOutsideRead(callCtx, decision.outsideRead)
 	}
-	// What a search engine returns may be fetched without asking for the rest
-	// of the turn (webegress.go): the engine chose those addresses, not the
-	// model. Collected here because only the loop knows the turn.
-	var returned *webResultURLs
-	if decision.tool.Server == mcp.BuiltinServerName && decision.tool.Name == "web_search" {
-		returned = &webResultURLs{}
-		callCtx = withWebResultURLs(callCtx, returned)
-	}
 	var run *trace.Span // TRACE D7: a built-in is tool_run, a server's tool is mcp_call
 	if tr != nil {
 		run = tr.Begin(traceCallStage(decision.tool), traceToolOf(decision.tool), traceCall)
 	}
 	result, err := registry.Call(callCtx, decision.tool.QualifiedName(), json.RawMessage(arguments))
-	if returned != nil {
-		for _, u := range returned.urls {
-			if n, ok := normaliseWebURL(u); ok {
-				turn.grant(vettedURLKey(n))
-			}
-		}
-	}
 	elapsed := time.Since(started)
 	s.toolsInFlight.Add(-1)
 	audit.DurationMS = elapsed.Milliseconds()
@@ -1667,12 +1648,6 @@ func (s *Server) resolveExecutable(
 		}
 	}
 
-	// A WEB CALL THAT WOULD CARRY TEXT THE MODEL CHOSE TO A PLACE NOBODY VETTED
-	// IS ALWAYS ASKED ABOUT (webegress.go). Config "allow" on web_fetch was
-	// written about reading pages; it is not an answer to "may it send this to
-	// that host". A grant for these exact arguments, checked below, still is.
-	egress := webEgressReview(turn, bud, spec, arguments)
-
 	// A COMMAND THAT WOULD RUN IN THE REAL PROJECT IS ALWAYS ASKED ABOUT: "allow"
 	// was written about a private copy, and in the project what a command writes
 	// (.git/hooks included) is not reviewed. The copy is made here if it can be,
@@ -1686,7 +1661,7 @@ func (s *Server) resolveExecutable(
 	// user who allowed a lookup did not thereby agree to start a third-party
 	// program that reads their project's configuration, and the startup warning
 	// says so in these words.
-	if policy == mcp.PolicyAllow && !launch.Needed && outside == "" && egress == "" && !inPlace {
+	if policy == mcp.PolicyAllow && !launch.Needed && outside == "" && !inPlace {
 		return toolDecision{tool: spec, policy: policy, source: auditConfigAllow, run: true}
 	}
 
@@ -1778,13 +1753,9 @@ func (s *Server) resolveExecutable(
 		// description arrives here too; it is untrusted text and the clients
 		// render it as the server's claim, which is what Detail already means.
 		OutsidePath: outside,
-		// Why this web call was not covered by the configuration. Set for a
-		// call the user's own "ask" would have shown them anyway, too: the
-		// reason is about the call, not about how it came to be asked.
-		EgressReview: egress,
-		InPlace:      inPlace,
-		Detail:       spec.Description,
-		SpecGrant:    specGrant,
+		InPlace:     inPlace,
+		Detail:      spec.Description,
+		SpecGrant:   specGrant,
 	})
 
 	source, _ := auditSourceFor(answer)

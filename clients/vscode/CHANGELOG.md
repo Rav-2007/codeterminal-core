@@ -3,6 +3,17 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [1.6.1] - 2026-11-21
+
+### Changed
+
+- **Web search and fetch no longer ask** when the tools are on `allow`, whatever
+  the turn has read, and the red warning lines are gone from the approval cards.
+  Set either tool to `ask` to see every call. Secret-shaped values are still
+  stripped or refused before they leave.
+- **An approval waits for your answer** instead of giving up after five minutes;
+  closing the panel still ends it at once.
+
 ## [1.6.0] - 2026-11-20
 
 ### Changed

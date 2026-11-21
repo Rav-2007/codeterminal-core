@@ -83,7 +83,7 @@ func notAProjectNote(root, home, goos string) string {
 
 // sayIfNotAProject prints notAProjectNote for root, if there is one.
 func sayIfNotAProject(w io.Writer, root string) {
-	say(w, "%s", notAProjectNote(root, homeDir(), runtime.GOOS))
+	note(w, "%s", notAProjectNote(root, homeDir(), runtime.GOOS))
 }
 
 // homeDir is the user's home folder with symlinks resolved -- the form a
@@ -127,12 +127,12 @@ func (s folderSetup) offer(force bool) {
 		case "", "y", "yes":
 		case "never":
 			if err := s.declined.add(s.root); err != nil {
-				say(s.out, "(could not remember that: %v)\n", err)
+				note(s.out, "(could not remember that: %v)\n", err)
 			}
-			say(s.out, "Mochiii won't ask again for this folder. To index it later, run: mochiii --index\n")
+			note(s.out, "Mochiii won't ask again for this folder. To index it later, run: mochiii --index\n")
 			return
 		default:
-			say(s.out, "Skipped for now. Mochiii will ask again next time, or run: mochiii --index\n")
+			note(s.out, "Skipped for now. Mochiii will ask again next time, or run: mochiii --index\n")
 			return
 		}
 	}
@@ -142,7 +142,7 @@ func (s folderSetup) offer(force bool) {
 	// to go before indexing; it is started again straight after.
 	if s.running() {
 		if err := s.stop(); err != nil && !errors.Is(err, errNoDaemonRunning) {
-			say(s.out, "Could not stop the background service, so indexing is skipped: %v\n", err)
+			note(s.out, "Could not stop the background service, so indexing is skipped: %v\n", err)
 			return
 		}
 	}
@@ -158,15 +158,15 @@ func (s folderSetup) offer(force bool) {
 	signal.Stop(interrupted)
 	select {
 	case <-interrupted:
-		say(s.out, "Skipped. Code search stays off for this folder until you run: mochiii --index\n")
+		note(s.out, "Skipped. Code search stays off for this folder until you run: mochiii --index\n")
 		return
 	default:
 	}
 	if err != nil {
-		say(s.out, "Indexing did not finish (%v). Mochiii works without code search; to try again: mochiii --index\n", err)
+		note(s.out, "Indexing did not finish (%v). Mochiii works without code search; to try again: mochiii --index\n", err)
 		return
 	}
-	say(s.out, "Indexed. Code search is on for this folder.\n")
+	note(s.out, "Indexed. Code search is on for this folder.\n")
 }
 
 // ensureModel downloads the embedding model when it is missing. It reports
@@ -176,7 +176,7 @@ func (s folderSetup) ensureModel() bool {
 	if err := s.runner([]string{"download-model", "--check"}, &check, io.Discard); err != nil && check.Len() == 0 {
 		// --check exits 1 both when the model is missing and on a real error,
 		// so only an empty answer is an error (see modelSetup.ts).
-		say(s.out, "Could not check for the code-search model: %v\n", err)
+		note(s.out, "Could not check for the code-search model: %v\n", err)
 		return false
 	}
 	var state struct {
@@ -184,7 +184,7 @@ func (s folderSetup) ensureModel() bool {
 		DownloadBytes int64 `json:"download_bytes"`
 	}
 	if err := json.Unmarshal([]byte(lastLine(check.String())), &state); err != nil {
-		say(s.out, "Could not read the code-search model's status (%q).\n", strings.TrimSpace(check.String()))
+		note(s.out, "Could not read the code-search model's status (%q).\n", strings.TrimSpace(check.String()))
 		return false
 	}
 	if state.Cached {
@@ -192,7 +192,7 @@ func (s folderSetup) ensureModel() bool {
 	}
 	say(s.out, "Downloading Mochiii's code-search model (%d MB, once for this computer)…\n", (state.DownloadBytes+(1<<20)-1)>>20)
 	if err := s.runner([]string{"download-model"}, s.out, s.out); err != nil {
-		say(s.out, "The download did not finish (%v). Mochiii works without code search; to try again: mochiii --index\n", err)
+		note(s.out, "The download did not finish (%v). Mochiii works without code search; to try again: mochiii --index\n", err)
 		return false
 	}
 	return true

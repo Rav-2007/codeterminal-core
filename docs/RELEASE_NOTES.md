@@ -5,6 +5,72 @@ performance changes are not listed here unless you can observe them.
 
 ---
 
+## v1.6.1 — 2026-11-21
+
+### The terminal chat lives in your terminal's scrollback
+
+**What changed.** The chat is printed into the terminal itself, the way Claude
+Code prints its conversation. The terminal's scrollbar and mouse wheel move
+through all of it, a drag selects any length of it, and the chat stays in the
+terminal after you quit. A long answer goes in a paragraph at a time as it
+arrives. `/copy` prints the whole chat again with no line cut at the window's
+edge. `mochiii --fullscreen` (or `MOCHIII_FULLSCREEN=1`) keeps the old full
+screen, which has no scrollback.
+
+**A clean start.** What was on screen before Mochiii opened (the command that
+started it, "Starting Mochiii for …") is cleared away; a startup line that was
+news — another install is answering, the folder is not a project — is shown in
+the chat instead.
+
+### A new look in the terminal
+
+- **The first screen** is the lotus, "What can I do for you?" and the prompt, in
+  the middle of the window, ready to type into (no more "press any key").
+- **The prompt** is a `➤` line between two rules, pinned to the bottom of the
+  window. A long prompt grows downwards over up to six rows instead of
+  scrolling sideways out of sight.
+- **Your questions** are shaded bars starting with `➤`; **answers** start with
+  `↬` instead of "Mochiii:".
+- **While Mochiii works**, the chat ends in a spinner line — "thinking…", then
+  "working…" — for the whole turn, with the key that stops it.
+- **Under the prompt**: the model, how full its context is, what the session
+  has cost, whether auto-approve is on, the keys, and in the bottom right corner
+  the project folder with your user and machine name under it.
+
+### Auto-approve: ctrl+space
+
+**What changed.** `ctrl+space` (or `/auto`) turns auto-approve on and off. While
+it is on, a tool call that would ask runs as if you had pressed `y`, and edits are
+applied without the review (backups kept; `edits undo` restores them). Two still
+ask: reading a file outside the project, and a command that would run in the
+project folder itself. Calls Mochiii refuses stay refused. It is off every time
+Mochiii starts, and the line above the prompt says `▸▸ auto` while it is on. The
+daemon's log records these calls as `auto_approve`, not as your yes.
+
+### Web search and fetch no longer ask
+
+**What changed.** With `web_search` and `web_fetch` on `allow`, no web call asks any
+more, whatever the turn has read, and the red warning lines are gone from the
+approval panels in the terminal and in VS Code. Set either tool to `ask` to see
+every call again. A secret-shaped value is still stripped or refused before it
+leaves, and private or cloud-metadata addresses are still refused.
+
+### An approval waits for your answer
+
+**What changed.** A tool approval used to give up after five minutes, take silence
+as a no, and the answer you then gave was lost, with "LINK SEVERED" on screen. A
+question now waits for as long as you take; closing the terminal or the panel
+still ends it at once. If an answer cannot be sent, the chat says the question
+expired instead of LINK SEVERED.
+
+### Addresses in answers open whole
+
+**What changed.** An address in an answer is a link the terminal can open with
+ctrl+click (cmd+click on a Mac), and an address wrapped over two lines opens in
+full from either piece. `/help` says so.
+
+---
+
 ## v1.6.0 — 2026-11-20
 
 ### The terminal and VS Code no longer share a chat
