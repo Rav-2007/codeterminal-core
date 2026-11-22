@@ -108,7 +108,8 @@ export function autoAsks(call: AutoCall, place: AutoPlace): AutoAsk {
     case 'sandbox_exec': {
       const command = text('command');
       if (command === undefined) return 'unclear';
-      const cwd = text('cwd');
+      // Each names its folder its own way (runplace.go, execdir.go).
+      const cwd = text(call.tool === 'sandbox_exec' ? 'dir' : 'cwd');
       if (cwd) {
         if (where.outside(cwd, true)) return 'outside';
         where.enter(cwd);

@@ -76,6 +76,10 @@ suite('Auto: what runs and what still asks', () => {
       ['outside', { tool: 'move_path', arguments: '{"from":"a","to":"../b"}' }],
       ['unclear', { tool: 'run_command', arguments: 'not json' }],
       ['outside', { tool: 'run_command', arguments: '{"command":"ls","cwd":"../other"}' }],
+      // sandbox_exec names its folder dir (daemon/execdir.go), run_command cwd.
+      ['', { tool: 'sandbox_exec', arguments: '{"command":"pytest ../tests","dir":"backend"}' }],
+      ['outside', { tool: 'sandbox_exec', arguments: '{"command":"pytest","dir":"../other"}' }],
+      ['', { tool: 'run_command', arguments: '{"command":"pytest ../tests","cwd":"backend"}' }],
     ];
     for (const [want, over] of rows) {
       const call = { server: 'builtin', tool: 'propose_edit', arguments: '{}', ...over };
