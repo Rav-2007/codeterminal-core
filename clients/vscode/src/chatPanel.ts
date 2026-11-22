@@ -45,7 +45,7 @@ import { ChatHost, panelHost, viewHost } from './chatHost';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
 import { ChatLocation, chatElsewhereHtml, chatElsewhereOptions } from './chatElsewhere';
 import { activeWorkingFolder } from './workingFolder';
-import { AUTO_ASK_WHY, AutoAsk, autoAsks, autoPlace } from './autoAccess';
+import { AUTO_ASK_WHY, AutoAsk, autoAsks, autoPlace, insideProject } from './autoAccess';
 import { askAutoConsent, autoAccepted, autoNeedsConsent } from './autoConsent';
 import { ConnectOutcome, connectKey, hasConnectKey } from './connectBridge';
 import { ANY_KEY_CHOICE, modelChoices, providerChoices } from './connectFlow';
@@ -314,6 +314,9 @@ export class ChatPanel {
   // toggle state after that point, so flipping the toggle mid-run cannot
   // retroactively change a run already in flight (Phase 0 C).
   private currentRunAutoApply = false;
+
+  // Set while an auto-apply run holds an edit for the person's Apply or Skip.
+  private editAnswered: (() => void) | undefined;
 
   // FULL ACCESS IS LIVE, unlike currentRunAutoApply: the mode button moved to
   // Auto answers the question already waiting, and moved away from it asks
@@ -1020,6 +1023,11 @@ export class ChatPanel {
   }
 
   private onPrompt(text: string, autoApply: boolean, mode?: string): void {
+    if (this.editAnswered) {
+      this.replyLocal('First Apply or Skip the edit outside this project, above.');
+      this.postSafe({ type: 'done' });
+      return;
+    }
     if (this.inFlight || this.autoApplyRunInFlight) {
       return; // a turn is already in flight, or a previous run's auto-apply loop hasn't finished yet
     }
@@ -2027,6 +2035,7 @@ export class ChatPanel {
   // locally on send) and again once a review's final summary has been
   // posted, so a lagging click after the review ended is a no-op.
   private clearPendingReview(): void {
+    this.releaseHeldEdit(); // the loop then finds nothing left
     this.pendingBlocks = [];
     this.currentIndex = 0;
     this.runBackupDir = undefined;
@@ -2084,7 +2093,11 @@ export class ChatPanel {
     this.autoApplyRunInFlight = true;
     try {
       while (this.currentIndex < this.pendingBlocks.length) {
-        await this.onApplyEdit();
+        if (this.asksBeforeSaving(this.pendingBlocks[this.currentIndex])) {
+          await new Promise<void>((resolve) => (this.editAnswered = resolve));
+        } else {
+          await this.onApplyEdit();
+        }
       }
     } finally {
       this.autoApplyRunInFlight = false;
@@ -2100,6 +2113,7 @@ export class ChatPanel {
       this.host.webview.postMessage({
         type: 'editProposal',
         edit: this.pendingBlocks[this.currentIndex],
+        autoAsk: this.asksBeforeSaving(this.pendingBlocks[this.currentIndex]) ? AUTO_ASK_WHY.outside : undefined,
         index: this.currentIndex,
         total: this.pendingBlocks.length,
       });
@@ -2176,6 +2190,7 @@ export class ChatPanel {
     } finally {
       this.applyInFlight = false;
       this.currentIndex++;
+      this.releaseHeldEdit();
       this.postCurrentBlockOrSummary();
     }
   }
@@ -2194,12 +2209,25 @@ export class ChatPanel {
   // onSkipEdit skips the current block with no daemon call, then advances
   // -- same "no confirm prompt needed, just move on" shape as Apply's
   // advance, but nothing is sent over the wire.
+  // asksBeforeSaving is the second gate, and the one that counts: whatever
+  // was answered before, Auto saves by itself only inside the project.
+  private asksBeforeSaving(edit: EditBlockWire): boolean {
+    return this.currentRunAutoApply && !insideProject(workspacePath(), edit.file_path);
+  }
+
+  private releaseHeldEdit(): void {
+    const answered = this.editAnswered;
+    this.editAnswered = undefined;
+    answered?.();
+  }
+
   private onSkipEdit(): void {
-    if (this.currentIndex >= this.pendingBlocks.length) {
+    if (this.currentIndex >= this.pendingBlocks.length || this.applyInFlight) {
       return;
     }
     this.skipped++;
     this.currentIndex++;
+    this.releaseHeldEdit();
     this.postCurrentBlockOrSummary();
   }
 
@@ -2462,6 +2490,7 @@ export class ChatPanel {
   }
 
   private dispose(): void {
+    if (this.editAnswered) this.clearPendingReview(); // nobody is left to answer
     // Aborting the panel aborts the in-flight connection -- no orphaned
     // sockets left reading a dead webview.
     this.disposed = true;

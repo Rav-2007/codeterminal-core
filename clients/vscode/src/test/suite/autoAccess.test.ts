@@ -1,4 +1,7 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { AutoAsk, AutoCall, AutoPlace, autoAsks, autoPlace } from '../../autoAccess';
@@ -76,14 +79,40 @@ suite('Auto: what runs and what still asks', () => {
       ['outside', { tool: 'move_path', arguments: '{"from":"a","to":"../b"}' }],
       ['unclear', { tool: 'run_command', arguments: 'not json' }],
       ['outside', { tool: 'run_command', arguments: '{"command":"ls","cwd":"../other"}' }],
+      // An edit may name the home folder (editapply/outside.go).
+      ['outside', { arguments: '{"path":"~/Desktop/notes.md"}' }],
+      ['outside', { arguments: '{"path":"  ~/Desktop/notes.md"}' }],
+      ['outside', { arguments: '{"path":"/home/u/other/setup.py"}' }],
+      ['outside', { arguments: '{"path":"../other/setup.py"}' }],
+      ['', { arguments: '{"path":"/home/u/proj/src/a.ts"}' }],
+      ['outside', { tool: 'propose_ast_edit', arguments: '{"path":"~/x.go"}' }],
+      ['unclear', { arguments: '{}' }],
+      ['unclear', { arguments: 'not json' }],
+      // A restore puts a file back where it was, which can be the home folder.
+      ['', { tool: 'restore_deleted', arguments: '{}' }],
+      ['outside', { tool: 'restore_deleted', arguments: '{"id":"0a1b2c"}' }],
       // sandbox_exec names its folder dir (daemon/execdir.go), run_command cwd.
       ['', { tool: 'sandbox_exec', arguments: '{"command":"pytest ../tests","dir":"backend"}' }],
       ['outside', { tool: 'sandbox_exec', arguments: '{"command":"pytest","dir":"../other"}' }],
       ['', { tool: 'run_command', arguments: '{"command":"pytest ../tests","cwd":"backend"}' }],
     ];
     for (const [want, over] of rows) {
-      const call = { server: 'builtin', tool: 'propose_edit', arguments: '{}', ...over };
+      const call = { server: 'builtin', tool: 'propose_edit', arguments: '{"path":"a.ts"}', ...over };
       assert.strictEqual(autoAsks(call, LINUX), want, JSON.stringify(call));
+    }
+  });
+
+  test('a link in the project that leads out is outside', function () {
+    if (process.platform === 'win32') this.skip();
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mochiii-auto-')));
+    const root = path.join(base, 'proj');
+    fs.mkdirSync(path.join(base, 'other'));
+    fs.mkdirSync(root);
+    fs.symlinkSync(path.join(base, 'other'), path.join(root, 'link'));
+    const place: AutoPlace = { root, home: base, temp: [], stages: '', platform: process.platform };
+    for (const target of ['link/x.py', path.join(root, 'link/x.py')]) {
+      const call = { server: 'builtin', tool: 'propose_edit', arguments: JSON.stringify({ path: target }) };
+      assert.strictEqual(autoAsks(call, place), 'outside', target);
     }
   });
 
@@ -221,5 +250,53 @@ suite('Auto: who answers, and when', () => {
     assert.strictEqual(warned, 1);
     assert.strictEqual(sent.length, 1);
     assert.deepStrictEqual([sent[0][3], sent[0][4]], [false, 'manual']);
+  });
+});
+
+suite('Auto: saving an edit', () => {
+  let panel: any;
+  let saved: string[];
+
+  setup(async () => {
+    const ext = vscode.extensions.getExtension(EXT_ID);
+    assert.ok(ext, `extension ${EXT_ID} is not in the dev host`);
+    await ext.activate();
+    ChatPanel.createOrShow(ext.extensionUri);
+    panel = (ChatPanel as any).current;
+    saved = [];
+    panel.currentRunAutoApply = true;
+    panel.postCurrentBlockOrSummary = () => undefined;
+    panel.onApplyEdit = async () => {
+      saved.push(panel.pendingBlocks[panel.currentIndex].file_path);
+      panel.currentIndex++;
+    };
+  });
+
+  teardown(() => {
+    panel.pendingBlocks = [];
+    panel.clearPendingReview();
+    panel.currentRunAutoApply = false;
+    panel.dispose();
+  });
+
+  const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+
+  // An edit written in the reply reaches the save with no tool question before it.
+  test('an edit outside the project is never saved by itself', async () => {
+    panel.startEditReview([{ file_path: '~/Desktop/notes.md', search: '', replace: 'x' }]);
+    await tick();
+    assert.deepStrictEqual(saved, []);
+  });
+
+  test('skipped, the edits after it in the project are still saved', async () => {
+    panel.startEditReview([
+      { file_path: '~/Desktop/notes.md', search: '', replace: 'x' },
+      { file_path: 'src/a.ts', search: '', replace: 'y' },
+    ]);
+    await tick();
+    assert.deepStrictEqual(saved, []);
+    panel.onSkipEdit();
+    await tick();
+    assert.deepStrictEqual(saved, ['src/a.ts']);
   });
 });

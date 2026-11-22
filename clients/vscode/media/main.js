@@ -2252,7 +2252,7 @@
     return wrap;
   }
 
-  function showEditProposal(edit, index, total) {
+  function showEditProposal(edit, index, total, autoAsk) {
     clearEditProposal();
 
     const container = document.createElement('div');
@@ -2309,7 +2309,15 @@
     // in chatPanel.ts), and a stray click here could race it (e.g. applying
     // the wrong index, or double-applying). A non-interactive placeholder
     // communicates the same information without offering anything to click.
-    if (currentRunAuto) {
+    if (autoAsk) {
+      // Held by the host (asksBeforeSaving): this one is the person's.
+      container.classList.add('ask-first');
+      const why = document.createElement('div');
+      why.className = 'approval-auto';
+      why.textContent = autoAsk;
+      container.insertBefore(why, footer);
+    }
+    if (currentRunAuto && !autoAsk) {
       const pending = document.createElement('div');
       pending.className = 'result auto-pending';
       pending.textContent = 'auto-applying…';
@@ -2378,11 +2386,11 @@
       resultEl.textContent = 'skipped';
     } else if (result.applied) {
       resultEl.className = 'result ok';
-      const prefix = currentRunAuto ? 'auto-applied' : 'applied';
+      const prefix = currentRunAuto && !container.classList.contains('ask-first') ? 'auto-applied' : 'applied';
       resultEl.textContent = `${prefix} — backup: ${result.backupDir} (restore with: mochiii-daemon edits undo)`;
     } else {
       resultEl.className = 'result refused';
-      const prefix = currentRunAuto ? 'auto-refused' : 'refused';
+      const prefix = currentRunAuto && !container.classList.contains('ask-first') ? 'auto-refused' : 'refused';
       resultEl.textContent = `${prefix}: ${result.error}`;
     }
     container.appendChild(resultEl);
@@ -3828,7 +3836,7 @@
         showToolApproval(msg.request, msg.autoAsk);
         break;
       case 'editProposal':
-        showEditProposal(msg.edit, msg.index, msg.total);
+        showEditProposal(msg.edit, msg.index, msg.total, msg.autoAsk);
         break;
       case 'applyResult':
         if (currentEditProposalEl) {

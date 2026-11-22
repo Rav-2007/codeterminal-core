@@ -335,7 +335,7 @@ export function chatLookStyles(): string {
     padding: 10px 12px;
     font-size: 12.5px;
   }
-  .tool-approval .approval-auto { margin-top: 6px; color: var(--ct-ink); }
+  .tool-approval .approval-auto, .edit-proposal .approval-auto { margin: 6px 0; color: var(--ct-ink); }
   .tool-approval .approval-heading {
     font-weight: 400;
     margin-bottom: 8px;

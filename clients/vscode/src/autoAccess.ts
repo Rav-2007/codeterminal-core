@@ -66,17 +66,19 @@ export const AUTO_ASK_WHY: Record<Exclude<AutoAsk, ''>, string> = {
 // BUILTIN is the reserved server name of the daemon's own tools (mcp.BuiltinServerName).
 const BUILTIN = 'builtin';
 
+// THE EDIT TOOLS NAME A FILE, and propose_edit's may be anywhere in the home
+// folder (editapply/outside.go): judged by that file, like a delete.
+const EDIT_TOOLS = new Set(['propose_edit', 'propose_ast_edit', 'rename_symbol']);
+
 // Built-ins whose every effect is inside the project, its working copy, or a
 // read. A tool not named here asks: a new one is classified on purpose.
 const FREE_TOOLS = new Set([
   'read_file', 'list_directory', 'search_code', 'repo_map', 'grep', 'find_files', 'git_history',
   'query_compiler_definition', 'query_compiler_references',
-  'propose_edit', 'propose_ast_edit', 'rename_symbol', 'checkpoint',
+  'checkpoint',
   'record_criterion', 'update_tasks', 'record_finding', 'finish_task', 'investigate',
   // Reads, as in the terminal's auto-approve (owner, 2026-11-21: web search no longer asks).
   'web_search', 'web_fetch', 'github',
-  // Puts back what this project's own trash holds.
-  'restore_deleted',
 ]);
 
 // autoAsks says why Auto leaves this question to the person; '' means it answers yes.
@@ -103,7 +105,19 @@ export function autoAsks(call: AutoCall, place: AutoPlace): AutoAsk {
   };
   const where = new Where(place);
 
+  if (EDIT_TOOLS.has(call.tool)) {
+    const target = text('path');
+    if (!target?.trim()) return 'unclear';
+    return where.inProject(target) ? '' : 'outside';
+  }
+
   switch (call.tool) {
+    case 'restore_deleted': {
+      // With no id it lists. With one it puts a file back where it was, which
+      // can be anywhere in the home folder (daemon/fileops.go).
+      const id = text('id')?.trim();
+      return !id || where.restoresInside(id) ? '' : 'outside';
+    }
     case 'run_command':
     case 'sandbox_exec': {
       const command = text('command');
@@ -131,6 +145,14 @@ export function autoAsks(call: AutoCall, place: AutoPlace): AutoAsk {
     }
   }
   return 'unclear';
+}
+
+// insideProject says whether an edit's path is a file of this project: the
+// question asked again where the edit is SAVED. An edit written in the reply
+// (a search/replace block) gets that far with no tool question before it.
+export function insideProject(root: string, file: string): boolean {
+  if (!root) return false;
+  return new Where({ root, home: os.homedir(), temp: [], stages: '', platform: process.platform }).inProject(file);
 }
 
 // autoPlace is this computer's AutoPlace for a project, or undefined where
@@ -208,10 +230,46 @@ class Where {
     return this.p.resolve(this.cwd, this.expand(word));
   }
 
+  // inProject is where the daemon's file tools would really write: the path
+  // trimmed as they trim it, and its links followed (editapply/outside.go,
+  // resolveExistingPrefix).
   inProject(target: string): boolean {
-    const abs = this.p.resolve(this.place.root, this.expand(target));
-    if (/^~/.test(this.expand(target))) return false; // someone else's home
-    return this.under(abs, this.place.root) || this.under(abs, this.place.realRoot ?? '');
+    const word = this.expand(target.trim());
+    if (!word || word.startsWith('~')) return false; // someone else's home, or a ~ left as written
+    const abs = this.p.resolve(this.place.root, word);
+    if (!this.under(abs, this.place.root) && !this.under(abs, this.place.realRoot ?? '')) return false;
+    return this.under(this.followed(abs), this.followed(this.p.resolve(this.place.root)));
+  }
+
+  // restoresInside reads where this project's trash says that id came from.
+  restoresInside(id: string): boolean {
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) return false;
+    try {
+      const file = this.p.join(this.place.root, '.mochiii', 'trash', id, 'entry.json');
+      if (fs.statSync(file).size > 16 * 1024) return false;
+      const entry = JSON.parse(fs.readFileSync(file, 'utf8')) as { original?: unknown };
+      return typeof entry.original === 'string' && this.inProject(entry.original);
+    } catch {
+      return false;
+    }
+  }
+
+  // followed resolves the links in the longest part of abs that exists. Only
+  // for this computer's own paths: the tests also run the other systems'.
+  private followed(abs: string): string {
+    if (this.windows !== (process.platform === 'win32')) return abs;
+    let rest = '';
+    let cur = abs;
+    for (;;) {
+      try {
+        return this.p.join(fs.realpathSync.native(cur), rest);
+      } catch {
+        const parent = this.p.dirname(cur);
+        if (parent === cur) return abs;
+        rest = this.p.join(this.p.basename(cur), rest);
+        cur = parent;
+      }
+    }
   }
 
   isRoot(target: string): boolean {
