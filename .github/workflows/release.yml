@@ -142,6 +142,7 @@ jobs:
       # pre-release skeleton. Three version sources disagreed and nothing
       # compared them.
       #
+      # (package.json's appVersion, that is: its version is the extension's own.)
       # ON A TAG the tag IS the version, and scripts/release-version-guard.sh
       # (in the guard job) has already refused the run if package.json disagrees
       # with it -- so reading it from either place gives the same answer and the
@@ -307,7 +308,7 @@ jobs:
             node scripts/stage-runtime.js "$TARGET"
 
             OUT="../../out-vsix/mochiii-vscode-$TARGET-$VERSION.vsix"
-            npx vsce package --no-dependencies --target "$TARGET" -o "$OUT"
+            npx vsce package --no-dependencies --allow-missing-repository --target "$TARGET" -o "$OUT"
 
             # THE GATE. Asserts on archive contents, told which target it is
             # checking so the win32 package is checked for .exe names.

@@ -747,7 +747,9 @@ function main() {
     if (pkg.private) {
       failures.push('PRESENT  "private": true in the PACKAGED package.json — vsce refuses to publish this');
     }
-    for (const field of ['license', 'icon', 'repository', 'publisher']) {
+    // No `repository`: the listing links to mochiii.in, not to the source.
+    // `appVersion` is the Mochiii release bundled inside (package-local.js).
+    for (const field of ['license', 'icon', 'homepage', 'publisher', 'appVersion']) {
       if (!pkg[field]) {
         failures.push(`MISSING  packaged package.json field: ${field}`);
       }

@@ -13,7 +13,12 @@
 # would have produced a .vsix labelled 0.0.1 containing a daemon that told every
 # client, and every support question, that it was a pre-release skeleton.
 #
-# WHAT THIS CHECKS, and only this: on a v* tag, the tag and package.json agree.
+# TWO NUMBERS SINCE EXTENSION 1.0.1 (2026-11-22). package.json "version" is
+# the extension's own, on the Marketplace; "appVersion" is the Mochiii release
+# bundled inside it. A v* tag names a Mochiii release.
+#
+# WHAT THIS CHECKS, and only this: on a v* tag, the tag and package.json's
+# "appVersion" agree.
 # The daemon's own string is no longer a third opinion -- release.yml stamps it
 # from the tag via -ldflags -X, so there is nothing left to disagree.
 #
@@ -36,13 +41,13 @@ set -uo pipefail
 err()  { echo "[release-version-guard] $*" >&2; }
 note() { echo "[release-version-guard] $*"; }
 
-# read_package_version prints the "version" field of a package.json.
+# read_package_version prints the "appVersion" field of a package.json.
 #
 # sed rather than node, because this runs in the `guard` job, which sets up Go
 # and not Node -- and adding a Node toolchain to read one string is a lot of
 # moving parts for a guard whose whole job is to be simpler than what it guards.
 read_package_version() {
-  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1
+  sed -n 's/.*"appVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1
 }
 
 run_guard() { # run_guard <ref> <package.json path>
@@ -75,25 +80,27 @@ run_guard() { # run_guard <ref> <package.json path>
   pkg_version="$(read_package_version "$pkg")"
 
   if [ -z "$pkg_version" ]; then
-    err "FAIL: no \"version\" field found in $pkg. NOT waved through -- an"
+    err "FAIL: no \"appVersion\" field found in $pkg. NOT waved through -- an"
     err "      unreadable version is a broken guard, and a broken guard blocks"
     err "      the release."
     return 2
   fi
 
   if [ "$tag_version" != "$pkg_version" ]; then
-    err "FAIL: the tag says $tag_version and $pkg says $pkg_version."
+    err "FAIL: the tag says $tag_version and $pkg's appVersion says $pkg_version."
     err ""
-    err "  The .vsix filename, the marketplace listing and the extension's own"
-    err "  reported version all come from package.json. Shipping them under a"
-    err "  tag that says something else means every bug report cites a version"
+    err "  appVersion is what npm run package stamps into the bundled background"
+    err "  service. Shipping it under a tag that says something else means"
+    err "  every bug report cites a version"
     err "  that does not identify the code it came from."
     err ""
-    err "  FIX: set \"version\": \"$tag_version\" in $pkg, commit, and re-tag."
+    err "  FIX: set \"appVersion\": \"$tag_version\" in $pkg, commit, and re-tag."
     return 1
   fi
 
-  note "ok -- tag v$tag_version and $pkg agree"
+  note "ok -- tag v$tag_version and $pkg's appVersion agree"
+  note "NOT checked: the extension's own \"version\". Bump it by hand before"
+  note "             each Marketplace upload; one version uploads only once."
   note "NOT checked: whether the code is correct, whether CI went green, or"
   note "             whether the daemon's stamped version matches -- that one"
   note "             is stamped FROM the tag by release.yml rather than"
@@ -126,8 +133,8 @@ self_test() {
 
   echo "release-version-guard self-test"
 
-  printf '{\n  "name": "x",\n  "version": "1.2.3",\n  "publisher": "y"\n}\n' > "$tmp/match.json"
-  printf '{\n  "name": "x",\n  "version": "9.9.9"\n}\n'                      > "$tmp/mismatch.json"
+  printf '{\n  "name": "x",\n  "version": "0.4.0",\n  "appVersion": "1.2.3",\n  "publisher": "y"\n}\n' > "$tmp/match.json"
+  printf '{\n  "name": "x",\n  "appVersion": "9.9.9"\n}\n'                      > "$tmp/mismatch.json"
   printf '{\n  "name": "x"\n}\n'                                            > "$tmp/noversion.json"
 
   check "tag matching package.json -> green"        0 "refs/tags/v1.2.3" "$tmp/match.json"
@@ -140,6 +147,11 @@ self_test() {
   check "a missing package.json -> FAILS"           2 "refs/tags/v1.2.3" "$tmp/nope.json"
   check "an empty ref -> FAILS rather than passing" 2 ""                 "$tmp/match.json"
 
+  # The extension's own number must not stand in for the release's, either way.
+  printf '{\n  "version": "1.2.3"\n}\n' > "$tmp/onlyversion.json"
+  check "\"version\" alone is not appVersion"         2 "refs/tags/v1.2.3" "$tmp/onlyversion.json"
+  check "the extension's number is not a release"    1 "refs/tags/v0.4.0" "$tmp/match.json"
+
   # The exemption, asserted rather than assumed: it must exit 0 AND say it
   # checked nothing. A guard that is silent about not checking is how a
   # dispatch-shaped hole becomes invisible.
@@ -149,12 +161,12 @@ self_test() {
 
   # Prefix confusion: v1.2.3 must not satisfy a v1.2.30 tag, or any tag whose
   # version is a prefix of another.
-  printf '{\n  "version": "1.2.30"\n}\n' > "$tmp/long.json"
+  printf '{\n  "appVersion": "1.2.30"\n}\n' > "$tmp/long.json"
   check "v1.2.3 does not match 1.2.30"              1 "refs/tags/v1.2.3" "$tmp/long.json"
   check "v1.2.30 matches 1.2.30"                    0 "refs/tags/v1.2.30" "$tmp/long.json"
 
   # A pre-release tag is a real tag and must be compared, not waved through.
-  printf '{\n  "version": "2.0.0-rc.1"\n}\n' > "$tmp/rc.json"
+  printf '{\n  "appVersion": "2.0.0-rc.1"\n}\n' > "$tmp/rc.json"
   check "a pre-release tag is still compared"       0 "refs/tags/v2.0.0-rc.1" "$tmp/rc.json"
   check "and still fails when it disagrees"         1 "refs/tags/v2.0.0-rc.2" "$tmp/rc.json"
 

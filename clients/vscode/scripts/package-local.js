@@ -31,14 +31,26 @@ const path = require('path');
 
 const ext = path.resolve(__dirname, '..');
 const repo = path.resolve(ext, '..', '..');
-const version = require(path.join(ext, 'package.json')).version;
+// TWO NUMBERS SINCE 1.0.1 (2026-11-22). `version` is the extension's: the file
+// name, the Marketplace, the Extensions list. `appVersion` is the Mochiii
+// release bundled inside, and the background service is stamped with THAT: the
+// terminal app compares it with its own (clients/tui/daemonstart.go), and one
+// stamped 1.0.1 was announced beside terminal 1.6.1 as another, older install.
+const { version, appVersion } = require(path.join(ext, 'package.json'));
+if (!appVersion) {
+  console.error('package-local: package.json has no "appVersion", the Mochiii release this package bundles.');
+  process.exit(1);
+}
 
 // The platforms scripts/release-targets.txt ships, in vsce's names.
 const TARGETS = { 'linux-x64': 'linux-x64', 'win32-x64': 'win32-x64' };
 const host = `${process.platform}-${process.arch}`;
-const target = TARGETS[host];
+// `npm run package -- win32-x64` packages the other target: the runtime is
+// pure Go and cross-compiles. With no argument, this machine's.
+const asked = process.argv[2] || host;
+const target = TARGETS[asked];
 if (!target) {
-  console.error(`package-local: this host (${host}) is not a release target; ` +
+  console.error(`package-local: ${asked} is not a release target; ` +
     `scripts/release-targets.txt ships ${Object.keys(TARGETS).join(', ')}.`);
   process.exit(1);
 }
@@ -58,6 +70,22 @@ const vscePkg = require.resolve('@vscode/vsce/package.json', { paths: [ext] });
 const vsceBin = require(vscePkg).bin;
 const vsce = path.join(path.dirname(vscePkg), typeof vsceBin === 'string' ? vsceBin : vsceBin.vsce);
 
+// THE STAMP MUST BE TRUE. Once v<appVersion> is tagged, a runtime built from
+// other source is not that release, however it is stamped.
+const git = (...args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+const tag = `v${appVersion}`;
+if (git('rev-parse', '-q', '--verify', `refs/tags/${tag}`).status === 0) {
+  const diff = git('diff', '--name-only', tag, '--', 'daemon', 'protocol', 'editapply', 'helper', 'clients/tui', 'go.work', 'models.json',
+    ':(exclude)*_test.go', ':(exclude)**/testdata/**');
+  if (diff.status !== 0 || diff.stdout.trim() !== '') {
+    console.error(`package-local: the runtime's source differs from ${tag}, so it cannot be stamped ${appVersion}. ` +
+      `Change appVersion, or package from that release's source.\n${diff.stdout || diff.stderr}`);
+    process.exit(1);
+  }
+} else {
+  console.warn(`package-local: NOT checked that the runtime is ${appVersion}: no tag ${tag} here (git fetch --tags).`);
+}
+
 run('package gate self-test', node, [path.join(__dirname, 'verify-vsix.js'), '--self-test'], { cwd: ext });
 
 // Cleared first, as release.yml does: daemon/ ships verbatim, so anything an
@@ -69,15 +97,25 @@ fs.mkdirSync(daemonDir, { recursive: true });
 // The one `mochiii` binary under the daemon's name (1.2.0): it is the daemon
 // when run as mochiii-daemon, and it starts its own embedder helper.
 run('Build mochiii as mochiii-daemon (pure Go)', 'go',
-  ['build', '-trimpath', '-ldflags', `-X main.daemonVersion=${version}`,
+  ['build', '-trimpath', '-ldflags', `-X main.daemonVersion=${appVersion}`,
     '-o', path.join(daemonDir, `mochiii-daemon${exe}`), '.'],
-  { cwd: path.join(repo, 'daemon'), env: { ...process.env, CGO_ENABLED: '0' } });
+  {
+    cwd: path.join(repo, 'daemon'),
+    env: { ...process.env, CGO_ENABLED: '0', GOOS: exe ? 'windows' : 'linux', GOARCH: 'amd64' },
+  });
+if (target === TARGETS[host]) {
+  const built = spawnSync(path.join(daemonDir, `mochiii-daemon${exe}`), ['--version'], { encoding: 'utf8' });
+  if (!String(built.stdout).trim().endsWith(` ${appVersion}`)) {
+    console.error(`package-local: the built background service says "${String(built.stdout).trim()}", not ${appVersion}.`);
+    process.exit(1);
+  }
+}
 
 run(`Stage the runtime for ${target}`, node, [path.join(__dirname, 'stage-runtime.js'), target], { cwd: ext });
 
 // vsce runs vscode:prepublish (the bundle) itself before packaging.
 const out = path.join(ext, `mochiii-vscode-${target}-${version}.vsix`);
-run(`Package ${target}`, node, [vsce, 'package', '--no-dependencies', '--target', target, '-o', out], { cwd: ext });
+run(`Package ${target}`, node, [vsce, 'package', '--no-dependencies', '--allow-missing-repository', '--target', target, '-o', out], { cwd: ext });
 
 // THE GATE, told which target it is checking. A package that fails it is
 // deleted rather than left beside the passing ones, so a file in this folder
