@@ -114,7 +114,7 @@ export interface SupervisorDeps {
   schedule: (ms: number, fn: () => void) => Timer;
 }
 
-export type EnsureOutcome = 'adopted' | 'spawned' | 'disposed';
+export type EnsureOutcome = 'adopted' | 'spawned' | 'disposed' | 'paused';
 
 /**
  * A daemon this supervisor started, and the promise of its death.
@@ -132,6 +132,8 @@ export class DaemonSupervisor {
   private restarts = 0;
   private timer: Timer | undefined;
   private disposed = false;
+  // True while whileStopped's work needs the service gone (indexing).
+  private held = false;
   // Set ONLY when this supervisor spawned the process. An adopted daemon
   // belongs to another window and is never held here -- which is what stops
   // dispose() from killing it. See dispose().
@@ -177,6 +179,9 @@ export class DaemonSupervisor {
     if (this.disposed) {
       return 'disposed';
     }
+    if (this.held) {
+      return 'paused';
+    }
     if (await this.deps.probe()) {
       this.deps.log('a daemon is already serving this workspace; adopted it');
       return 'adopted';
@@ -186,6 +191,9 @@ export class DaemonSupervisor {
     // exact process this class exists to stop leaking.
     if (this.disposed) {
       return 'disposed';
+    }
+    if (this.held) {
+      return 'paused';
     }
     this.startOwn();
     return 'spawned';
@@ -198,6 +206,9 @@ export class DaemonSupervisor {
    * reaches for it.
    */
   async restart(): Promise<EnsureOutcome> {
+    if (this.held) {
+      return 'paused'; // it starts again when the work is over
+    }
     this.restarts = 0;
     this.cancelTimer();
 
@@ -223,6 +234,37 @@ export class DaemonSupervisor {
       return 'adopted';
     }
     return this.ensure();
+  }
+
+  /**
+   * Run work with no service on this workspace, then start one again: an
+   * index must not be rebuilt under a running service, and one started
+   * without an index never picks one up. Declined, with nothing run, while
+   * another window's service is serving: that one is not ours to stop.
+   */
+  async whileStopped<T>(work: () => Promise<T>): Promise<{ ran: true; value: T } | { ran: false }> {
+    if (this.held || this.disposed) {
+      return { ran: false };
+    }
+    this.held = true;
+    try {
+      this.cancelTimer();
+      if (this.ensuring) {
+        await this.ensuring;
+      }
+      const dying = this.killOwn();
+      if (dying) {
+        await this.settleOrGiveUp(dying, RESTART_EXIT_GRACE_MS);
+      }
+      if (await this.deps.probe()) {
+        return { ran: false };
+      }
+      return { ran: true, value: await work() };
+    } finally {
+      this.held = false;
+      this.restarts = 0;
+      await this.ensure();
+    }
   }
 
   /**

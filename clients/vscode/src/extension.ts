@@ -10,7 +10,7 @@ import { CHAT_VIEW_ID, CHAT_VIEW_IDS, CHAT_VIEW_TYPE, CLIENT_NAME, ChatPanel, Di
 import { MOVE_CHAT_HERE_COMMAND } from './chatElsewhere';
 import { bundledDaemonDir, daemonBinaryName, resolveConfigPathSetting } from './daemonBinary';
 import { ConnectResponse, probeDaemon, resolvedWorkspaceRoot, sendConnect, setWorkspaceRoot } from './daemonClient';
-import { ensureModelAvailable } from './modelSetup';
+import { IndexDeps, buildIndex, offerIndex } from './indexSetup';
 import { API_KEY_SECRET, clearApiKey, ensureApiKey, getApiKey, promptForApiKey } from './apiKey';
 import { ANY_KEY_CHOICE, formatConnectResult, keyMismatch, providerByName, providerChoices, providerForBase, providerLabel } from './connectFlow';
 import { ConnectOutcome, setConnectKey } from './connectBridge';
@@ -31,6 +31,7 @@ import { FOLDERS_NOTED_KEY, WORKING_FOLDER_KEY, chooseWorkingFolder, otherFolder
 import { setPagesContext } from './chatPages/pagesHost';
 
 let supervisor: DaemonSupervisor | undefined;
+let indexing: IndexDeps | undefined;
 let output: vscode.OutputChannel | undefined;
 
 // The API key, read once from SecretStorage and held for spawnDaemon, which
@@ -199,7 +200,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // (ungrounded), and making its start wait on a filesystem probe -- let alone
     // on a user answering a dialog -- would trade a working product for a
     // prompt. This only ever tells the user something true and offers to fix it.
-    void ensureModelAvailable(binaryPath, context, output);
+    indexing = { root, binaryPath, context, output, supervisor, busy: () => ChatPanel.busy() };
+    void offerIndex(indexing);
 
     // Same rule, same reason: tell the user something true and offer to fix it,
     // without making the daemon's start wait on an answer. A daemon with no key
@@ -397,6 +399,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // mochiii.openChat now FOCUSES THE SIDEBAR rather than opening a tab, so the
     // command palette entry and Mochiii's side-bar tab lead to the same place.
     // The editor-tab route kept its own command below.
+    vscode.commands.registerCommand('mochiii.indexFolder', async () => {
+      if (!indexing) {
+        vscode.window.showInformationMessage(NO_WORKSPACE);
+        return;
+      }
+      await buildIndex(indexing);
+    }),
     vscode.commands.registerCommand('mochiii.addToChat', async (uri?: vscode.Uri, picked?: vscode.Uri[]) => {
       if (!root) {
         vscode.window.showInformationMessage(NO_WORKSPACE);
@@ -971,6 +980,7 @@ export function deactivate(): Thenable<void> {
   // window that is still using it. See DaemonSupervisor.dispose.
   supervisor?.dispose();
   supervisor = undefined;
+  indexing = undefined;
   // Stops the OCR worker thread if an image was ever read; a no-op otherwise.
   return shutdownExtractors();
 }
