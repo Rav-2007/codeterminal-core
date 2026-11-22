@@ -15,7 +15,7 @@ const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
 // model provider, while the key field stayed empty.
 //
 // FOUND AGAIN the same day, in separate code: the connect popup's key step
-// (/connect, /account's "Switch provider or key") sits right above the
+// (/connect, /account's "Change provider or key") sits right above the
 // composer, which stayed clickable; a click there, Tab from the key field (in
 // three presses), or an answer finishing put the caret in the composer.
 //

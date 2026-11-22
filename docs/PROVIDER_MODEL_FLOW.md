@@ -77,7 +77,7 @@ The daemon does all the real work: it checks the key, stores it, lists the model
 | `/connect` | step 1 | step 1 |
 | `/connect <provider or address>` | step 2 for that provider | step 2 for that provider |
 | `/provider` | step 1 | — (use `/connect`) |
-| Account → "Switch provider or key" | — | step 1 |
+| Account → "Change provider or key" | — | step 1 |
 | `/model` (bare) | step 3 only | the model menu by the composer |
 | Command palette "Mochiii: Connect" | — | VS Code input boxes: provider, then key (no model step) |
 

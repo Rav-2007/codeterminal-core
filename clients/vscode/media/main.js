@@ -756,15 +756,6 @@
   function sendEffort() {
     vscode.postMessage({ type: 'setEffort', effort: EFFORTS[effortIndex] });
   }
-  // setEffortLevel is the Settings page's way in: the same state the pill
-  // cycles through, saved and sent the same way.
-  /** @param {string} level */
-  function setEffortLevel(level) {
-    effortIndex = Math.max(0, EFFORTS.indexOf(level));
-    renderEffort();
-    saveState({ effort: EFFORTS[effortIndex] });
-    sendEffort();
-  }
   if (effortBtn) {
     effortBtn.addEventListener('click', () => {
       effortIndex = (effortIndex + 1) % EFFORTS.length;
@@ -3575,9 +3566,6 @@
   // and see only their own messages (handle returns false for the rest).
   const pages = window.MochiiiPages
     ? window.MochiiiPages.init(vscode, {
-        openModelMenu: () => {
-          if (modelChipEl) modelChipEl.click();
-        },
         sendText: (/** @type {string} */ t) => sendText(t),
         prefill: (/** @type {string} */ t) => {
           inputEl.value = t;
@@ -3585,8 +3573,6 @@
           updateSlashFromInput();
         },
         focusComposer: () => inputEl.focus(),
-        setEffort: (/** @type {string} */ e) => setEffortLevel(e),
-        getEffort: () => EFFORTS[effortIndex],
         closePopups: () => {
           setHistoryOpen(false);
           setModelPopupOpen(false);

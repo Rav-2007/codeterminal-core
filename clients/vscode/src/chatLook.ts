@@ -419,15 +419,17 @@ export function chatLookStyles(): string {
   .mcp-head h3 { margin: 0; font-size: 13.5px; }
   .pg-btn.small { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; font-size: 12px; }
   .pg-btn.small svg { width: 13px; height: 13px; }
-  .mcp-row { display: flex; align-items: center; gap: 10px; }
+  /* The actions wrap under the server's name when they do not fit beside it:
+     in one unwrapped row they ran off a 300px side bar, Remove out of reach. */
+  .mcp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
   .mcp-mono {
     width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
     display: inline-flex; align-items: center; justify-content: center;
     background: var(--ct-accent-soft); color: var(--ct-accent-strong); font-weight: 700; font-size: 12.5px;
   }
-  .mcp-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .mcp-text { flex: 1 1 100px; min-width: 0; display: flex; flex-direction: column; }
   .mcp-text .row-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mcp-acts { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .mcp-acts { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; margin-left: auto; max-width: 100%; }
   .mcp-switch {
     position: relative;
     width: 32px;
@@ -451,6 +453,9 @@ export function chatLookStyles(): string {
     transition: transform 120ms ease;
   }
   .mcp-switch[aria-checked="true"] { background: var(--ct-accent-solid); }
+  /* High Contrast's button colour is black: as a track it vanished, and a
+     switch that was on was a lone dot. Its on state is the focus colour. */
+  body.vscode-high-contrast .mcp-switch[aria-checked="true"] { background: var(--ct-accent); }
   .mcp-switch[aria-checked="true"]::after { transform: translateX(14px); }
   .mcp-switch:focus-visible { outline: 2px solid var(--ct-accent); outline-offset: 2px; }
   .mcp-acts .row-act { padding: 2px 6px; font-size: 11px; }

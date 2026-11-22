@@ -13,7 +13,7 @@ const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
 // search, so "/mcp-server add files npx ..." opened the Marketplace with that text
 // in its search box and added nothing -- while the terminal app's command adds. The
 // webview now answers a first word of exactly "add" by asking the host for the same
-// popup the "Add a server by hand" button opens (page:command mcpAdd), which does
+// popup Customize > MCP's "Add server > Your own server" opens (page:command mcpAdd), which does
 // the daemon's two steps: what will run, then the server's name typed.
 //
 // Real key presses into the composer (DevTools). The host's message handler is a
@@ -118,7 +118,7 @@ suite('E2E chat — /mcp-server add opens the add popup', () => {
   const types = () => seen.map((m) => (m.type === 'page:command' ? `page:command/${m.name}` : String(m.type)));
 
   test('the popup is reached through a command the host already runs for the button', () => {
-    assert.strictEqual(PAGE_COMMANDS.mcpAdd, 'mochiii.mcp.add', 'the page command for "Add a server by hand" changed');
+    assert.strictEqual(PAGE_COMMANDS.mcpAdd, 'mochiii.mcp.add', 'the page command for "Your own server" changed');
   });
 
   for (const typed of [

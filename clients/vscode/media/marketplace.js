@@ -138,7 +138,7 @@
     tabs,
     category,
     button('Refresh', 'btn secondary', () => post({ type: 'refresh' })),
-    button('Installed servers', 'btn secondary', () => post({ type: 'manage' }))
+    button('Installed servers', 'btn secondary manage', () => post({ type: 'manage' }))
   );
 
   const notices = el('div', '');

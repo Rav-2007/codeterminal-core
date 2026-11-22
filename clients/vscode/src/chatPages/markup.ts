@@ -21,11 +21,6 @@ export const ICONS = {
   settings: svg('<circle cx="8" cy="8" r="2.1"/><path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M3.6 12.4l1.2-1.2M11.2 4.8l1.2-1.2"/>'),
   back: svg('<path d="M9.5 3.5 5 8l4.5 4.5"/>'),
   at: svg('<circle cx="8" cy="8" r="2.4"/><path d="M10.4 8v1a1.6 1.6 0 0 0 3.2 0V8a5.6 5.6 0 1 0-2.3 4.5"/>'),
-  model: svg('<rect x="3" y="3" width="10" height="10" rx="2"/><path d="M6 1.5v1.5M10 1.5v1.5M6 13v1.5M10 13v1.5M1.5 6H3M1.5 10H3M13 6h1.5M13 10h1.5"/><rect x="6" y="6" width="4" height="4" rx=".6"/>'),
-  sliders: svg('<path d="M3 4h10M3 8h10M3 12h10"/><circle cx="6" cy="4" r="1.4"/><circle cx="10.5" cy="8" r="1.4"/><circle cx="5" cy="12" r="1.4"/>'),
-  folder: svg('<path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"/>'),
-  shield: svg('<path d="M8 1.8 13 3.6v4c0 3-2.1 5.4-5 6.6-2.9-1.2-5-3.6-5-6.6v-4L8 1.8z"/><path d="m5.8 8 1.6 1.6 2.9-3"/>'),
-  wrench: svg('<path d="M10.2 2.2a3.3 3.3 0 0 0-3.9 4.4L2.4 10.5a1.4 1.4 0 0 0 2 2l3.9-3.9a3.3 3.3 0 0 0 4.4-3.9l-1.9 1.9-1.6-.4-.4-1.6 1.4-2.4z"/>'),
   info: svg('<circle cx="8" cy="8" r="6"/><path d="M8 7.2v3.6M8 5.1v.1"/>'),
   // Stage 9: the header, the composer and the cards (docs: the two mockup sheets).
   plus: svg('<path d="M8 3v10M3 8h10"/>'),
@@ -91,29 +86,38 @@ function customizePage(): string {
       ['tools', 'Tools'],
       ['skills', 'Skills'],
     ])}
+    <!-- MCP: ONE LIST, ONE WAY TO ADD (UI audit, step 4). There were
+         Installed / Marketplace sub-tabs, an "Add Server" button, "Browse the
+         Marketplace" and "Add a server by hand": four routes to two actions.
+         The Add menu holds the two, and the marketplace opens as its own view
+         with a way back. -->
     <div id="custPanel-mcp" class="page-panel" role="tabpanel" aria-labelledby="custTab-mcp">
-      ${tabs('mcp', 'MCP servers', [
-        ['installed', 'Installed'],
-        ['market', 'Marketplace'],
-      ])}
-      <div id="mcpPanel-installed" role="tabpanel" aria-labelledby="mcpTab-installed">
-        <div class="mcp-head"><h3>MCP Servers</h3><button type="button" class="pg-btn primary small" data-mcp-browse>${ICONS.plus}<span>Add Server</span></button></div>
+      <div id="mcpPanel-installed">
+        <div class="mcp-head">
+          <h3>MCP servers</h3>
+          <div class="mcp-add">
+            <button type="button" class="pg-btn primary small" id="mcpAddBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="mcpAddMenu">${ICONS.plus}<span>Add server</span></button>
+            <div id="mcpAddMenu" class="pop-menu mcp-add-menu" role="menu" aria-label="Add an MCP server" hidden>
+              <button type="button" class="menu-item" role="menuitem" data-mcp-browse><span class="mi-text"><span class="mi-name">From the Marketplace</span><span class="mi-desc">Browse servers you can add</span></span></button>
+              <button type="button" class="menu-item" role="menuitem" data-page-command="mcpAdd"><span class="mi-text"><span class="mi-name">Your own server</span><span class="mi-desc">A command, a URL or pasted JSON</span></span></button>
+            </div>
+          </div>
+        </div>
         <p id="mcpNotice" class="page-note" hidden></p>
         <div id="mcpInstalledList" class="rows" aria-live="polite"></div>
         <div id="mcpEmpty" class="empty" hidden>
           <p>No MCP servers yet. An MCP server gives Mochiii’s agent new tools: web search, browsers, databases, clouds.</p>
         </div>
         <div class="page-actions">
-          <button type="button" class="pg-btn primary" data-mcp-browse>Browse the Marketplace</button>
-          <button type="button" class="pg-btn" data-page-command="mcpAdd">Add a server by hand</button>
-          <button type="button" class="pg-btn ghost" data-page-command="mcpShowTools">Show MCP tools</button>
+          <button type="button" class="link-btn" data-page-command="mcpShowTools">Show MCP tools</button>
         </div>
         <p class="page-note">A server runs on your machine with your privileges. Mochiii shows exactly what will run and asks you to type its name before adding it, and each of its tools asks before it runs.</p>
       </div>
-      <div id="mcpPanel-market" role="tabpanel" aria-labelledby="mcpTab-market" hidden>
+      <div id="mcpPanel-market" hidden>
+        <button type="button" class="link-btn mcp-back" data-mcp-installed>‹ Installed servers</button>
         <div id="marketRoot" class="market-root"></div>
         <div class="page-actions">
-          <button type="button" class="pg-btn ghost" data-page-command="marketInEditor">Open the marketplace in an editor tab</button>
+          <button type="button" class="link-btn" data-page-command="marketInEditor">Open the marketplace in an editor tab</button>
         </div>
       </div>
     </div>
@@ -126,6 +130,7 @@ function customizePage(): string {
     </div>
     <div id="custPanel-tools" class="page-panel" role="tabpanel" aria-labelledby="custTab-tools" hidden>
       <p class="page-note">The tools Mochiii’s agent may call, and what each needs from you: <b>allow</b> runs it, <b>ask</b> waits for your yes, <b>off</b> never offers it.</p>
+      <p id="toolStatus" class="empty" role="status">Loading tools…</p>
       <div id="toolList" class="rows" aria-live="polite"></div>
       <p id="toolSource" class="page-note"></p>
     </div>
@@ -148,23 +153,28 @@ function accountPage(): string {
         <div class="conn-provider"><span id="acctProvider">Checking…</span> <span id="acctDot" class="dot" role="img" aria-label="status unknown"></span></div>
         <div id="acctBase" class="conn-base"></div>
       </div>
+      <dl class="kv">
+        <dt>Key</dt><dd><span id="acctKey"></span><span id="acctKeyMore" class="kv-more"></span></dd>
+        <dt>Model</dt><dd><span id="acctModel"></span><span id="acctModelMore" class="kv-more"></span></dd>
+        <dt>Daemon</dt><dd id="acctDaemon"></dd>
+      </dl>
     </div>
     <p id="acctNote" class="page-note acct-note" hidden><span id="acctNoteText"></span> <button type="button" id="acctRetry" class="pg-btn" data-page-refresh>Retry</button></p>
-    <dl class="kv">
-      <dt>Key</dt><dd><span id="acctKey"></span><span id="acctKeyMore" class="kv-more"></span></dd>
-      <dt>Model</dt><dd><span id="acctModel"></span><span id="acctModelMore" class="kv-more"></span></dd>
-      <dt>Daemon</dt><dd id="acctDaemon"></dd>
-    </dl>
     <div id="acctSpend" class="spend" hidden>
       <h3>Spend</h3>
       <div id="acctSpendRows"></div>
       <p id="acctSpendNote" class="page-note"></p>
     </div>
+    <!-- One primary; Forget is a quiet link in the danger colour -- it asks
+         first (forgetKey.ts), and it is not what most visits are for. The model
+         is shown in the card and changed from its chip under the prompt, so
+         there is no second button for it here. -->
     <div class="page-actions">
-      <button type="button" class="pg-btn primary" data-page-command="connect">Switch provider or key</button>
-      <button type="button" class="pg-btn" data-open-models>Change model</button>
-      <button type="button" class="pg-btn ghost" data-page-command="forgetKey">Forget the stored key</button>
-      <button type="button" class="pg-btn ghost" data-page-refresh>Refresh</button>
+      <button type="button" class="pg-btn primary" data-page-command="connect">Change provider or key</button>
+    </div>
+    <div class="page-actions quiet">
+      <button type="button" class="link-btn" data-page-refresh>Refresh</button>
+      <button type="button" class="link-btn danger" data-page-command="forgetKey">Forget key</button>
     </div>
     <div id="acctPrivacyBox" class="sub-block" hidden>
       <h3>Privacy</h3>
@@ -173,25 +183,28 @@ function accountPage(): string {
   </section>`;
 }
 
-function railButton(key: string, label: string, icon: string, first: boolean): string {
-  return `<button type="button" role="tab" id="setTab-${key}" data-tab="${key}" aria-controls="setPanel-${key}" aria-selected="${first}" tabindex="${first ? 0 : -1}" title="${label}">${icon}<span>${label}</span></button>`;
-}
+const SETTINGS_SECTIONS: [string, string][] = [
+  ['model', 'Model'],
+  ['behaviour', 'Behaviour'],
+  ['workspace', 'Workspace'],
+  ['privacy', 'Privacy'],
+  ['advanced', 'Advanced'],
+  ['about', 'About'],
+];
 
 function settingsPage(): string {
   return `<section id="pageSettings" class="page" hidden role="region" aria-labelledby="pageSettingsTitle">
     ${pageHead('pageSettings', 'Settings', 'How Mochiii behaves in this editor.')}
+    <!-- ONE PAGE OF LABELLED SECTIONS (UI audit, step 4). It was a rail of six
+         unlabelled icons beside one section at a time, in a panel a few hundred
+         pixels wide. The names at the top jump to their section. -->
     <div class="settings">
-      <div class="rail" role="tablist" aria-label="Settings sections" aria-orientation="vertical" data-tabs="set">
-        ${railButton('model', 'Model', ICONS.model, true)}
-        ${railButton('behaviour', 'Behaviour', ICONS.sliders, false)}
-        ${railButton('workspace', 'Workspace', ICONS.folder, false)}
-        ${railButton('privacy', 'Privacy', ICONS.shield, false)}
-        ${railButton('advanced', 'Advanced', ICONS.wrench, false)}
-        ${railButton('about', 'About', ICONS.info, false)}
-      </div>
+      <nav class="set-nav" aria-label="Settings sections">
+        ${SETTINGS_SECTIONS.map(([key, label]) => `<button type="button" class="link-btn" data-set-jump="${key}">${label}</button>`).join('\n        ')}
+      </nav>
       <div class="settings-body">
-        <div id="setPanel-model" role="tabpanel" aria-labelledby="setTab-model">
-          <h3>Model</h3>
+        <section id="setPanel-model" class="set-section" aria-labelledby="setHead-model">
+          <h3 id="setHead-model">Model</h3>
           <div class="field">
             <span class="field-label">Provider</span>
             <span id="setProvider" class="field-value"></span>
@@ -202,18 +215,9 @@ function settingsPage(): string {
             <select id="setDefaultModel"></select>
           </label>
           <p id="setDefaultModelNote" class="page-note"></p>
-          <label class="field" for="setEffort">
-            <span class="field-label">Thinking effort</span>
-            <select id="setEffort">
-              <option value="">Auto (the model’s own)</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-          </label>
-        </div>
-        <div id="setPanel-behaviour" role="tabpanel" aria-labelledby="setTab-behaviour" hidden>
-          <h3>Behaviour</h3>
+        </section>
+        <section id="setPanel-behaviour" class="set-section" aria-labelledby="setHead-behaviour">
+          <h3 id="setHead-behaviour">Behaviour</h3>
           <label class="field" for="setDefaultMode">
             <span class="field-label">Mode for a new chat</span>
             <select id="setDefaultMode" data-setting="defaultMode">
@@ -233,9 +237,9 @@ function settingsPage(): string {
             <input type="checkbox" id="setEditorContext" data-setting="sendEditorContext" />
             <span>Send the open file, cursor and selection with each question</span>
           </label>
-        </div>
-        <div id="setPanel-workspace" role="tabpanel" aria-labelledby="setTab-workspace" hidden>
-          <h3>Workspace</h3>
+        </section>
+        <section id="setPanel-workspace" class="set-section" aria-labelledby="setHead-workspace">
+          <h3 id="setHead-workspace">Workspace</h3>
           <div class="field">
             <span class="field-label">Working folder</span>
             <span id="setFolder" class="field-value"></span>
@@ -244,23 +248,23 @@ function settingsPage(): string {
           <div class="page-actions">
             <button type="button" class="pg-btn" data-page-command="chooseFolder">Choose working folder…</button>
           </div>
-        </div>
-        <div id="setPanel-privacy" role="tabpanel" aria-labelledby="setTab-privacy" hidden>
-          <h3>Privacy and data</h3>
+        </section>
+        <section id="setPanel-privacy" class="set-section" aria-labelledby="setHead-privacy">
+          <h3 id="setHead-privacy">Privacy and data</h3>
           <label class="check" for="setHistory">
             <input type="checkbox" id="setHistory" data-setting="history.autoSave" />
             <span>Keep every chat in History on this machine</span>
           </label>
           <p class="page-note">What leaves this machine: your question, the conversation so far, the parts of your code Mochiii chose to show, and the open file when that is on. They go to the provider on the Account page, and nowhere else.</p>
           <ul id="setPrivacyNotes" class="plain-list"></ul>
-        </div>
-        <div id="setPanel-advanced" role="tabpanel" aria-labelledby="setTab-advanced" hidden>
-          <h3>Advanced</h3>
+        </section>
+        <section id="setPanel-advanced" class="set-section" aria-labelledby="setHead-advanced">
+          <h3 id="setHead-advanced">Advanced</h3>
           <p class="page-note">These name where your questions go or what may run, so they are changed in VS Code’s own Settings, for this machine only — never from this page, and never by a repository.</p>
           <div id="setMachine" class="rows"></div>
-        </div>
-        <div id="setPanel-about" role="tabpanel" aria-labelledby="setTab-about" hidden>
-          <h3>About Mochiii</h3>
+        </section>
+        <section id="setPanel-about" class="set-section" aria-labelledby="setHead-about">
+          <h3 id="setHead-about">About Mochiii</h3>
           <dl class="kv">
             <dt>Extension</dt><dd id="setVersion"></dd>
             <dt>Daemon</dt><dd id="setDaemonVersion"></dd>
@@ -274,7 +278,7 @@ function settingsPage(): string {
             <button type="button" class="pg-btn" data-page-command="daemonLog">Show the daemon log</button>
             <button type="button" class="pg-btn" data-page-command="restartDaemon">Restart the daemon</button>
           </div>
-        </div>
+        </section>
       </div>
     </div>
   </section>`;
@@ -360,7 +364,7 @@ export function chatPagesStyles(): string {
     flex: none;
   }
   .page-back:hover { color: var(--ct-ink); }
-  .page-back:focus-visible, .seg button:focus-visible, .rail button:focus-visible,
+  .page-back:focus-visible, .seg button:focus-visible,
   .pg-btn:focus-visible, .link-btn:focus-visible, .row-act:focus-visible {
     outline: 2px solid var(--ct-accent);
     outline-offset: 1px;
@@ -417,8 +421,20 @@ export function chatPagesStyles(): string {
   .pg-btn.primary:hover { background: var(--ct-accent-solid-hover); }
   .pg-btn.ghost { background: transparent; }
   .pg-btn:disabled { opacity: 0.55; cursor: default; }
-  .link-btn { font: inherit; font-size: 12px; background: none; border: none; color: var(--ct-accent); cursor: pointer; padding: 0; }
+  /* A link is text, so it takes the theme's link colour, not its focus border. */
+  .link-btn { font: inherit; font-size: 12px; background: none; border: none; color: var(--ct-accent-strong); cursor: pointer; padding: 0; }
   .page-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+  .page-actions.quiet { gap: 16px; margin-top: -2px; }
+  .link-btn.danger { color: var(--ct-danger); }
+  .link-btn:hover { text-decoration: underline; }
+  /* Customize > MCP: one Add button with a menu; the marketplace's way back. */
+  .mcp-add { position: relative; }
+  /* Two classes: chatLook's .pop-menu width is a share of the button's box. */
+  .pop-menu.mcp-add-menu { top: calc(100% + 4px); right: 0; left: auto; width: 240px; }
+  /* The marketplace's own "Installed servers" button, where the back link
+     above it already is one. (The editor tab has no back link and keeps it.) */
+  #marketRoot .manage { display: none; }
+  .mcp-back { margin: 2px 0 8px; }
 
   .rows { display: flex; flex-direction: column; gap: 6px; }
   .row {
@@ -513,7 +529,7 @@ export function chatPagesStyles(): string {
     background: var(--ct-control-bg); color: var(--ct-ink); border: 1px solid var(--ct-control-border);
   }
   .mcp-dlg-btn:hover { border-color: var(--ct-accent); }
-  .mcp-dlg-btn.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); border-color: var(--ct-accent-solid); }
+  .mcp-dlg-btn.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); border-color: var(--vscode-button-border, transparent); }
   .mcp-dlg-btn.primary:hover { background: var(--ct-accent-solid-hover); }
   .mcp-dlg-btn.danger { color: var(--ct-danger); }
   .empty { color: var(--ct-muted); padding: 10px 12px; border: 1px dashed var(--ct-border); border-radius: 10px; }
@@ -565,6 +581,10 @@ export function chatPagesStyles(): string {
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 14px 0; }
   .kv dt { color: var(--ct-muted); }
   .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  /* Account's status card holds what is in use: provider, key, model. */
+  .conn-card:has(> .kv) { flex-wrap: wrap; }
+  .conn-card > .conn-main { flex: 1; }
+  .conn-card > .kv { flex: 0 0 100%; margin: 0; padding-top: 10px; border-top: 1px solid var(--ct-border); }
   .kv-more { display: block; color: var(--ct-muted); font-size: 11.5px; }
   .meter { margin: 6px 0 10px; }
   .meter-label { display: flex; justify-content: space-between; font-size: 12px; }
@@ -574,29 +594,23 @@ export function chatPagesStyles(): string {
   .meter-fill.hot { background: var(--ct-danger); }
   .plain-list { margin: 0; padding-left: 18px; color: var(--ct-muted); font-size: 12px; line-height: 1.5; }
 
-  /* Settings: an icon rail, labels beside the icons when there is room. */
-  .settings { display: flex; gap: 12px; min-width: 0; }
-  .rail { display: flex; flex-direction: column; gap: 2px; flex: none; }
-  .rail button {
+  /* Settings: one page of labelled sections; the names at the top jump to
+     them (UI audit, step 4 -- it was a rail of unlabelled icons). */
+  .settings { display: block; min-width: 0; }
+  .set-nav {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    font: inherit;
-    font-size: 12px;
-    border: none;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--ct-muted);
-    padding: 6px 8px;
-    cursor: pointer;
-    text-align: left;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 0 0 8px;
+    margin: 0 0 4px;
+    border-bottom: 1px solid var(--ct-border);
   }
-  .rail button[aria-selected="true"] { background: var(--ct-accent-soft); color: var(--ct-ink); }
-  .settings-body { flex: 1; min-width: 0; }
-  .settings-body h3 { margin-top: 2px; }
-  @media (max-width: 420px) {
-    .rail button span { display: none; }
-  }
+  .set-nav .link-btn { color: var(--ct-muted); }
+  .set-nav .link-btn:hover { color: var(--ct-ink); }
+  .settings-body { min-width: 0; }
+  .set-section { padding: 6px 0 10px; scroll-margin-top: 8px; }
+  .set-section + .set-section { border-top: 1px solid var(--ct-border); }
+  .set-section h3 { margin: 6px 0 4px; }
   .field { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 10px 0; }
   .field-label { color: var(--ct-muted); min-width: 110px; }
   .field-value { overflow-wrap: anywhere; min-width: 0; }
