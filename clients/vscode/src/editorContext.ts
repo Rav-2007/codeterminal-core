@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { projectTree } from './projectTree';
 
 // WHAT THE USER IS LOOKING AT, sent with the prompt.
 //
@@ -81,6 +82,8 @@ export interface EditorContext {
    */
   otherFolders?: { name: string; path: string }[];
   workingFolder?: string;
+  /** The folder Mochiii works in: its name and top two levels (projectTree.ts). */
+  project?: { name: string; tree: string[] };
 }
 
 /** Most other folders named; a window with more is unusual and the rest are said to exist. */
@@ -176,6 +179,7 @@ export function collectEditorContext(root: string): EditorContext {
   }
 
   const ctx: EditorContext = { ...empty };
+  ctx.project = { name: path.basename(root) || root, tree: projectTree(root) };
 
   // THE OTHER FOLDERS OPEN IN THIS WINDOW (2026-10-15). The daemon works in
   // one folder (workingFolder.ts), and nothing told the model the window had
@@ -352,11 +356,24 @@ export function withoutEditorState(content: string): string {
  */
 export function formatEditorContext(ctx: EditorContext): string {
   const others = ctx.otherFolders ?? [];
-  if (ctx.activeFile === '' && ctx.openTabs.length === 0 && others.length === 0) {
+  if (ctx.activeFile === '' && ctx.openTabs.length === 0 && others.length === 0 && !ctx.project) {
     return '';
   }
 
   const lines: string[] = [EDITOR_STATE_OPEN];
+
+  if (ctx.project) {
+    lines.push(
+      `Project open in VS Code: ${JSON.stringify(ctx.project.name)}. This is the folder your tools work in, ` +
+        'so never ask the user for its name or path: "this project", "this folder" and "the folder in the explorer" mean it. ' +
+        'Use paths relative to it, and look with your tools before asking where something is.'
+    );
+    if (ctx.project.tree.length > 0) {
+      lines.push('Its top two levels (names only; secret and generated folders or files are left out):', ...ctx.project.tree);
+    } else {
+      lines.push('It has no files to list yet.');
+    }
+  }
 
   if (others.length > 0) {
     const shown = others.slice(0, maxOtherFolders).map((f) => `${f.name} (${f.path})`);

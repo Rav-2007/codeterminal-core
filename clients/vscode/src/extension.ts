@@ -397,6 +397,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // mochiii.openChat now FOCUSES THE SIDEBAR rather than opening a tab, so the
     // command palette entry and Mochiii's side-bar tab lead to the same place.
     // The editor-tab route kept its own command below.
+    vscode.commands.registerCommand('mochiii.addToChat', async (uri?: vscode.Uri, picked?: vscode.Uri[]) => {
+      if (!root) {
+        vscode.window.showInformationMessage(NO_WORKSPACE);
+        return;
+      }
+      const uris = picked?.length ? picked : uri ? [uri] : [];
+      if (uris.length === 0) return;
+      // VS Code has no way to read what is highlighted in Explorer: the menu
+      // hands it over.
+      ChatPanel.addFromExplorer(uris);
+      await vscode.commands.executeCommand('mochiii.openChat');
+    }),
     vscode.commands.registerCommand('mochiii.openChat', () => {
       if (!root) {
         vscode.window.showInformationMessage(NO_WORKSPACE);
