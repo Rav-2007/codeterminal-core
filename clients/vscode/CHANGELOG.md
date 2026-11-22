@@ -28,10 +28,11 @@ bundles Mochiii 1.6.1.
 - **Agent mode is on** for providers' models that support tools; web search is
   off.
 - **Auto is full access inside the project:** no questions for edits, commands,
-  tests, installs or local git, after a one-time warning. It still asks before
-  going outside the project, sending out, or a command it recognises as wiping
-  data. Manual and Plan ask as before. Auto as your default can only be set in
-  your own user settings, never by a project.
+  tests, project installs or local git, after a one-time warning. It still asks
+  when it recognises going outside the project (computer-wide installs and
+  settings included), sending out, or wiping data. The check can miss some:
+  commands are not sandboxed. Manual and Plan ask as before. Auto as your
+  default can only be set in your own user settings, never by a project.
 - **Long tasks continue by themselves** in Auto and Plan, up to an hour or 400
   steps, then offer Resume. A line shows time, steps and tokens while a task
   works, and the totals when it ends.

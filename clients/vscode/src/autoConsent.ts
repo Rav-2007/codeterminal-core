@@ -12,10 +12,10 @@ const USE_AUTO = 'Use Auto';
 
 export const AUTO_WARNING = "Auto gives Mochiii full access to this project.";
 export const AUTO_WARNING_DETAIL =
-  'It edits files, runs commands and tests, installs packages and uses local git without asking.\n\n' +
-  'It still asks before it reaches files outside the project, sends something out (like git push or publish), ' +
-  'or runs a command it recognises as wiping data. Commands are not sandboxed and that recognition is best effort, ' +
-  'so use Auto only in projects you trust.\n\n' +
+  'It edits files, runs commands and tests, installs the project\'s packages and uses local git without asking.\n\n' +
+  'It still asks when it recognises something that reaches outside the project (other files, your settings, ' +
+  'computer-wide installs), sends something out (like git push or publish) or wipes data. Commands are not ' +
+  'sandboxed and this check can miss some, so use Auto only in projects you trust.\n\n' +
   'Cancel uses Manual for this chat. This is shown until you accept it once.';
 
 export type Warn = () => Promise<boolean>;
