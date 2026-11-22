@@ -172,6 +172,8 @@ const CONTINUED = '(Mochiii continued the task by itself)';
 const RETRYABLE_ERRORS = new Set(['rate_limited', 'upstream_unavailable', 'no_response']);
 const PROGRESS_MS = 1000;
 const SPEND_POLL_MS = 3000;
+// Reasoning kept from a part for the next one's handoff.
+const MAX_THOUGHTS = 4000;
 
 function turnsFromWire(turns: Turn[] | undefined): Turn[] {
   if (!turns) {
@@ -355,6 +357,9 @@ export class ChatPanel {
   private segmentSaved: string[] = [];
   private segmentNotSaved: { file: string; why: string }[] = [];
   private segmentRunning = false;
+  // For the handoff (taskRun.ts): the part's last reasoning and what it read.
+  private segmentThoughts = '';
+  private readonly segmentLooked = new Set<string>();
   private autoApplyDone: Promise<void> = Promise.resolve();
   private progressTimer: ReturnType<typeof setInterval> | undefined;
   private meterTokens = 0;
@@ -1847,6 +1852,8 @@ export class ChatPanel {
     this.segmentNotSaved = [];
     this.segmentSteps = 0;
     this.segmentRunning = true;
+    this.segmentThoughts = '';
+    this.segmentLooked.clear();
     let usageSeen: TurnUsage | undefined;
     let check: WorkingCopyInfo | undefined;
     let stop: IncompleteInfo | undefined;
@@ -1903,6 +1910,7 @@ export class ChatPanel {
           this.host.webview.postMessage({ type: 'redactions', kinds });
         },
         onReasoning: (text: string) => {
+          this.segmentThoughts = (this.segmentThoughts + text).slice(-MAX_THOUGHTS);
           this.host.webview.postMessage({ type: 'reasoning', text });
         },
         onDegraded: (items: Degradation[]) => {
@@ -1947,6 +1955,9 @@ export class ChatPanel {
           }
         },
         onToolActivity: (activity: ToolActivity) => {
+          if (activity.tool === 'read_file' && activity.target) {
+            this.segmentLooked.add(activity.target);
+          }
           this.host.webview.postMessage({ type: 'toolActivity', activity });
         },
         // The spec workflow's reports, rendered as plain text by the webview.
@@ -2120,6 +2131,8 @@ export class ChatPanel {
       saved: [...this.segmentSaved],
       notSaved: [...this.segmentNotSaved],
       check: end.check,
+      thoughts: this.segmentThoughts,
+      looked: [...this.segmentLooked],
     });
     this.segmentSteps = 0;
 

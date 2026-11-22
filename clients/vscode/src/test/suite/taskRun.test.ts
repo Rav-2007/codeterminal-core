@@ -166,6 +166,75 @@ suite('long tasks: the handoff and the finish check', () => {
     }
   });
 
+  // The first real after-run: one named test passed, three of six reported
+  // bugs were untouched, and the task ended with 308 steps left.
+  test('a check that proves little does not end a task that changed code', () => {
+    for (const checked of [
+      'python -m pytest tests/test_basic.py::test_make_response -v',
+      'python -m pytest -k flashing',
+      'npx vitest run src/body.test.ts',
+      'npx jest -t "nested"',
+      'go test -run TestOne ./...',
+      'cargo test -- --exact one',
+      'python -m pytest tests/ 2>&1 | tail -20',
+      'npm test || true',
+      'npm test; echo finished',
+    ]) {
+      const end = segment({ answer: 'All done.', saved: ['a.py'], check: { checked, passed: true } });
+      assert.strictEqual(new TaskRun('goal', true).end(end).kind, 'continue', checked);
+    }
+  });
+
+  test('a whole check still ends a one-part task', () => {
+    for (const checked of ['npm test', 'go test ./...', 'python -m pytest -q', 'npm run build && npm test']) {
+      const end = segment({ answer: 'All done.', saved: ['a.py'], check: { checked, passed: true } });
+      assert.strictEqual(new TaskRun('goal', true).end(end).kind, 'done', checked);
+    }
+  });
+
+  test('a task of several parts that changed code looks back once, whatever passed', () => {
+    const t = new TaskRun('goal', true);
+    t.end(segment({ stop: READ_LIMIT, saved: ['a.ts'] }));
+    const passed = { checked: 'npm test', passed: true };
+    assert.strictEqual(t.end(segment({ answer: 'All done.', check: passed })).kind, 'continue');
+    assert.strictEqual(t.end(segment({ answer: 'All done.', check: passed })).kind, 'done');
+  });
+
+  test('the look back goes through the request, and a limit inside it does not lose that', () => {
+    const t = new TaskRun('Fix A, B and C', true);
+    const look = continued(t.end(segment({ answer: 'All done.', saved: ['a.ts'] })));
+    for (const want of ['each thing the task asks', 'read the code', 'whole test suite', 'without piping']) {
+      assert.ok(look.includes(want), `the look back is missing: ${want}`);
+    }
+    const next = continued(t.end(segment({ stop: READ_LIMIT })));
+    assert.ok(next.includes('each thing the task asks'), 'a limit in the look back dropped the look back');
+  });
+
+  test('what earlier parts found stays in later handoffs', () => {
+    const t = new TaskRun('goal', true);
+    t.end(segment({ stop: READ_LIMIT, answer: 'FOUND-ONE in config.py', thoughts: 'THOUGHT-ONE', looked: ['src/config.py'] }));
+    const prompt = continued(t.end(segment({
+      stop: READ_LIMIT, answer: 'cli is next', thoughts: 'THOUGHT-TWO', looked: ['src/cli.py'],
+    })));
+    for (const want of ['FOUND-ONE', 'cli is next', 'THOUGHT-TWO', 'src/config.py', 'src/cli.py']) {
+      assert.ok(prompt.includes(want), `the handoff is missing ${want}`);
+    }
+    assert.ok(!prompt.includes('THOUGHT-ONE'), 'only the newest reasoning is carried');
+    assert.ok(prompt.includes('as soon as you know its cause'), 'nothing tells it to save as it goes');
+  });
+
+  test('a handoff stays bounded, however long the task', () => {
+    const t = new TaskRun('goal', true);
+    let prompt = '';
+    for (let i = 0; i < 15; i++) {
+      prompt = continued(t.end(segment({
+        stop: READ_LIMIT, answer: 'a'.repeat(20_000), thoughts: 'b'.repeat(50_000),
+        looked: Array.from({ length: 80 }, (_, j) => `src/part-${i}/file-${j}.ts`),
+      })));
+    }
+    assert.ok(prompt.length < 22_000, `the handoff grew to ${prompt.length} characters`);
+  });
+
   test('a stale pass is not a pass', () => {
     const end = segment({ answer: 'Done.', saved: ['a.ts'], check: { checked: 'npm test', passed: true, stale: true } });
     assert.strictEqual(new TaskRun('goal', true).end(end).kind, 'continue');
