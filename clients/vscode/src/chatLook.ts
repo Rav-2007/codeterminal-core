@@ -472,5 +472,12 @@ export function chatLookStyles(): string {
     #appHeader { padding-left: 10px; padding-right: 8px; }
     #composer { padding: 8px 8px 10px; }
   }
+  /* The row was 286px with the notices chip up, so at 280px Send and Stop were
+     cut off. It closes up: still nothing hides. */
+  @media (max-width: 300px) {
+    .composer-bar { gap: 1px; }
+    .composer-bar #noticesChip.pill { padding: 0 3px; gap: 3px; }
+    .composer-bar #modelChip.pill { min-width: 34px; padding: 0 4px; }
+  }
 `;
 }
