@@ -1423,7 +1423,7 @@ export class ChatPanel {
       // 'stopped' is the incomplete reason, so the next turn's history says the
       // answer was cut off by the user rather than presenting a half sentence
       // as a finished thought.
-      this.keepAnswer(partial, 'stopped', (this.task?.segments ?? 0) > 0);
+      this.keepAnswer({ role: 'assistant', content: partial, incomplete: 'stopped' }, (this.task?.segments ?? 0) > 0);
     }
     this.postSafe({
       type: 'stopped',
@@ -1963,7 +1963,12 @@ export class ChatPanel {
           this.host.webview.postMessage({ type: 'usage', usage });
         },
         onDone: () => {
-          this.keepAnswer(answer, incompleteReason, !!continuing);
+          this.keepAnswer(
+            incompleteReason
+              ? { role: 'assistant', content: answer, incomplete: incompleteReason }
+              : { role: 'assistant', content: answer },
+            !!continuing,
+          );
           this.clearPendingApproval();
           void this.afterSegment(task, controller, { answer, stop, usage: usageSeen, check });
         },
@@ -1981,7 +1986,10 @@ export class ChatPanel {
           // onDone are mutually exclusive (daemonClient's `finished` guard), so
           // this cannot double-push.
           if (answer.trim()) {
-            this.keepAnswer(answer, incompleteReason || 'provider_error', !!continuing);
+            this.keepAnswer(
+              { role: 'assistant', content: answer, incomplete: incompleteReason || 'provider_error' },
+              !!continuing,
+            );
           }
           this.clearPendingApproval();
           const te = err as TurnError;
@@ -2029,15 +2037,17 @@ export class ChatPanel {
     this.startProgress();
   }
 
-  // keepAnswer stores a task's segments as the one answer they are.
-  private keepAnswer(answer: string, reason: string, continued: boolean): void {
-    let content = answer;
+  // keepAnswer stores a task's segments as the one answer they are, marked as
+  // the LAST one ended. Each ending builds its own turn, cut-off mark and all,
+  // where clients/tui/incompleteparity_test.go looks for it.
+  private keepAnswer(turn: Turn, continued: boolean): void {
+    let content = turn.content;
     const last = this.transcript[this.transcript.length - 1];
     if (continued && last && last.role === 'assistant') {
-      content = [last.content, answer].filter((text) => text.trim()).join('\n\n');
+      content = [last.content, content].filter((text) => text.trim()).join('\n\n');
       this.transcript.pop();
     }
-    this.transcript.push(reason ? { role: 'assistant', content, incomplete: reason } : { role: 'assistant', content });
+    this.transcript.push({ ...turn, content });
   }
 
   // afterSegment runs when a turn ends: saves come first, then what is next.
