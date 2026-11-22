@@ -3904,7 +3904,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       </div>
       <div class="sp-scroll">
         <div class="modes-list model-list" id="modelList" role="listbox" aria-label="Models"></div>
-        <button type="button" class="menu-item" id="switchProviderBtn">${ICONS.key}<span class="mi-text"><span class="mi-name">Switch provider or key…</span><span class="mi-desc" id="currentProvider"></span></span></button>
+        <button type="button" class="menu-item" id="switchProviderBtn">${ICONS.key}<span class="mi-text"><span class="mi-name">Change provider or key…</span><span class="mi-desc" id="currentProvider"></span></span></button>
       </div>
     </div>
     <!-- CONTEXT (the ring beside Send): how full the model's window is, and

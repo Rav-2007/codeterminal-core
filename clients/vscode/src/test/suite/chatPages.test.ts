@@ -4,7 +4,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { accountView, accountWaiting, gaveUpNote } from '../../chatPages/accountView';
-import { ICONS, chatPagesMarkup, headerPageButtons } from '../../chatPages/markup';
+import { ICONS, chatPagesMarkup, chatPagesStyles, headerPageButtons } from '../../chatPages/markup';
+import { chatLookStyles } from '../../chatLook';
 import { ChatPagesHost } from '../../chatPages/pagesHost';
 import {
   MACHINE_SETTINGS,
@@ -371,5 +372,74 @@ suite('chat pages: what the panel no longer shows', () => {
     assert.match(body, /id="effortBtn"/, 'the effort chip is the one place to change effort');
     assert.match(body, /id="autoApplyToggle"/, 'the mode chip is the one place to change mode');
     assert.match(headerPageButtons(), /id="customizeBtn"[\s\S]*id="accountBtn"[\s\S]*id="settingsBtn"/, 'the ⋯ menu is the way to the pages');
+  });
+});
+
+// THE PAGES, ONE PLACE PER CONTROL (UI audit 2026-11-21, build plan step 4).
+// The markup as shipped; pagesLayout.test.ts drives the same pages with real
+// key presses.
+suite('chat pages: one place per control', () => {
+  const html = chatPagesMarkup().replace(/<!--[\s\S]*?-->/g, '');
+  const between = (from: string, to: string): string => {
+    const at = html.indexOf(from);
+    const end = html.indexOf(to, at + 1);
+    assert.ok(at >= 0 && end > at, `${from} or ${to} moved; this test reads between them`);
+    return html.slice(at, end);
+  };
+  const count = (s: string, re: RegExp): number => (s.match(re) || []).length;
+
+  test('MCP is one list and one Add button, whose menu holds the two ways to add', () => {
+    const mcp = between('id="custPanel-mcp"', 'id="custPanel-specs"');
+    assert.doesNotMatch(mcp, /data-tabs=|role="tab"/, 'the Installed / Marketplace sub-tabs are back');
+    assert.strictEqual(count(mcp, /pg-btn primary/g), 1, 'MCP has one primary button');
+    assert.strictEqual(count(mcp, /data-mcp-browse/g), 1, 'one route to the Marketplace');
+    assert.strictEqual(count(mcp, /data-page-command="mcpAdd"/g), 1, 'one route to a server of your own');
+    const menu = between('id="mcpAddMenu"', 'id="mcpNotice"');
+    assert.match(menu, /data-mcp-browse/);
+    assert.match(menu, /data-page-command="mcpAdd"/);
+    assert.match(mcp, /id="mcpPanel-market" hidden>\s*<button[^>]*data-mcp-installed/, 'the Marketplace needs a way back');
+  });
+
+  test('Account is one status card, one primary and a quiet Forget key', () => {
+    const account = between('id="pageAccount"', 'id="pageSettings"');
+    const card = between('class="conn-card"', 'id="acctNote"');
+    for (const id of ['acctProvider', 'acctKey', 'acctModel']) {
+      assert.ok(card.includes(`id="${id}"`), `${id} is outside the status card`);
+    }
+    assert.strictEqual(count(account, /pg-btn primary/g), 1, 'Account has one primary button');
+    assert.match(account, /data-page-command="connect">Change provider or key</);
+    assert.match(account, /class="link-btn danger" data-page-command="forgetKey">Forget key</);
+    assert.doesNotMatch(account, /data-open-models/, 'the model chip is where the model is changed');
+  });
+
+  test('Settings is one page of labelled sections, each reached by name', () => {
+    const settings = between('id="pageSettings"', 'id="mcpDlg"');
+    assert.doesNotMatch(settings, /role="tab|data-tabs=/, 'the rail of tabs is back');
+    const jumps = [...settings.matchAll(/data-set-jump="([a-z]+)">([^<]+)</g)];
+    assert.deepStrictEqual(jumps.map((m) => m[2]), ['Model', 'Behaviour', 'Workspace', 'Privacy', 'Advanced', 'About']);
+    for (const [, key] of jumps) {
+      assert.match(settings, new RegExp(`<section id="setPanel-${key}" class="set-section" aria-labelledby="setHead-${key}">`), `${key} has no visible section`);
+    }
+  });
+
+  test('Settings does not repeat the effort chip', () => {
+    assert.doesNotMatch(html, /id="setEffort"/, 'the effort chip is the one place to change effort');
+    assert.match(html, /id="setDefaultModel"/, 'the saved default is not the chip (which lasts for this window), so it stays');
+  });
+
+  test('in High Contrast an MCP switch that is on, and a primary in the /mcp dialog, can be seen', () => {
+    // The theme's button colour there is black (since step 2 the accent fill).
+    assert.match(chatLookStyles(), /body\.vscode-high-contrast \.mcp-switch\[aria-checked="true"\] \{ background: var\(--ct-accent\); \}/);
+    assert.match(chatPagesStyles(), /\.mcp-dlg-btn\.primary \{[^}]*border-color: var\(--vscode-button-border/);
+  });
+
+  test('the Marketplace in the panel has one way back', () => {
+    assert.match(code('marketplace.js'), /button\('Installed servers', 'btn secondary manage'/);
+    assert.match(chatPagesStyles(), /#marketRoot \.manage \{ display: none; \}/);
+  });
+
+  test('Tools says it is loading, then says when there are none', () => {
+    assert.match(html, /id="toolStatus"[^>]*role="status">Loading tools…</);
+    assert.match(code('pages.js'), /status\.hidden = \(msg\.tools \|\| \[\]\)\.length > 0;\s*status\.textContent = 'No tools to show\.'/);
   });
 });

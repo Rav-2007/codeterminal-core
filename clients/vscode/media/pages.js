@@ -15,8 +15,8 @@
 
   /**
    * @param {any} vscode the webview API main.js acquired (it may be acquired once)
-   * @param {{ openModelMenu: () => void, sendText: (t: string) => void, prefill: (t: string) => void,
-   *   focusComposer: () => void, setEffort: (e: string) => void, getEffort: () => string, closePopups: () => void,
+   * @param {{ sendText: (t: string) => void, prefill: (t: string) => void,
+   *   focusComposer: () => void, closePopups: () => void,
    *   credentialOpen?: () => boolean }} hooks
    */
   function init(vscode, hooks) {
@@ -73,8 +73,11 @@
       document.body.classList.add('page-open');
       const opener = openers[name];
       if (opener) opener.setAttribute('aria-expanded', 'true');
-      if (opts && opts.tab) selectTab(name === 'settings' ? 'set' : 'cust', opts.tab);
-      if (opts && opts.sub) selectTab('mcp', opts.sub);
+      if (opts && opts.tab) {
+        if (name === 'settings') jumpTo(opts.tab);
+        else selectTab('cust', opts.tab);
+      }
+      if (opts && opts.sub) showMcpView(opts.sub === 'market' ? 'market' : 'installed');
       if (opts && opts.search !== undefined) showMarket(opts.search);
       const title = document.getElementById(page.id + 'Title');
       if (title) title.focus();
@@ -85,6 +88,7 @@
     function hide(name) {
       const page = pages[name];
       if (page) page.hidden = true;
+      setAddMenu(false);
       const opener = openers[name];
       if (opener) opener.setAttribute('aria-expanded', 'false');
       // The host watches a daemon that is down while Account is open; it stops
@@ -120,7 +124,82 @@
         const panel = document.getElementById(group + 'Panel-' + t.getAttribute('data-tab'));
         if (panel) panel.hidden = !on;
       });
-      if (group === 'mcp' && key === 'market') mountMarket();
+    }
+
+    // ---- Customize > MCP: the installed list, or the marketplace -------------
+    // Two views of one panel (UI audit, step 4); they were sub-tabs. The Add
+    // menu opens the marketplace, and the marketplace has a way back.
+
+    /** @param {'installed' | 'market'} view */
+    function showMcpView(view) {
+      const installed = document.getElementById('mcpPanel-installed');
+      const marketEl = document.getElementById('mcpPanel-market');
+      if (installed) installed.hidden = view !== 'installed';
+      if (marketEl) marketEl.hidden = view !== 'market';
+      if (view === 'market') mountMarket();
+      setAddMenu(false);
+    }
+
+    const addBtn = document.getElementById('mcpAddBtn');
+    const addMenu = document.getElementById('mcpAddMenu');
+    /** @param {boolean} open */
+    function setAddMenu(open) {
+      if (!addBtn || !addMenu) return;
+      addMenu.hidden = !open;
+      addBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        const first = /** @type {HTMLElement | null} */ (addMenu.querySelector('.menu-item'));
+        if (first) first.focus();
+      }
+    }
+    if (addBtn && addMenu) {
+      addBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setAddMenu(addMenu.hidden);
+      });
+      addMenu.addEventListener('keydown', (e) => {
+        const ke = /** @type {KeyboardEvent} */ (e);
+        if (ke.key === 'Escape') {
+          ke.stopPropagation();
+          setAddMenu(false);
+          addBtn.focus();
+          return;
+        }
+        if (ke.key !== 'ArrowDown' && ke.key !== 'ArrowUp') return;
+        ke.preventDefault();
+        const items = Array.from(addMenu.querySelectorAll('.menu-item'));
+        const at = items.indexOf(/** @type {Element} */ (document.activeElement));
+        const next = /** @type {HTMLElement | undefined} */ (items[(at + (ke.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]);
+        if (next) next.focus();
+      });
+      // The button takes the focus back before its menu hides: the add form
+      // hands the keyboard back to whatever had it when the form opened.
+      addMenu.addEventListener('click', () => {
+        addBtn.focus();
+        setAddMenu(false);
+      });
+      // Tabbing out closes it, or a later Esc would close the page under it.
+      addMenu.addEventListener('focusout', (e) => {
+        const to = /** @type {Node | null} */ (/** @type {FocusEvent} */ (e).relatedTarget);
+        if (to && to !== addBtn && !addMenu.contains(to)) setAddMenu(false);
+      });
+      document.addEventListener('click', (e) => {
+        if (!addMenu.hidden && !addMenu.contains(/** @type {Node} */ (e.target))) setAddMenu(false);
+      });
+    }
+
+    // ---- Settings: one page; the names at the top jump to their section ------
+
+    /** @param {string} key */
+    function jumpTo(key) {
+      const section = document.getElementById('setPanel-' + key);
+      if (!section) return;
+      section.scrollIntoView({ block: 'start' });
+      const head = /** @type {HTMLElement | null} */ (section.querySelector('h3'));
+      if (head) {
+        head.tabIndex = -1;
+        head.focus({ preventScroll: true });
+      }
     }
 
     document.querySelectorAll('[data-tabs]').forEach((list) => {
@@ -155,12 +234,19 @@
       if (link) vscode.postMessage({ type: 'page:link', name: link });
       const page = t.getAttribute('data-open-page');
       if (page) open(page);
-      if (t.hasAttribute('data-open-models')) {
-        close();
-        hooks.openModelMenu();
-      }
       if (t.hasAttribute('data-page-refresh') && current) vscode.postMessage({ type: 'page:load', page: current });
-      if (t.hasAttribute('data-mcp-browse')) selectTab('mcp', 'market');
+      // Either way the button just pressed is hidden: the keyboard goes to the
+      // one that leads back.
+      if (t.hasAttribute('data-mcp-browse')) {
+        showMcpView('market');
+        /** @type {HTMLElement | null} */ (document.querySelector('[data-mcp-installed]'))?.focus();
+      }
+      if (t.hasAttribute('data-mcp-installed')) {
+        showMcpView('installed');
+        addBtn?.focus();
+      }
+      const jump = t.getAttribute('data-set-jump');
+      if (jump) jumpTo(jump);
       if (t.hasAttribute('data-spec-new')) {
         close();
         hooks.prefill('/spec ');
@@ -179,10 +265,6 @@
     if (defaultModel) {
       defaultModel.addEventListener('change', () => vscode.postMessage({ type: 'page:chooseModel', tier: defaultModel.value }));
     }
-    const effort = /** @type {HTMLSelectElement | null} */ (document.getElementById('setEffort'));
-    if (effort) {
-      effort.addEventListener('change', () => hooks.setEffort(effort.value));
-    }
 
     // ---- the marketplace, inside the Customize page ----------------------------
 
@@ -194,7 +276,7 @@
       // the chat's own messages ("ready", "refresh" mean other things there).
       market = window.MochiiiMarketplace.mount(root, (msg) => {
         if (msg && msg.type === 'manage') {
-          selectTab('mcp', 'installed');
+          showMcpView('installed');
           return;
         }
         vscode.postMessage(Object.assign({}, msg, { type: 'mk:' + msg.type }));
@@ -204,7 +286,7 @@
     /** @param {string} q */
     function showMarket(q) {
       selectTab('cust', 'mcp');
-      selectTab('mcp', 'market');
+      showMcpView('market');
       if (q && market) market.receive({ type: 'search', q });
       else if (q) pendingSearch = q;
     }
@@ -601,6 +683,11 @@
       const list = document.getElementById('toolList');
       if (!list) return;
       list.replaceChildren();
+      const status = document.getElementById('toolStatus');
+      if (status) {
+        status.hidden = (msg.tools || []).length > 0;
+        status.textContent = 'No tools to show.';
+      }
       for (const t of msg.tools || []) {
         const row = el('div', 'row');
         const head = el('div', 'row-head');
@@ -685,7 +772,6 @@
         );
         defaultModel.value = msg.currentTier || '';
       }
-      if (effort) effort.value = hooks.getEffort();
       for (const key of Object.keys(msg.values || {})) {
         const control = /** @type {HTMLInputElement | null} */ (document.querySelector('[data-setting="' + key + '"]'));
         if (!control) continue;
@@ -767,7 +853,7 @@
             const root = document.getElementById('marketRoot');
             if (root) root.replaceChildren();
           }
-          selectTab('mcp', 'installed');
+          showMcpView('installed');
           return true;
         case 'page:notice':
           pageNotice(String(msg.page), String(msg.text || ''));

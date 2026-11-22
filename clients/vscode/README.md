@@ -100,7 +100,7 @@ is **not sandboxed** and runs with your full privileges. Nothing runs until you
 approve it.
 
 To add a server, type **`/mcp`** in the chat (or `/mcp-server postgres` to
-search), or open **Customize → MCP → Marketplace**. The marketplace lists
+search), or open **Customize → MCP → Add server → From the Marketplace**. The marketplace lists
 servers from mochiii.in; before one is added, Mochiii shows
 exactly what will run and asks you to type its name. **Mochiii: Show MCP
 Tools** lists what agent mode would offer and the policy on each tool.
