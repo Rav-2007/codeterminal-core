@@ -19,6 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { withSegmentBudget } = require('./segmentBudget');
 
 const extRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(extRoot, '..', '..');
@@ -74,8 +75,14 @@ requireFile(
 );
 
 // models.json is tracked at the repo root and is not a secret; the daemon reads
-// it from <exedir> first.
-copy(path.join(repoRoot, 'models.json'), path.join(runtimeDir, 'models.json'));
+// it from <exedir> first. The extension's copy differs in its budgets only
+// (segmentBudget.js): the root file, and so the terminal's, is untouched.
+{
+  const to = path.join(runtimeDir, 'models.json');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  fs.writeFileSync(to, withSegmentBudget(fs.readFileSync(path.join(repoRoot, 'models.json'), 'utf8')));
+  console.log(`  staged ${path.relative(extRoot, to)}  (segment budgets)`);
+}
 
 // vsce wants the licence inside the packaged folder. The root LICENSE is the
 // single source of truth, so this is a copy at package time rather than a

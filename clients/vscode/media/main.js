@@ -1774,6 +1774,18 @@
     return text;
   }
 
+  // The host writes the line; the webview keeps no clock of its own.
+  function showTaskProgress(text, working) {
+    const line = document.getElementById('taskLine');
+    const words = document.getElementById('taskLineText');
+    const stopBtn = document.getElementById('taskLineStop');
+    if (!line || !words || !stopBtn) return;
+    line.hidden = !text;
+    words.textContent = text || '';
+    stopBtn.hidden = !working;
+    stopBtn.onclick = () => vscode.postMessage({ type: 'stopTurn' });
+  }
+
   function finalizeAssistant() {
     if (currentAssistantBubble && currentAssistantCard) {
       if (!currentAssistantPlain) {
@@ -2161,15 +2173,23 @@
     const div = document.createElement('div');
     div.className = 'turn incomplete-notice';
     const detail = info && info.detail ? info.detail : 'the answer may be incomplete';
-    div.textContent = `⚠ answer cut off: ${detail}`;
-    // Continue picks up where it stopped: one click instead of typing "go on".
+    const resume = !!(info && info.resume);
+    div.textContent = resume ? `⚠ paused: ${detail}` : `⚠ answer cut off: ${detail}`;
+    // Resume goes on with the task, from its handoff (taskRun.ts). Continue is
+    // for the stops a task never continues through by itself.
     const cont = document.createElement('button');
     cont.type = 'button';
     cont.className = 'turn-action';
-    cont.textContent = 'Continue';
+    cont.textContent = resume ? 'Resume' : 'Continue';
     cont.addEventListener('click', () => {
+      if (streaming) return;
       cont.remove();
-      sendText('Continue from where you stopped.');
+      if (resume) {
+        setStreaming(true);
+        vscode.postMessage({ type: 'resumeTask' });
+      } else {
+        sendText('Continue from where you stopped.');
+      }
     });
     div.appendChild(document.createTextNode(' '));
     div.appendChild(cont);
@@ -3929,7 +3949,7 @@
           currentAssistantCard = null;
           currentAssistantRaw = '';
         }
-        addInfoLine('You stopped this answer.');
+        addInfoLine(msg.detail || 'You stopped this answer.');
         break;
       case 'attachmentFailed':
         pendingAttachments = pendingAttachments.filter((f) => f.id !== msg.id);
@@ -3974,6 +3994,22 @@
       case 'toolApprovalAuto':
         // Switched to Auto while this was waiting: the host has answered it.
         if (msg.callId === currentApprovalCallId) clearToolApproval();
+        break;
+      case 'segmentEnd':
+        currentTasksEl = null;
+        finalizeAssistant();
+        clearToolApproval();
+        if (msg.text) addInfoLine(msg.text);
+        break;
+      case 'segmentStart':
+        // The next part of the same task: a new bubble, and still working.
+        setStreaming(true);
+        setHistoryInfo(null);
+        currentReasoningBody = null;
+        currentAssistantBubble = addBubble('assistant', '');
+        break;
+      case 'taskProgress':
+        showTaskProgress(msg.text, msg.working === true);
         break;
       case 'setModeFromHost':
         if (msg.mode === 'auto' || msg.mode === 'manual' || msg.mode === 'plan') {

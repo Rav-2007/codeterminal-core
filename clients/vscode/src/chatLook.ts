@@ -335,6 +335,10 @@ export function chatLookStyles(): string {
     padding: 10px 12px;
     font-size: 12.5px;
   }
+  .task-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; padding: 4px 12px; font-size: 12px; color: var(--ct-muted); font-variant-numeric: tabular-nums; }
+  .task-line[hidden], .task-line [hidden] { display: none; }
+  .task-line #taskLineText { min-width: 0; overflow-wrap: anywhere; }
+  .task-line .task-stop { padding: 0; border: 0; background: none; color: var(--ct-ink); text-decoration: underline; cursor: pointer; font: inherit; }
   .tool-approval .approval-auto, .edit-proposal .approval-auto { margin: 6px 0; color: var(--ct-ink); }
   .tool-approval .approval-heading {
     font-weight: 400;

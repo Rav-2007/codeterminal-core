@@ -184,6 +184,7 @@ export const FEATURE_SPEND_LIMITS = 'spend_limits';
 
 export interface PromptRequest {
   protocol_version: number;
+  session?: string;
   prompt: string;
   workspace?: string;
   history?: Turn[];
@@ -1133,6 +1134,8 @@ export async function streamPrompt(
     specGrants?: string[];
     reasoningEffort?: string;
     chatRevision?: string;
+    // Names one task, so its spend can be read while it runs (protocol Session).
+    session?: string;
   }
 ): Promise<void> {
   // The capability is derived from the handler, not passed in: a caller that
@@ -1344,6 +1347,9 @@ export async function streamPrompt(
   }
   if (opts?.chatRevision) {
     req.chat_revision = opts.chatRevision;
+  }
+  if (opts?.session) {
+    req.session = opts.session;
   }
   writeLine(socket, req);
   armSilence();
@@ -1975,7 +1981,7 @@ export async function daemonInfo(clientName: string): Promise<{ version: string;
 // spendStatus asks for the spend limits (PromptRequest.budget_action
 // "status"); it calls no model. undefined when the daemon has no limits to
 // report (it predates them, or spend tracking is off).
-export async function spendStatus(clientName: string): Promise<SpendStatus | undefined> {
+export async function spendStatus(clientName: string, session = ''): Promise<SpendStatus | undefined> {
   const { socket, handshake } = await connectToDaemon(clientName);
   if (!(handshake.features ?? []).includes(FEATURE_SPEND_LIMITS)) {
     socket.destroy();
@@ -2009,7 +2015,7 @@ export async function spendStatus(clientName: string): Promise<SpendStatus | und
         reject(new Error('daemon closed before answering the spend request'));
       }
     });
-    writeLine(socket, { protocol_version: PROTOCOL_VERSION, prompt: '', budget_action: 'status' });
+    writeLine(socket, { protocol_version: PROTOCOL_VERSION, prompt: '', budget_action: 'status', ...(session ? { session } : {}) });
   });
 }
 
