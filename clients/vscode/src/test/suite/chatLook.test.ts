@@ -143,7 +143,9 @@ suite('the conversation (UI audit, step 3)', () => {
     assert.match(card, /editDiff\(edit\.search, edit\.replace, edit\.file_path\)/);
     assert.match(card, /diffBtn\.textContent = 'Open diff'/);
     assert.match(card, /applyBtn\.className = 'primary'/);
-    assert.match(card, /if \(currentRunAuto\)/, 'an auto-apply run still renders no Apply or Skip');
+    assert.match(card, /if \(currentRunAuto && !autoAsk\)/, 'an auto-apply run still renders no Apply or Skip, but for the edit the host holds');
+    assert.match(panel, /autoAsk: this\.asksBeforeSaving\(this\.pendingBlocks\[this\.currentIndex\]\)/, 'buttons on an auto-apply run come only from the edit the host is holding');
+    assert.match(panel, /if \(this\.asksBeforeSaving\(this\.pendingBlocks\[this\.currentIndex\]\)\) \{\s*await new Promise/, 'the host must not save the edit it shows buttons for');
   });
 
   test('a button is the theme\'s secondary unless it is the primary', () => {

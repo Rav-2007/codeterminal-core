@@ -444,7 +444,7 @@ ${MODE_HELP}`;
 // uses (chatPanelBodyMarkup). Two descriptions of one feature drift; these are
 // deliberately the same sentences.
 const MODE_HELP =
-  '  auto    edits apply as they arrive, each still gated and undoable; commands and network still ask\n' +
+  '  auto    works without asking inside the project; asks before going outside it, sending out, or wiping data\n' +
   '  manual  every edit waits for your Apply\n' +
   '  plan    reads your code and writes a plan; proposes no edits at all, runs no commands, no network';
 

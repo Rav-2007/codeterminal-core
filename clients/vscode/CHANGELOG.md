@@ -25,8 +25,14 @@ bundles Mochiii 1.6.1.
   an edit shows its change in the card.
 - **One place per control:** Settings is one page, Account is one card, and MCP
   servers are one list with one Add server button.
-- **Agent mode is on** for providers' models that support tools. Commands ask
-  first; web search is off.
+- **Agent mode is on** for providers' models that support tools; web search is
+  off.
+- **Auto is full access inside the project:** no questions for edits, commands,
+  tests, project installs or local git, after a one-time warning. It still asks
+  when it recognises going outside the project (computer-wide installs and
+  settings included), sending out, or wiping data. The check can miss some:
+  commands are not sandboxed. Manual and Plan ask as before. Auto as your
+  default can only be set in your own user settings, never by a project.
 - **The panel has its own chat**, apart from the terminal app's.
 - **MCP servers** can be added from the built-in Marketplace or by command, URL
   or pasted JSON.

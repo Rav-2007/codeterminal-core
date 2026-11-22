@@ -109,12 +109,13 @@
             "plan"
           ],
           "enumDescriptions": [
-            "Edits apply as they arrive, each still gated and undoable.",
+            "Works without asking inside the project. Asks when it recognises going outside it, sending out, or wiping data.",
             "Every edit waits for your Apply.",
             "Reads your code and writes a plan; proposes no edits."
           ],
           "default": "auto",
-          "description": "The mode a new Mochiii chat starts in. Change a chat's mode from the button beside the model."
+          "scope": "application",
+          "description": "The mode a new Mochiii chat starts in. Change a chat's mode from the button beside the model. Only your user setting counts, so a project cannot turn Auto on."
         },
         "mochiii.history.autoSave": {
           "type": "boolean",
@@ -291,7 +292,7 @@
     "viewsWelcome": [
       {
         "view": "mochiii.mcpServers",
-        "contents": "No MCP servers yet. An MCP server gives Mochiii's agent new tools: web search, browsers, databases, clouds.\n[Browse the Marketplace](command:mochiii.mcp.browse)\n[Add a Server by Hand](command:mochiii.mcp.add)\nA server runs on your machine with your privileges. Mochiii shows exactly what will run and asks you to type its name before adding it, and each of its tools asks before it runs."
+        "contents": "No MCP servers yet. An MCP server gives Mochiii's agent new tools: web search, browsers, databases, clouds.\n[Browse the Marketplace](command:mochiii.mcp.browse)\n[Add a Server by Hand](command:mochiii.mcp.add)\nA server runs on your machine with your privileges. Mochiii shows exactly what will run and asks you to type its name before adding it. Each of its tools asks before it runs, except read-only ones while the chat is in Auto."
       }
     ],
     "menus": {

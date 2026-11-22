@@ -111,7 +111,7 @@ function customizePage(): string {
         <div class="page-actions">
           <button type="button" class="link-btn" data-page-command="mcpShowTools">Show MCP tools</button>
         </div>
-        <p class="page-note">A server runs on your machine with your privileges. Mochiii shows exactly what will run and asks you to type its name before adding it, and each of its tools asks before it runs.</p>
+        <p class="page-note">A server runs on your machine with your privileges. Mochiii shows exactly what will run and asks you to type its name before adding it. Each of its tools asks before it runs, except read-only ones while the chat is in Auto.</p>
       </div>
       <div id="mcpPanel-market" hidden>
         <button type="button" class="link-btn mcp-back" data-mcp-installed>‹ Installed servers</button>

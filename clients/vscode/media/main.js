@@ -675,6 +675,7 @@
         currentMode = item.getAttribute('data-mode') || 'auto';
         renderMode();
         setModesPopupOpen(false);
+        vscode.postMessage({ type: 'modeChanged', mode: currentMode });
       }
     });
   }
@@ -2251,7 +2252,7 @@
     return wrap;
   }
 
-  function showEditProposal(edit, index, total) {
+  function showEditProposal(edit, index, total, autoAsk) {
     clearEditProposal();
 
     const container = document.createElement('div');
@@ -2308,7 +2309,15 @@
     // in chatPanel.ts), and a stray click here could race it (e.g. applying
     // the wrong index, or double-applying). A non-interactive placeholder
     // communicates the same information without offering anything to click.
-    if (currentRunAuto) {
+    if (autoAsk) {
+      // Held by the host (asksBeforeSaving): this one is the person's.
+      container.classList.add('ask-first');
+      const why = document.createElement('div');
+      why.className = 'approval-auto';
+      why.textContent = autoAsk;
+      container.insertBefore(why, footer);
+    }
+    if (currentRunAuto && !autoAsk) {
       const pending = document.createElement('div');
       pending.className = 'result auto-pending';
       pending.textContent = 'auto-applying…';
@@ -2377,11 +2386,11 @@
       resultEl.textContent = 'skipped';
     } else if (result.applied) {
       resultEl.className = 'result ok';
-      const prefix = currentRunAuto ? 'auto-applied' : 'applied';
+      const prefix = currentRunAuto && !container.classList.contains('ask-first') ? 'auto-applied' : 'applied';
       resultEl.textContent = `${prefix} — backup: ${result.backupDir} (restore with: mochiii-daemon edits undo)`;
     } else {
       resultEl.className = 'result refused';
-      const prefix = currentRunAuto ? 'auto-refused' : 'refused';
+      const prefix = currentRunAuto && !container.classList.contains('ask-first') ? 'auto-refused' : 'refused';
       resultEl.textContent = `${prefix}: ${result.error}`;
     }
     container.appendChild(resultEl);
@@ -2565,7 +2574,7 @@
   //   - initial focus on DENY. That is the accessible form of `[y/N]`: a user
   //     who hits Enter on the default does the safe thing. Focusing Approve
   //     would make a reflex keystroke authorise an unsandboxed subprocess.
-  function showToolApproval(req) {
+  function showToolApproval(req, autoAsk) {
     clearToolApproval();
 
     const argsId = 'approval-args-' + req.call_id;
@@ -2657,6 +2666,13 @@
       });
       lane.appendChild(words);
       container.appendChild(lane);
+    }
+
+    if (autoAsk) {
+      const why = document.createElement('div');
+      why.className = 'approval-auto';
+      why.textContent = autoAsk;
+      container.appendChild(why);
     }
 
     const actions = document.createElement('div');
@@ -3817,10 +3833,10 @@
         }
         break;
       case 'toolApproval':
-        showToolApproval(msg.request);
+        showToolApproval(msg.request, msg.autoAsk);
         break;
       case 'editProposal':
-        showEditProposal(msg.edit, msg.index, msg.total);
+        showEditProposal(msg.edit, msg.index, msg.total, msg.autoAsk);
         break;
       case 'applyResult':
         if (currentEditProposalEl) {
@@ -3955,6 +3971,10 @@
         }
         break;
       }
+      case 'toolApprovalAuto':
+        // Switched to Auto while this was waiting: the host has answered it.
+        if (msg.callId === currentApprovalCallId) clearToolApproval();
+        break;
       case 'setModeFromHost':
         if (msg.mode === 'auto' || msg.mode === 'manual' || msg.mode === 'plan') {
           currentMode = msg.mode;
