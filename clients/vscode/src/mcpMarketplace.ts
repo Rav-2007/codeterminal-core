@@ -203,7 +203,7 @@ export async function acceptNotice(context: vscode.ExtensionContext): Promise<bo
       detail:
         'A server you add runs on your machine with your full privileges: Mochiii cannot confine it. Before anything is ' +
         "added, Mochiii shows you exactly what will run and asks you to type the server's name; after that, each of its " +
-        'tools asks before it runs, and every call is audited.\n\n' +
+        'tools asks before it runs (read-only ones excepted in Auto), and every call is audited.\n\n' +
         'Verified servers are official ones Mochiii chose. Community servers come from the public MCP Registry and have ' +
         'not been reviewed.',
     },

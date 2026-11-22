@@ -16,6 +16,7 @@ import { resolveConfigPathSetting } from './daemonBinary';
 import { LocalCommandHost, runLocalCommand } from './localCommands';
 
 import {
+  APPROVAL_APPROVE,
   APPROVAL_APPROVE_FOR_SPEC,
   APPROVAL_DENY,
   ChatHistoryResponse,
@@ -44,6 +45,8 @@ import { ChatHost, panelHost, viewHost } from './chatHost';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
 import { ChatLocation, chatElsewhereHtml, chatElsewhereOptions } from './chatElsewhere';
 import { activeWorkingFolder } from './workingFolder';
+import { AUTO_ASK_WHY, AutoAsk, autoAsks, autoPlace } from './autoAccess';
+import { askAutoConsent, autoAccepted, autoNeedsConsent } from './autoConsent';
 import { ConnectOutcome, connectKey, hasConnectKey } from './connectBridge';
 import { ANY_KEY_CHOICE, modelChoices, providerChoices } from './connectFlow';
 import { ICONS, chatPagesMarkup, chatPagesStyles, headerPageButtons } from './chatPages/markup';
@@ -263,7 +266,9 @@ export class ChatPanel {
   private pendingApproval:
     | {
         callId: string;
-        respond: (decision: string) => void;
+        respond: (decision: string, auto?: boolean) => void;
+        // What was asked, for a switch to Auto while it waits.
+        req: ToolApprovalRequest;
         // The spec grant this call offers, and the spec it would be held
         // under -- '' when it offers none (see onToolApprovalDecision).
         specGrant: string;
@@ -309,6 +314,14 @@ export class ChatPanel {
   // toggle state after that point, so flipping the toggle mid-run cannot
   // retroactively change a run already in flight (Phase 0 C).
   private currentRunAutoApply = false;
+
+  // FULL ACCESS IS LIVE, unlike currentRunAutoApply: the mode button moved to
+  // Auto answers the question already waiting, and moved away from it asks
+  // from the next one on. planTurn is what this turn was sent as, so a turn
+  // begun in Plan never auto-answers, whatever the button says later.
+  private liveAuto = false;
+  private planTurn = false;
+  private consentOpen = false;
 
   // autoApplyRunInFlight is true for exactly the duration of runAutoApply
   // (see below) -- i.e. from right after edit proposals arrive until every
@@ -694,6 +707,8 @@ export class ChatPanel {
       this.reasoningEffort = e === 'low' || e === 'medium' || e === 'high' ? e : '';
     } else if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
       this.onToolApprovalDecision(msg.callId, msg.decision);
+    } else if (msg.type === 'modeChanged' && typeof msg.mode === 'string') {
+      void this.onModeChanged(msg.mode);
     } else if (msg.type === 'stopTurn') {
       this.onStopTurn();
     } else if (msg.type === 'ready') {
@@ -902,7 +917,7 @@ export class ChatPanel {
     this.postSafe({
       type: 'uiSettings',
       toolActivity: cfg.get<string>('toolActivity') === 'expanded' ? 'expanded' : 'compact',
-      defaultMode: cfg.get<string>('defaultMode') ?? 'auto',
+      defaultMode: userDefaultMode(cfg),
       developerDiagnostics: cfg.get<boolean>('developerDiagnostics') === true,
     });
   }
@@ -1278,6 +1293,7 @@ export class ChatPanel {
       setMode: (mode: string) => {
         this.turnMode = mode;
         void this.host.webview.postMessage({ type: 'setModeFromHost', mode });
+        void this.onModeChanged(mode);
       },
       lastUsage: this.lastUsage,
       writeClipboard: (text: string) => Promise.resolve(vscode.env.clipboard.writeText(text)),
@@ -1679,9 +1695,17 @@ export class ChatPanel {
       void this.connectThenStart(() => this.startModelTurn(displayText, wirePrompt, promptKind, autoApply, mode, pipeline));
       return;
     }
+    if (autoApply && mode !== 'plan' && autoNeedsConsent()) {
+      if (!this.consentOpen) {
+        void this.consentThenStart(displayText, wirePrompt, promptKind, mode, pipeline);
+      }
+      return;
+    }
     // Captured once, for this run only -- see the currentRunAutoApply field
     // doc comment for why this must not be re-read later.
     this.currentRunAutoApply = autoApply;
+    this.liveAuto = autoApply;
+    this.planTurn = mode === 'plan';
 
     // A new turn makes any not-yet-finished review from the PREVIOUS answer
     // stale -- clear it so a lagging Apply/Skip click can never target the
@@ -1813,16 +1837,23 @@ export class ChatPanel {
         // client -- see StreamHandlers.onToolApproval. The daemon suspends the
         // turn here, so the respond callback must eventually be called; it is
         // held until the webview reports what the user clicked.
-        onToolApproval: (req: ToolApprovalRequest, respond: (decision: string) => void) => {
+        onToolApproval: (req: ToolApprovalRequest, respond: (decision: string, auto?: boolean) => void) => {
+          // THE HOST ANSWERS, never the webview: the webview only draws.
+          const autoAsk = this.autoVerdict(req);
+          if (autoAsk === '') {
+            respond(APPROVAL_APPROVE, true);
+            return;
+          }
           // The spec answer is offered only where the daemon offered it AND a
           // spec is active to hold it; otherwise the webview never shows it.
           const spec = getActiveSpec(workspacePath());
           const specGrant = req.spec_grant && spec ? req.spec_grant : '';
           const label = `${req.server}__${req.tool} ${clip(req.arguments, 120)}`;
-          this.pendingApproval = { callId: req.call_id, respond, specGrant, spec, label };
+          this.pendingApproval = { callId: req.call_id, respond, specGrant, spec, label, req };
           this.host.webview.postMessage({
             type: 'toolApproval',
             request: specGrant ? req : { ...req, spec_grant: undefined },
+            autoAsk: autoAsk ? AUTO_ASK_WHY[autoAsk] : undefined,
           });
         },
         // Level with the stored chat only if nobody else wrote to it first and
@@ -1921,6 +1952,62 @@ export class ChatPanel {
     }
     this.pendingApproval = undefined;
     pending.respond(decision);
+  }
+
+  // autoVerdict is Auto's answer to one question: '' is yes, a reason is "ask,
+  // and say why", and undefined is "this is not a full-access turn".
+  private autoVerdict(req: ToolApprovalRequest): AutoAsk | undefined {
+    if (!this.liveAuto || this.planTurn || !autoAccepted()) {
+      return undefined;
+    }
+    const place = autoPlace(workspacePath());
+    return place ? autoAsks(req, place) : undefined;
+  }
+
+  private async onModeChanged(mode: string): Promise<void> {
+    this.liveAuto = mode === 'auto';
+    if (!this.liveAuto || !this.inFlight || this.planTurn) {
+      return;
+    }
+    if (autoNeedsConsent() && !this.consentOpen) {
+      this.consentOpen = true;
+      const agreed = await askAutoConsent().finally(() => (this.consentOpen = false));
+      if (!agreed) {
+        this.liveAuto = false;
+        this.postSafe({ type: 'setModeFromHost', mode: 'manual' });
+        return;
+      }
+    }
+    // The question already waiting, read after the warning: it may have gone.
+    const pending = this.pendingApproval;
+    if (pending && this.autoVerdict(pending.req) === '') {
+      this.pendingApproval = undefined;
+      pending.respond(APPROVAL_APPROVE, true);
+      this.postSafe({ type: 'toolApprovalAuto', callId: pending.callId });
+    }
+  }
+
+  // consentThenStart shows the one-time warning, then sends what was typed:
+  // in Auto when accepted, in Manual otherwise.
+  private async consentThenStart(
+    displayText: string,
+    wirePrompt: string,
+    promptKind: string | undefined,
+    mode?: string,
+    pipeline?: string[]
+  ): Promise<void> {
+    const retrying = this.retryingPrompt;
+    this.consentOpen = true;
+    const agreed = await askAutoConsent().finally(() => (this.consentOpen = false));
+    if (this.disposed) {
+      return;
+    }
+    if (!agreed) {
+      this.postSafe({ type: 'setModeFromHost', mode: 'manual' });
+    }
+    this.retryingPrompt = retrying;
+    this.startModelTurn(displayText, wirePrompt, promptKind, agreed, !agreed && mode === 'auto' ? 'manual' : mode, pipeline);
+    this.retryingPrompt = false;
   }
 
   // clearPendingApproval denies anything still waiting when a turn ends.
@@ -2434,6 +2521,14 @@ ${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${cred
 // Falls back to the first folder only before activation has chosen one.
 function workspacePath(): string {
   return activeWorkingFolder() || (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '');
+}
+
+// userDefaultMode is mochiii.defaultMode as the USER set it. A folder's
+// .vscode/settings.json is ignored: a cloned repository must not be able to
+// switch full access on.
+export function userDefaultMode(cfg: Pick<vscode.WorkspaceConfiguration, 'inspect'>): string {
+  const found = cfg.inspect<string>('defaultMode');
+  return found?.globalValue ?? found?.defaultValue ?? 'auto';
 }
 
 function getNonce(): string {
@@ -3944,7 +4039,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
           <div class="mode-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></div>
           <div class="mode-text">
             <div class="mode-name">Auto</div>
-            <div class="mode-desc">Edits apply as they arrive, each still gated and undoable. Commands and network still ask.</div>
+            <div class="mode-desc">Works without asking inside the project. Asks before going outside it, sending out, or wiping data.</div>
           </div>
           <div class="mode-check" aria-hidden="true">✓</div>
         </button>

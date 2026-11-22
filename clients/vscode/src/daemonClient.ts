@@ -520,6 +520,9 @@ export interface ToolApprovalResponse {
   call_id: string;
   arguments_sha256: string;
   decision: string;
+  // The client's Auto mode gave this answer, not a person reading the call:
+  // the audit log says auto_approve (protocol.ToolApprovalResponse.Auto).
+  auto?: boolean;
 }
 
 // ToolActivity mirrors protocol.ToolActivity: result_bytes is what went back to the model, after scrubbing.
@@ -1051,7 +1054,7 @@ export interface StreamHandlers {
   // Declaring onToolApproval is what makes streamPrompt declare
   // CAP_TOOL_APPROVAL at handshake -- the promise and the ability to keep it
   // are the same fact, so they cannot drift apart.
-  onToolApproval?: (req: ToolApprovalRequest, respond: (decision: string) => void) => void;
+  onToolApproval?: (req: ToolApprovalRequest, respond: (decision: string, auto?: boolean) => void) => void;
   // onChatRevision fires just before onDone with where the shared chat stands
   // after this turn (TokenResponse.chat_revision/chat_behind).
   onChatRevision?: (revision: string, behind: boolean) => void;
@@ -1404,7 +1407,7 @@ function askForApproval(
   onAnswered: () => void = () => {}
 ): void {
   let answered = false;
-  const respond = (decision: string) => {
+  const respond = (decision: string, auto = false) => {
     if (answered || isFinished()) {
       return;
     }
@@ -1421,6 +1424,7 @@ function askForApproval(
       call_id: req.call_id,
       arguments_sha256: req.arguments_sha256,
       decision,
+      ...(auto ? { auto: true } : {}),
     };
     try {
       writeLine(socket, resp);

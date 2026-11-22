@@ -314,7 +314,7 @@ function serverTooltip(s: MCPServerInfo): vscode.MarkdownString {
     }
   }
   md.appendMarkdown(s.cwd === MCP_CWD_WORKSPACE ? 'Starts inside the project.' : 'Starts in a private folder of its own.');
-  md.appendMarkdown('\n\nRuns with your full privileges; each of its tools asks before it runs.');
+  md.appendMarkdown('\n\nRuns with your full privileges; each of its tools asks before it runs, except read-only ones while the chat is in Auto.');
   return md;
 }
 

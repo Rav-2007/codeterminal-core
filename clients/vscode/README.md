@@ -9,11 +9,13 @@ your code, fix bugs, write tests, and review the changes Mochiii makes.
 ## What it does
 
 - **Edits you can review.** A new chat starts in Auto: each edit is checked,
-  applied as it arrives, and can be undone. Switch to Manual and every edit
-  waits for your Apply, or to Plan for a plan with no edits.
+  applied, and can be undone. Switch to Manual and every edit waits for your
+  Apply, or to Plan for a plan with no edits.
 - **An agent, with your say.** With a provider's model that supports tools,
   Mochiii reads and searches the project, makes edits, and runs commands and
-  tests. Commands, and tools from MCP servers, ask first unless you allow them.
+  tests. In Auto it does that without asking, after a warning the first time.
+  It still asks before it reaches outside the project, sends something out, or
+  runs a command it recognises as wiping data. Commands are not sandboxed.
   Web search is off as shipped.
 - **Build from a spec.** `/spec` writes down what you want, `/spec build` builds
   it tests-first, and `/spec check` grades the result.

@@ -675,6 +675,7 @@
         currentMode = item.getAttribute('data-mode') || 'auto';
         renderMode();
         setModesPopupOpen(false);
+        vscode.postMessage({ type: 'modeChanged', mode: currentMode });
       }
     });
   }
@@ -2565,7 +2566,7 @@
   //   - initial focus on DENY. That is the accessible form of `[y/N]`: a user
   //     who hits Enter on the default does the safe thing. Focusing Approve
   //     would make a reflex keystroke authorise an unsandboxed subprocess.
-  function showToolApproval(req) {
+  function showToolApproval(req, autoAsk) {
     clearToolApproval();
 
     const argsId = 'approval-args-' + req.call_id;
@@ -2657,6 +2658,13 @@
       });
       lane.appendChild(words);
       container.appendChild(lane);
+    }
+
+    if (autoAsk) {
+      const why = document.createElement('div');
+      why.className = 'approval-auto';
+      why.textContent = autoAsk;
+      container.appendChild(why);
     }
 
     const actions = document.createElement('div');
@@ -3817,7 +3825,7 @@
         }
         break;
       case 'toolApproval':
-        showToolApproval(msg.request);
+        showToolApproval(msg.request, msg.autoAsk);
         break;
       case 'editProposal':
         showEditProposal(msg.edit, msg.index, msg.total);
@@ -3955,6 +3963,10 @@
         }
         break;
       }
+      case 'toolApprovalAuto':
+        // Switched to Auto while this was waiting: the host has answered it.
+        if (msg.callId === currentApprovalCallId) clearToolApproval();
+        break;
       case 'setModeFromHost':
         if (msg.mode === 'auto' || msg.mode === 'manual' || msg.mode === 'plan') {
           currentMode = msg.mode;

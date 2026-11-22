@@ -103,7 +103,7 @@
       'p',
       'sub',
       "Servers you can give Mochiii's agent. Each runs on your machine with your privileges: before one is added, Mochiii " +
-        "shows exactly what will run and asks you to type its name, and each of its tools asks before it runs."
+        "shows exactly what will run and asks you to type its name. Each of its tools asks before it runs, except read-only ones while the chat is in Auto."
     )
   );
 

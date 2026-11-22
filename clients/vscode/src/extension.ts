@@ -24,6 +24,7 @@ import {
 } from './daemonCredentials';
 import { cachedMcpEnv, loadMcpEnv } from './mcpSecrets';
 import { useSpecStore } from './specWorkflow';
+import { useAutoConsent } from './autoConsent';
 import { McpServersProvider, registerMcpServers } from './mcpServersView';
 import { McpMarketplace, handleMarketplaceUri } from './mcpMarketplace';
 import { FOLDERS_NOTED_KEY, WORKING_FOLDER_KEY, chooseWorkingFolder, otherFoldersNotice, setActiveWorkingFolder } from './workingFolder';
@@ -50,6 +51,11 @@ let cachedApiKey: string | undefined;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   // The active spec (/spec use) is remembered per workspace.
   useSpecStore(context.workspaceState);
+  // Not under the test runner, where a modal cannot be answered: the tests
+  // hand over their own store (autoConsent.ts).
+  if (context.extensionMode !== vscode.ExtensionMode.Test) {
+    useAutoConsent(context.globalState);
+  }
   DiffContentProvider.register(context);
 
   // The bundled location, defined once in daemonBinary.ts so the spawn path and

@@ -122,7 +122,7 @@ export async function storeServer(
   if (
     !(await ui.typeName(
       spec.name,
-      `This server will run ${spec.command} with your full privileges, and each of its tools will ask before it runs. ` +
+      `This server will run ${spec.command} with your full privileges, and each of its tools will ask before it runs, except read-only ones while the chat is in Auto. ` +
         `Type its name to ${verb} it; Escape cancels and nothing is ${verb === 'add' ? 'added' : 'changed'}.`,
     ))
   ) {
