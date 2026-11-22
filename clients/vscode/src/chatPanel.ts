@@ -59,6 +59,7 @@ import { McpPopupHost, mcpPopupHost, setMcpPopupHost } from './mcpPopup';
 import { chatLookStyles } from './chatLook';
 import { mcpMarketplaceStyles } from './mcpMarketplace';
 import { editorContextForPrompt, withoutEditorState } from './editorContext';
+import { isProtectedPath, isSecretName, projectTree } from './projectTree';
 import { SLASH_CATALOG, parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt, unknownCommandNote } from './slashCommands';
 import {
   SpecGrants,
@@ -262,6 +263,9 @@ export class ChatPanel {
   // Set once the panel is closed, so work started before (the preflight's
   // wait for a starting daemon) stops instead of posting to a dead webview.
   private disposed = false;
+  // True once the webview can take an attachment (its 'ready').
+  private webviewReady = false;
+  private static addWhenReady: vscode.Uri[] = [];
   // lastGrounding is the most recent GroundingInfo for /context.
   private lastGrounding: GroundingInfo | undefined;
 
@@ -761,6 +765,10 @@ export class ChatPanel {
       this.postUiSettings();
       // The folder this chat works in, for the header ("Mochiii · my-project").
       this.postSafe({ type: 'folder', name: path.basename(workspacePath()), path: workspacePath() });
+      this.webviewReady = true;
+      const waiting = ChatPanel.addWhenReady;
+      ChatPanel.addWhenReady = [];
+      if (waiting.length > 0) void this.attachFromExplorer(waiting);
     } else if (msg.type === 'addContext' && typeof msg.remaining === 'number') {
       void this.onAddContext(msg.remaining, typeof msg.kind === 'string' ? msg.kind : undefined);
     } else if (msg.type === 'focused') {
@@ -935,6 +943,46 @@ export class ChatPanel {
 
   // attachText hands the composer one piece of context the way a file arrives:
   // started, then extracted, so it shows as a chip and is counted on the meter.
+  /** Explorer's "Add to Mochiii", now or once the chat has opened. */
+  static addFromExplorer(uris: vscode.Uri[]): void {
+    const panel = ChatPanel.current;
+    if (panel?.webviewReady) {
+      void panel.attachFromExplorer(uris);
+    } else {
+      ChatPanel.addWhenReady = uris.slice();
+    }
+  }
+
+  private async attachFromExplorer(uris: vscode.Uri[]): Promise<void> {
+    const root = workspacePath();
+    const none = (text: string): void => this.postSafe({ type: 'attachmentNotice', text });
+    for (const uri of uris.slice(0, 10)) {
+      if (uri.scheme !== 'file') continue;
+      const name = path.basename(uri.fsPath);
+      const rel = path.relative(root, uri.fsPath);
+      const inside = !rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel);
+      const shown = inside ? rel.split(path.sep).join('/') || '.' : name;
+      if (isSecretName(name) || isProtectedPath(uri.fsPath)) {
+        none(`${name} was not added: files that can hold secrets are never sent.`);
+        continue;
+      }
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (stat.type & vscode.FileType.Directory) {
+          const where = inside ? `the folder ${shown} in this project` : `the folder ${name}, outside this project`;
+          const tree = projectTree(uri.fsPath);
+          this.attachText(`${name}/`, [`The user pointed at ${where}. Its top two levels:`, ...tree].join('\n'), `${shown}, added from Explorer`);
+        } else {
+          const doc = await vscode.workspace.openTextDocument(uri);
+          this.attachText(name, doc.getText(), `${shown}, added from Explorer`);
+        }
+      } catch (err) {
+        none(`Could not add ${name}: ${(err as Error).message}`);
+      }
+    }
+    if (uris.length > 10) none('Only the first 10 were added.');
+  }
+
   private attachText(name: string, text: string, desc: string): void {
     const MAX = 200_000;
     const id = `ctx-${++this.contextSeq}`;

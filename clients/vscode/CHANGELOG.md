@@ -36,6 +36,9 @@ bundles Mochiii 1.6.1.
 - **Long tasks continue by themselves** in Auto and Plan, up to an hour or 400
   steps, then offer Resume. A line shows time, steps and tokens while a task
   works, and the totals when it ends.
+- **It sees the open folder:** every question carries the project's name and
+  top two levels (never secret files). Right-click a file or folder in Explorer
+  and choose Add to Mochiii.
 - **The panel has its own chat**, apart from the terminal app's.
 - **MCP servers** can be added from the built-in Marketplace or by command, URL
   or pasted JSON.

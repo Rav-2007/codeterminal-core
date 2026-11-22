@@ -132,6 +132,11 @@
     },
     "commands": [
       {
+        "command": "mochiii.addToChat",
+        "title": "Add to Mochiii",
+        "category": "Mochiii"
+      },
+      {
         "command": "mochiii.openChat",
         "title": "Open Chat",
         "category": "Mochiii"
@@ -296,6 +301,13 @@
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "mochiii.addToChat",
+          "when": "resourceScheme == file",
+          "group": "7_modification@100"
+        }
+      ],
       "view/title": [
         {
           "command": "mochiii.mcp.browse",
@@ -381,6 +393,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "mochiii.addToChat",
+          "when": "false"
+        },
         {
           "command": "mochiii.mcp.approve",
           "when": "false"
