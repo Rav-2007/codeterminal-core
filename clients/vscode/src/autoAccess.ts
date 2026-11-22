@@ -30,6 +30,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import {
+  broadPattern, changesLiveService, codeSends, codeWipes, gitHides, gitReachesOut, has, hidesWhatRuns, innerTools,
+  packageTool, plain, printsNothing, reachesOut, runsDeployScript, short, wipesData,
+} from './autoCommands';
+
 export type AutoAsk = '' | 'outside' | 'sends' | 'wipes' | 'unclear';
 
 // AutoCall is the part of ToolApprovalRequest the decision reads.
@@ -199,6 +204,10 @@ const FILE_ROOTS = new Set([
 const SYSTEM_READS = ['/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/opt', '/proc/cpuinfo', '/proc/meminfo', '/etc/os-release'];
 const HARMLESS_DEVICES = /^\/dev\/(null|stdin|stdout|stderr|tty|zero|u?random|fd\/\d+)$/;
 
+// Variables that stand for the user's own folders.
+const USERS_OWN_FOLDERS =
+  /^(\$\{?(XDG_(CONFIG|DATA|STATE|CACHE)_HOME|OLDPWD)\}?|\$env:(USERPROFILE|APPDATA|LOCALAPPDATA|HOMEPATH|PROGRAMDATA)|~-)(?=$|[/\\])/i;
+
 class Where {
   private readonly p: path.PlatformPath;
   readonly windows: boolean;
@@ -272,6 +281,14 @@ class Where {
     }
   }
 
+  // scratch is a target with nothing to lose: the null device or a temp file.
+  scratch(target: string): boolean {
+    if (this.windows && /^nul$/i.test(target)) return true;
+    const abs = this.resolve(target);
+    if (HARMLESS_DEVICES.test(abs)) return true;
+    return !this.under(abs, this.place.root) && this.place.temp.some((dir) => this.under(abs, dir));
+  }
+
   isRoot(target: string): boolean {
     return this.p.relative(this.place.root, this.p.resolve(this.place.root, this.expand(target))) === '';
   }
@@ -287,6 +304,7 @@ class Where {
     if (/\s/.test(word) && !/^([/~]|[a-z]:[\\/])/i.test(word)) return false; // a sentence
     if (/^~[^/\\]/.test(word)) return true; // another user's home
     if (/^%(APPDATA|LOCALAPPDATA|HOMEPATH|PROGRAMDATA)%/i.test(word)) return true;
+    if (USERS_OWN_FOLDERS.test(word)) return true;
     const s = this.expand(word);
     const climbs = /(^|[/\\])\.\.([/\\]|$)/.test(s);
 
@@ -322,6 +340,8 @@ interface Command {
   piped: boolean;
   // The bodies of here-documents fed to it.
   input: string[];
+  // What follows a ")": a redirection here is the bracket's output.
+  group?: boolean;
 }
 
 // cutLine is daemon/shellline.go's reading of a line, with what a decision
@@ -456,6 +476,7 @@ function cutLine(src: string, windows: boolean): Command[] {
           endCommand();
           if (depth > 0) depth--;
           else if (nested) return;
+          cmd.group = true;
           break;
         case '>':
           // "x>out" is the word x and a redirection; "2>out" stays one.
@@ -518,7 +539,8 @@ function cutLine(src: string, windows: boolean): Command[] {
 // programName is a program word as a name: no folder, no Windows extension.
 function programName(word: string): string {
   const base = word.split(/[/\\]/).pop() ?? '';
-  return base.toLowerCase().replace(/\.(exe|cmd|bat|com|ps1)$/, '');
+  // npx takes the version with the name: vercel@latest is vercel.
+  return base.toLowerCase().replace(/(.)@[\w.^~-]+$/, '$1').replace(/\.(exe|cmd|bat|com|ps1)$/, '');
 }
 
 const LEADING_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', '}', 'fi', 'done']);
@@ -548,11 +570,18 @@ const WRAPPERS: Record<string, string[]> = {
   bunx: [],
   pnpx: [],
   call: [],
+  strace: ['-o', '-e', '-p', '-s', '-u', '-E'],
+  ltrace: ['-o', '-e', '-p', '-s', '-u'],
+  chrt: [],
+  taskset: [],
+  unbuffer: [],
+  winpty: [],
+  'xvfb-run': ['-n', '--server-num', '-s', '--server-args'],
 };
 // `uv run x`, `pnpm dlx x`: a wrapper made of two words.
 const RUNNERS: Record<string, string[]> = {
   uv: ['run'], poetry: ['run'], pipx: ['run'], pdm: ['run'], hatch: ['run'],
-  pnpm: ['dlx', 'exec'], yarn: ['dlx', 'exec'], npm: ['exec', 'x'], bundle: ['exec'],
+  conda: ['run'], mamba: ['run'], pnpm: ['dlx', 'exec'], yarn: ['dlx', 'exec'], npm: ['exec', 'x'], bundle: ['exec'],
 };
 
 // unwrap is a command as the program it runs and its arguments.
@@ -566,9 +595,10 @@ function unwrap(words: string[]): string[] {
       w = w.slice(2);
       continue;
     }
-    if (RUNNERS[name]?.includes(w[1])) {
+    if (Object.prototype.hasOwnProperty.call(RUNNERS, name) && RUNNERS[name].includes(w[1])) {
       w = w.slice(2);
-      while (w.length > 0 && w[0].startsWith('-')) w = w.slice(1);
+      const named = name === 'conda' || name === 'mamba' ? ['-n', '--name', '-p', '--prefix'] : [];
+      while (w.length > 0 && w[0].startsWith('-')) w = w.slice(named.includes(w[0]) ? 2 : 1);
       continue;
     }
     if (!Object.prototype.hasOwnProperty.call(WRAPPERS, name)) return w;
@@ -597,11 +627,13 @@ const WRITERS = new Set([
   'del', 'erase', 'rd', 'move', 'remove-item', 'move-item', 'set-content', 'out-file',
 ]);
 const DATABASE_CLIENTS = new Set(['psql', 'mysql', 'mariadb', 'sqlite3', 'sqlcmd', 'mongosh', 'mongo', 'duckdb', 'cockroach']);
-const DATABASE_WIPE = /\bdrop\s+(database|schema|table)\b|\btruncate\s+(table\s+)?["`\w]|\bdelete\s+from\s+["`\w.]+\s*(;|$)|dropDatabase\s*\(/i;
+const DATABASE_WIPE = /\bdrop\s+(database|schema|table)\b|\btruncate\s+(table\s+)?["`\w]|\bdelete\s+from\s+["`\w.]+\s*(;|$)|dropDatabase\s*\(|\bdb\.[\w.]+\.(drop\s*\(|deleteMany\s*\(\s*\{\s*\}\s*\))/i;
 const DEPLOY_SCRIPT = /^(deploy|publish|release)($|[:_-])/;
 
 class LineReader {
   private found: AutoAsk = '';
+  // A pgrep by a name every program of its kind shares, for a kill to use.
+  private pickedBroadly = false;
 
   constructor(private readonly where: Where) {}
 
@@ -625,6 +657,8 @@ class LineReader {
   private readCommand(cmd: Command, depth: number, windows: boolean): void {
     const words: string[] = [];
     const hereStrings: string[] = [];
+    const overwritten: string[] = [];
+    let readsFromCommand = false;
     for (let i = 0; i < cmd.words.length; i++) {
       const word = cmd.words[i];
       if (word === '<<<') {
@@ -637,6 +671,8 @@ class LineReader {
         continue;
       }
       const target = redirect[2] || cmd.words[++i] || '';
+      if (!target && redirect[1] === '<') readsFromCommand = true; // <(...)
+      if (target && /^(>|>\|)$/.test(redirect[1]) && !/^([02-9]|\d\d)/.test(word)) overwritten.push(target);
       if (/^&?(\d+|-)$/.test(target)) continue; // 2>&1
       if (this.where.outside(target.replace(/^&/, ''), redirect[1].includes('>'))) this.ask('outside');
     }
@@ -648,9 +684,11 @@ class LineReader {
     }
 
     const core = unwrap(words);
-    if (core.length === 0) return;
-    const name = programName(core[0]);
+    const name = programName(core[0] ?? '');
     const args = core.slice(1);
+    const nothing = core.length === 0 ? words.length === 0 && !cmd.group : printsNothing(name, args);
+    if (nothing && overwritten.some((target) => !this.where.scratch(target))) return this.ask('wipes');
+    if (core.length === 0) return;
 
     // Which program it runs must be readable in the line itself.
     if (/[$`]|^%.*%$|\{.*,.*\}/.test(name) || (name.length > 1 && /[*?]|\[.+\]|\\/.test(name) && name !== '[[')) {
@@ -658,6 +696,14 @@ class LineReader {
     }
     if (['sudo', 'doas', 'su', 'runas'].includes(name)) return this.ask('outside');
 
+    const fedByXargs = cmd.piped && /^(xargs|parallel)$/.test(programName(words[0] ?? ''));
+    if (runsDeployScript(core[0], args)) return this.ask('sends');
+    if (readsFromCommand && (SHELLS.has(name) || ['source', '.', 'python', 'python3', 'node'].includes(name))) {
+      return this.ask('unclear');
+    }
+    if (hidesWhatRuns(name, args, cmd.piped, cmd.input.length + hereStrings.length > 0, fedByXargs)) {
+      return this.ask('unclear');
+    }
     if (SHELLS.has(name)) return this.readShell(cmd, args, hereStrings, depth);
     if (POWERSHELLS.has(name)) return this.readPowerShell(cmd, args, depth);
     if (name === 'cmd') {
@@ -665,6 +711,15 @@ class LineReader {
       if (at >= 0) return this.readLine(args.slice(at + 1).join(' '), depth + 1, true);
     }
     if (name === 'eval') return this.readLine(args.join(' '), depth + 1, windows);
+    if (name === 'flock' || name === 'script') {
+      // Both can carry a whole line after -c, and flock a command after its lock.
+      const at = args.findIndex((a) => /^-[a-z]*c$|^--command$/.test(a));
+      if (at >= 0 && args[at + 1] !== undefined) return this.readLine(args[at + 1], depth + 1, windows);
+      const lock = args.findIndex((a, i) => !a.startsWith('-') && !['-w', '--timeout', '-E'].includes(args[i - 1]));
+      if (name === 'flock' && lock >= 0 && lock + 1 < args.length) {
+        return this.readCommand({ words: args.slice(lock + 1), piped: cmd.piped, input: cmd.input }, depth + 1, windows);
+      }
+    }
     if (name === 'trap' && args.length > 1) return this.readLine(args[0], depth + 1, windows);
     // `watch "git push"` hands a whole line as one word.
     if (/\s/.test(core[0]) && core.length === 1 && words[0] !== core[0]) {
@@ -674,15 +729,26 @@ class LineReader {
       const at = args.findIndex((a) => /^-(exec|execdir|ok|okdir)$/.test(a));
       if (at >= 0) {
         const inner = args.slice(at + 1).filter((a) => a !== ';' && a !== '+' && a !== '{}');
-        if (programName(inner[0] ?? '') === 'rm') return this.ask('wipes');
+        if (['rm', 'unlink'].includes(programName(inner[0] ?? ''))) return this.ask('wipes');
         if (inner.length > 0) this.readCommand({ words: inner, piped: false, input: [] }, depth + 1, windows);
       }
     }
     if (name === 'rm' && /^(xargs|parallel)$/.test(programName(words[0] ?? '')) && cmd.piped) return this.ask('wipes');
 
     const bodies = cmd.input.concat(hereStrings);
-    if (wipes(name, args, bodies)) return this.ask('wipes');
-    if (sends(name, args)) return this.ask('sends');
+    if (wipes(name, args, bodies) || wipesData(name, args)) return this.ask('wipes');
+    if (innerTools(name, args).some(([tool, rest]) => wipes(tool, rest, []) || wipesData(tool, rest))) {
+      return this.ask('wipes');
+    }
+    if (sends(name, args) || changesLiveService(name, args)) return this.ask('sends');
+    if (packageTool(name, args).some(([tool, rest]) => changesLiveService(tool, rest))) return this.ask('sends');
+    if (name === 'git') {
+      const { sub, rest } = gitCommand(args);
+      if (gitHides(sub, rest, fedByXargs)) return this.ask('unclear');
+      if (gitReachesOut(sub, rest)) return this.ask('outside');
+    }
+    if (reachesOut(name, args, this.pickedBroadly)) return this.ask('outside');
+    if (name === 'pgrep' && (has(args, '-u', '-U') || plain(args).slice(-1).some(broadPattern))) this.pickedBroadly = true;
     this.readCode(name, args, bodies);
     this.readPaths(name, args);
   }
@@ -716,7 +782,8 @@ class LineReader {
     });
     for (const text of code) {
       if (/rmtree\s*\(|rm(Sync)?\s*\([^)]*recursive|\brm_rf\b|\bremove_tree\b|\brm\s+-[a-z]*r/i.test(text)) this.ask('wipes');
-      if (/\bgit['",\s]+push\b/.test(text)) this.ask('sends');
+      if (codeWipes(text)) this.ask('wipes');
+      if (/\bgit['",\s]+push\b/.test(text) || codeSends(text)) this.ask('sends');
       // Paths it names in quotes.
       for (const m of text.matchAll(/['"]([/~][^'"\n]*)['"]/g)) {
         if (m[1] !== '/' && this.where.outside(m[1], false)) this.ask('outside');
@@ -745,6 +812,17 @@ class LineReader {
         check(arg.replace(/^@/, '')); // curl -d @file
       }
     }
+    if (name === 'docker' || name === 'podman' || name === 'docker-compose') {
+      // A mount hands the container that folder of this computer.
+      args.forEach((arg, i) => {
+        const volume = /^(?:-v|--volume)(?:=(.+))?$/.exec(arg);
+        const mount = /(?:^|[=,])(?:source|src)=([^,]+)/.exec(arg);
+        const from = volume ? (volume[1] ?? args[i + 1] ?? '') : (mount?.[1] ?? '');
+        if (!from || from.startsWith('-')) return;
+        const host = /^([a-z]:[\\/][^:]*|[^:]*)/i.exec(from)?.[1] ?? '';
+        if (host === '/' || this.where.outside(host, true)) this.ask('outside');
+      });
+    }
     if (['cd', 'pushd', 'chdir', 'set-location'].includes(name)) {
       const dir = args.find((a) => !a.startsWith('-') && !(this.where.windows && /^\/d$/i.test(a)));
       if (dir) {
@@ -758,12 +836,6 @@ class LineReader {
 
 // ---------------------------------------------------------------------------
 // The two lists
-
-const has = (args: string[], ...any: string[]): boolean => args.some((a) => any.includes(a));
-// short finds one letter among bundled short options: -rf has both r and f.
-const short = (args: string[], letter: string): boolean =>
-  args.some((a) => /^-[A-Za-z]+$/.test(a) && a.includes(letter));
-const plain = (args: string[]): string[] => args.filter((a) => !a.startsWith('-'));
 
 // gitCommand is git's subcommand and what follows it.
 function gitCommand(args: string[]): { sub: string; rest: string[]; alias: boolean } {
@@ -806,7 +878,13 @@ function gitWipes(args: string[]): boolean {
     case 'branch':
       return short(rest, 'D') || (has(rest, '-d', '--delete') && has(rest, '-f', '--force'));
     case 'rm':
-      return short(rest, 'r') && short(rest, 'f') && !has(rest, '--cached');
+      return short(rest, 'r') && !short(rest, 'n') && !has(rest, '--cached', '--dry-run');
+    case 'tag':
+      return has(rest, '-d', '--delete');
+    case 'submodule':
+      return rest[0] === 'deinit' && has(rest, '-f', '--force');
+    case 'read-tree':
+      return has(rest, '--reset') && has(rest, '-u');
     case 'update-ref':
       return has(rest, '-d');
     case 'reflog':
@@ -967,7 +1045,7 @@ function sends(name: string, args: string[]): boolean {
     case 'twine':
       return has(words, 'upload');
     case 'cargo':
-      return has(words.slice(0, 1), 'publish', 'yank');
+      return has(words.filter((w) => !w.startsWith('+')).slice(0, 1), 'publish', 'yank');
     case 'gem':
     case 'nuget':
       return words[0] === 'push';
@@ -1009,19 +1087,6 @@ function sends(name: string, args: string[]): boolean {
     case 'gsutil':
     case 'doctl':
       return args.length > 0 && !has(args, '--help', '--version') && !words.slice(0, 4).some((w) => CLOUD_READ.test(w));
-    case 'vercel':
-    case 'netlify':
-    case 'wrangler':
-    case 'firebase':
-    case 'fly':
-    case 'flyctl':
-    case 'heroku':
-    case 'eas':
-    case 'railway':
-    case 'serverless':
-    case 'supabase':
-      if (name === 'vercel' && !has(args, '--help', '--version') && (words.length === 0 || has(args, '--prod'))) return true;
-      return has(words.slice(0, 3), 'deploy', 'publish', 'submit', 'push', 'destroy', 'update', 'up');
     case 'ssh':
       return !has(args, '-V');
     case 'scp':
