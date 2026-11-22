@@ -207,20 +207,20 @@ export function chatLookStyles(): string {
   .recent-age { flex-shrink: 0; font-size: 11.5px; color: var(--ct-muted); }
 
   /* ---- messages ----------------------------------------------------------- */
-  .msg.user { display: flex; justify-content: flex-end; }
+  /* Your message is a quiet box the width of the chat (UI audit, step 3): it
+     was a bright bubble on the right, the loudest thing in the transcript. The
+     reply under it is plain text with no header. */
+  .msg.user { display: block; }
   .msg.user .card {
-    max-width: 85%;
-    background: var(--ct-accent-solid);
-    color: var(--ct-on-accent);
-    border-left: none;
-    border-radius: 14px 14px 4px 14px;
-    padding: 8px 12px;
+    max-width: none;
+    background: var(--vscode-input-background, var(--ct-user-bg));
+    color: var(--ct-ink);
+    border: 1px solid var(--vscode-input-border, var(--ct-border));
+    border-radius: 6px;
+    padding: 7px 10px;
   }
   .msg.user .card .body { font-size: 13px; }
-  .reply-head { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
-  .reply-logo { width: 22px; height: 22px; }
-  .reply-name { font-weight: 600; font-size: 12.5px; color: var(--ct-ink); }
-  .reply-time { font-size: 11px; color: var(--ct-muted); }
+  .msg.assistant { margin-top: 2px; }
   .msg .code-block { border: 1px solid var(--ct-border); }
   .msg .code-block .code-head {
     display: flex;
@@ -243,39 +243,45 @@ export function chatLookStyles(): string {
   }
   .code-copy:hover, .code-copy:focus-visible { background: var(--ct-accent-soft); color: var(--ct-accent-strong); outline: none; }
 
-  /* ---- agent actions: the tool card, the steps, the result ---------------- */
+  /* ---- agent actions: the tool runs, the steps, the result ---------------- */
+  /* A turn's tool runs are one quiet line -- "● Used 3 tools · 1 failed" --
+     that opens to a row each (UI audit, step 3: no box around them). */
   .work {
-    margin: 6px 0 12px;
+    margin: 4px 0 10px;
     font-size: 12px;
-    border: 1px solid var(--ct-border);
-    border-radius: 12px;
-    background: var(--ct-surface);
-    overflow: hidden;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    overflow: visible;
   }
   .work-summary {
     display: flex;
     width: 100%;
     gap: 8px;
-    padding: 8px 12px;
+    padding: 2px 0;
     border: none;
     border-radius: 0;
-    color: var(--ct-ink);
-    font-weight: 600;
+    color: var(--ct-muted);
+    font-weight: 400;
+    cursor: pointer;
   }
+  .work-summary .work-label::before { content: '\u25cf'; margin-right: 7px; color: var(--ct-ok); font-size: 9px; vertical-align: 2px; }
+  .work.running .work-summary .work-label::before { color: var(--ct-accent); }
+  .work.has-failure .work-summary .work-label::before { color: var(--ct-danger); }
+  .work-summary:hover { color: var(--ct-ink); }
   .work-summary::before { order: 2; margin-left: auto; color: var(--ct-muted); font-weight: 400; }
-  .work.has-failure { border-color: color-mix(in srgb, var(--ct-danger) 45%, transparent); }
-  .work.running .work-summary { color: var(--ct-accent-strong); }
-  .work-rows { margin: 0; padding: 2px 6px 6px; border-left: none; border-top: 1px solid var(--ct-border); }
+  .work.running .work-summary { color: var(--ct-ink); }
+  .work-rows { margin: 2px 0 0 4px; padding: 0 0 0 10px; border-left: 1px solid var(--ct-border); border-top: none; }
   .work-row {
     display: grid;
     grid-template-columns: 18px minmax(0, 1fr) auto auto;
     grid-template-areas: "glyph name badge time" ". why why why";
     column-gap: 8px;
     align-items: center;
-    padding: 6px 6px;
-    border-radius: 8px;
+    padding: 3px 4px;
+    border-radius: 4px;
   }
-  .work-row + .work-row { border-top: 1px solid color-mix(in srgb, var(--ct-border) 60%, transparent); border-radius: 0; }
+  .work-row + .work-row { border-top: none; }
   .work-glyph { grid-area: glyph; font-size: 12px; }
   .work-name { grid-area: name; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .work-why { grid-area: why; font-size: 11.5px; }
@@ -318,6 +324,86 @@ export function chatLookStyles(): string {
   .steps-list li[data-status="blocked"] .step-mark { border-color: var(--ct-danger); color: var(--ct-danger); }
   .edit-summary { border-radius: 12px; padding: 12px; }
   .edit-summary .summary-line { font-size: 13px; }
+
+  /* ---- cards in the conversation: approval, edit, no key (UI audit, step 3) */
+  /* No avatar indent: these lined up under an avatar column that is gone. */
+  .tool-approval, .edit-proposal, .edit-rejections, .approval-record { margin-left: 0; }
+  .tool-approval {
+    border: 1px solid var(--ct-border);
+    border-radius: 8px;
+    background: var(--vscode-editorWidget-background, var(--ct-surface));
+    padding: 10px 12px;
+    font-size: 12.5px;
+  }
+  .tool-approval .approval-heading {
+    font-weight: 400;
+    margin-bottom: 8px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  /* The risk: one line with a sign. The words are the terminal's, unchanged;
+     the colour says how bad -- red leaves the machine, writes the real project
+     or is marked destructive; amber runs outside the sandbox. */
+  .tool-approval .approval-lane { display: flex; gap: 6px; align-items: baseline; margin-bottom: 10px; font-size: 12px; font-weight: 400; color: var(--ct-ink); }
+  .tool-approval .approval-lane .approval-sign { flex-shrink: 0; }
+  .tool-approval .approval-lane.warn .approval-sign, .tool-approval .risk.warn { color: var(--ct-warn); }
+  .tool-approval .approval-lane.danger .approval-sign, .tool-approval .risk.danger { color: var(--ct-danger); }
+  .tool-approval .approval-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .tool-approval .approval-btn { font: inherit; font-size: 12px; }
+  .tool-approval .approval-btn.link { margin-left: auto; color: var(--ct-muted); }
+  .approval-record { margin: 2px 0 8px; }
+
+  .edit-proposal { border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+  .edit-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .edit-proposal .file-path { margin: 0; font-family: var(--vscode-editor-font-family, monospace); overflow-wrap: anywhere; }
+  .edit-proposal .edit-index { margin: 0; flex-shrink: 0; }
+  .edit-diff {
+    border: 1px solid var(--ct-border);
+    border-radius: 6px;
+    background: var(--ct-code-bg);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11.5px;
+    line-height: 1.5;
+    overflow-x: auto;
+    padding: 4px 0;
+  }
+  .edit-diff .diff-row { display: flex; white-space: pre; min-width: max-content; padding: 0 8px 0 0; }
+  .edit-diff .diff-row.more { display: none; }
+  .edit-diff.expanded .diff-row.more { display: flex; }
+  .edit-diff .diff-sign { width: 18px; flex-shrink: 0; text-align: center; color: var(--ct-muted); }
+  .edit-diff .diff-row.add { background: var(--vscode-diffEditor-insertedLineBackground, color-mix(in srgb, var(--ct-ok) 14%, transparent)); }
+  .edit-diff .diff-row.del { background: var(--vscode-diffEditor-removedLineBackground, color-mix(in srgb, var(--ct-danger) 14%, transparent)); }
+  .edit-diff .diff-row.ctx { color: var(--ct-muted); }
+  .edit-diff-more { font-size: 11.5px; margin-top: 2px; }
+  .edit-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+  .edit-proposal .edit-footer .view-diff-btn { margin: 0; border-radius: 6px; padding: 5px 12px; font-size: 12px; color: var(--vscode-button-secondaryForeground, var(--ct-ink)); background: var(--vscode-button-secondaryBackground, transparent); }
+  .edit-proposal .edit-footer .actions { margin-left: auto; display: flex; gap: 6px; }
+  .edit-proposal .edit-footer .actions button { font: inherit; font-size: 12px; }
+  .edit-proposal .result { margin-top: 8px; }
+
+  /* Under an answer: what it stood on, and Copy, shown while the answer is
+     hovered or the button has the keyboard. */
+  .msg-footer { border-top: none; padding-top: 0; margin-top: 6px; gap: 10px; min-height: 22px; }
+  .msg-footer .msg-grounding { color: var(--ct-muted); font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg-footer .msg-grounding.warn { color: var(--ct-warn); }
+  .msg-footer .msg-copy { margin-left: auto; padding: 1px 8px; font-size: 11.5px; border-radius: 4px; opacity: 0; transition: opacity 120ms ease; }
+  .msg:hover .msg-footer .msg-copy, .msg-footer .msg-copy:focus-visible { opacity: 1; }
+
+  /* No key in use: one card in the empty chat. */
+  .conn-cta {
+    max-width: 420px;
+    margin: 18px auto 8px;
+    padding: 12px 14px;
+    border: 1px solid var(--ct-border);
+    border-radius: 8px;
+    background: var(--vscode-editorWidget-background, var(--ct-surface));
+    text-align: left;
+  }
+  .conn-cta-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; color: var(--ct-ink); }
+  .conn-cta-body { font-size: 12px; color: var(--ct-muted); margin-bottom: 10px; line-height: 1.45; }
+  .conn-cta-button { font: inherit; font-size: 12.5px; }
 
   /* ---- history ------------------------------------------------------------ */
   .history-row .h-title mark {

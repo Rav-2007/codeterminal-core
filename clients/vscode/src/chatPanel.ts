@@ -596,6 +596,11 @@ export class ChatPanel {
       return;
     }
     this.needsApiKey = session.needsApiKey;
+    // No key in use: the empty chat says so, with the one button that fixes it
+    // (main.js showConnectionCta). Removed again when a key connects.
+    if (session.needsApiKey) {
+      this.postSafe({ type: 'connection', state: 'noKey' });
+    }
     // FIRST RUN, as the terminal opens on its setup: with no key in force the
     // chat opens on the provider list. Esc leaves it; the "Connect a model"
     // card and the first question still ask again.
@@ -989,6 +994,9 @@ export class ChatPanel {
     this.lastGrounding = undefined;
     this.postSafe({ type: 'clearTranscript' });
     this.postSafe({ type: 'currentBookmark', on: false });
+    if (this.needsApiKey) {
+      this.postSafe({ type: 'connection', state: 'noKey' });
+    }
     // The empty chat lists recent chats, and the one just left is now among them.
     void this.onHistoryList('');
     if (saved) {
@@ -1446,6 +1454,7 @@ export class ChatPanel {
     });
     const r = await this.openConnect();
     if (r.inUse) {
+      this.postSafe({ type: 'connection', state: 'ready' });
       void this.refreshModelAfterConnect();
       // The composer was free while the box was open, so another turn may
       // have started; two at once is not something this panel does.
@@ -1536,6 +1545,7 @@ export class ChatPanel {
     } else if (r.inUse) {
       // In use from the next question; the popup moves on to its models.
       pending.outcome = r;
+      this.postSafe({ type: 'connection', state: 'ready' });
       void this.refreshModelAfterConnect();
       await this.showModelStep(pending);
     } else {
@@ -1650,6 +1660,7 @@ export class ChatPanel {
       return;
     }
     this.needsApiKey = false;
+    this.postSafe({ type: 'connection', state: 'ready' });
     if (!quiet && r.message !== '') {
       this.postSafe({ type: 'info', text: r.message.split('\n')[0] });
     }
@@ -3453,14 +3464,27 @@ export function chatPanelStyles(): string {
   .chip { display: none; }
 
 
+  /* A BUTTON IS THE THEME'S SECONDARY BUTTON unless it says otherwise (UI
+     audit, step 3). Every button was the filled accent by default, which is
+     how an approval came to show No, Yes, Yes for this task and Stop the task
+     as four identical blue buttons. One per view is .primary -- Allow, Apply,
+     Connect a model -- and a .link is a link. */
   button {
-    background: var(--ct-accent-solid);
-    color: var(--ct-on-accent);
-    border: none;
-    padding: 6px 14px;
-    border-radius: 8px;
+    background: var(--vscode-button-secondaryBackground, var(--ct-control-bg));
+    color: var(--vscode-button-secondaryForeground, var(--ct-ink));
+    border: 1px solid var(--vscode-button-border, transparent);
+    padding: 5px 12px;
+    border-radius: 6px;
     cursor: pointer;
   }
+  /* :where() keeps these at zero specificity, so every styled button's own
+     :hover and :focus-visible still win. */
+  :where(button:hover:not(:disabled)) { background: var(--vscode-button-secondaryHoverBackground, var(--ct-accent-soft)); }
+  button.primary { background: var(--ct-accent-solid); color: var(--ct-on-accent); }
+  button.primary:hover:not(:disabled) { background: var(--ct-accent-solid-hover); }
+  button.link { background: transparent; border-color: transparent; color: var(--ct-accent-strong); padding: 5px 4px; }
+  button.link:hover:not(:disabled) { background: transparent; text-decoration: underline; }
+  :where(button:focus-visible) { outline: 1px solid var(--ct-accent); outline-offset: 2px; }
   button:disabled { opacity: 0.5; cursor: default; }
   .edit-proposal {
     margin: 4px 0 14px 38px;
