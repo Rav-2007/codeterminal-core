@@ -332,6 +332,8 @@ export class ChatPanel {
 
   // Set while an auto-apply run holds an edit for the person's Apply or Skip.
   private editAnswered: (() => void) | undefined;
+  // Stop was pressed on this run: what would be held is skipped instead.
+  private skipHeld = false;
 
   // FULL ACCESS IS LIVE, unlike currentRunAutoApply: the mode button moved to
   // Auto answers the question already waiting, and moved away from it asks
@@ -1057,7 +1059,7 @@ export class ChatPanel {
   private onPrompt(text: string, autoApply: boolean, mode?: string): void {
     if (this.editAnswered) {
       this.replyLocal('First Apply or Skip the edit outside this project, above.');
-      this.postSafe({ type: 'done' });
+      if (!this.inFlight) this.postSafe({ type: 'done' }); // a running task stays working
       return;
     }
     if (this.inFlight || this.autoApplyRunInFlight) {
@@ -1404,7 +1406,12 @@ export class ChatPanel {
     this.inFlight = undefined;
     this.clearPendingApproval();
     // Between segments the last one's edits may still be being saved.
-    if (!this.autoApplyRunInFlight) {
+    if (this.autoApplyRunInFlight) {
+      this.skipHeld = true;
+      if (this.editAnswered) {
+        this.skipForStop();
+      }
+    } else {
       this.clearPendingReview();
     }
     const cutShort = this.segmentRunning;
@@ -2150,7 +2157,7 @@ export class ChatPanel {
   private postProgress(end?: TaskProgress['state']): void {
     const task = this.task;
     if (!task) return;
-    const state = end ?? (this.pendingApproval ? 'waiting' : 'working');
+    const state = end ?? (this.pendingApproval || this.editAnswered ? 'waiting' : 'working');
     this.shownSteps = Math.max(this.shownSteps, task.steps + this.segmentSteps);
     this.postSafe({
       type: 'taskProgress',
@@ -2303,6 +2310,7 @@ export class ChatPanel {
   private startEditReview(blocks: EditBlockWire[]): void {
     this.clearPendingReview();
     this.pendingBlocks = blocks;
+    this.skipHeld = false;
     // One backup folder for the whole task, so one Undo.
     this.runBackupDir = this.task?.backupDir || undefined;
     this.postCurrentBlockOrSummary();
@@ -2334,7 +2342,20 @@ export class ChatPanel {
     try {
       while (this.currentIndex < this.pendingBlocks.length) {
         if (this.asksBeforeSaving(this.pendingBlocks[this.currentIndex])) {
-          await new Promise<void>((resolve) => (this.editAnswered = resolve));
+          await new Promise<void>((resolve) => {
+            this.editAnswered = resolve;
+            if (this.skipHeld) {
+              this.skipForStop();
+            } else {
+              // A question like any other: the user's time, not the task's.
+              this.task?.waiting(true);
+              this.postProgress();
+            }
+          });
+          if (!this.skipHeld) {
+            this.task?.waiting(false);
+            this.postProgress();
+          }
         } else {
           await this.onApplyEdit();
         }
@@ -2461,6 +2482,12 @@ export class ChatPanel {
     return this.currentRunAutoApply && !insideProject(workspacePath(), edit.file_path);
   }
 
+  // skipForStop answers a held edit for a person who pressed Stop: not saved.
+  private skipForStop(): void {
+    this.postSafe({ type: 'applyResult', applied: false, error: 'not saved: you stopped the task' });
+    this.onSkipEdit();
+  }
+
   private releaseHeldEdit(): void {
     const answered = this.editAnswered;
     this.editAnswered = undefined;
@@ -2471,6 +2498,10 @@ export class ChatPanel {
     if (this.currentIndex >= this.pendingBlocks.length || this.applyInFlight) {
       return;
     }
+    this.segmentNotSaved.push({
+      file: this.pendingBlocks[this.currentIndex].file_path,
+      why: this.skipHeld ? 'the user stopped the task' : 'the user skipped it',
+    });
     this.skipped++;
     this.currentIndex++;
     this.releaseHeldEdit();
