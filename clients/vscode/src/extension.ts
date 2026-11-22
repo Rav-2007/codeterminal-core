@@ -201,7 +201,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // on a user answering a dialog -- would trade a working product for a
     // prompt. This only ever tells the user something true and offers to fix it.
     indexing = { root, binaryPath, context, output, supervisor, busy: () => ChatPanel.busy() };
-    void offerIndex(indexing);
+    // Not under the test runner, where a modal cannot be answered.
+    if (context.extensionMode !== vscode.ExtensionMode.Test) {
+      void offerIndex(indexing);
+    }
 
     // Same rule, same reason: tell the user something true and offer to fix it,
     // without making the daemon's start wait on an answer. A daemon with no key

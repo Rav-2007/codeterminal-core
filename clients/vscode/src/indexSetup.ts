@@ -71,14 +71,21 @@ export async function offerIndex(deps: IndexDeps): Promise<void> {
 
     const INDEX = 'Index';
     const download = model.cached ? '' : ` It first downloads a search model (${humanMB(model.downloadBytes)}, once).`;
+    // MODAL, because it is asked once: VS Code drops any other notification
+    // into the bell after 10 seconds, buttons or not, and this one was missed.
     const picked = await vscode.window.showInformationMessage(
-      `Index "${path.basename(root)}" for code search? It runs on this computer, takes a minute or two for most ` +
-        `projects, and adds its folder to .gitignore.${download}`,
-      INDEX,
-      'Not now',
+      `Index "${path.basename(root)}" for code search?`,
+      {
+        modal: true,
+        detail:
+          `It runs on this computer, takes a minute or two for most projects, and adds its folder to .gitignore.${download}\n\n` +
+          'Mochiii asks once per folder. Later: "Mochiii: Index Folder for Code Search".',
+      },
+      { title: INDEX },
+      { title: 'Not now', isCloseAffordance: true },
     );
     await markAsked(context.globalState, root);
-    if (picked === INDEX) await buildIndex(deps);
+    if (picked?.title === INDEX) await buildIndex(deps);
   } catch (err) {
     output.appendLine(`index setup: ${(err as Error).message}`);
   }
