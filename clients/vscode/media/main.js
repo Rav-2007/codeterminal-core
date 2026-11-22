@@ -328,7 +328,14 @@
   if (contextBtn) {
     contextBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      setContextPopupOpen(contextPopup.hidden);
+      const open = contextPopup.hidden;
+      if (open) {
+        // One popup over the composer at a time.
+        if (typeof setModelPopupOpen === 'function') setModelPopupOpen(false);
+        if (typeof setModesPopupOpen === 'function') setModesPopupOpen(false);
+        if (controls) controls.closeMenus();
+      }
+      setContextPopupOpen(open);
     });
   }
   if (contextPopupClose) {
@@ -443,21 +450,17 @@
     }
   }
 
-  // THE ⚙ POPOVER (Stage 9) is the model menu grown: the provider, its models,
-  // the context meter. The model chip and the gear both
-  // open it; it keeps the model popup's id, so everything that closed the
-  // model menu closes it.
+  // THE MODEL MENU: the model chip (or /model) opens it. It was the Stage 9
+  // "Model & settings" popover, opened by a gear as well; the gear, the
+  // provider cards, effort, mode and the context meter have each moved to their
+  // one home, and the popup kept its id, so everything that closed the model
+  // menu closes it.
   function setModelPopupOpen(open) {
     if (!modelPopup || !modelChipEl) {
       return;
     }
     modelPopup.hidden = !open;
     modelChipEl.setAttribute('aria-expanded', open ? 'true' : 'false');
-    const gear = document.getElementById('gearBtn');
-    if (gear) gear.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) {
-      refreshContextUsage();
-    }
   }
 
   function toggleSettings() {
@@ -466,6 +469,7 @@
       return;
     }
     setModesPopupOpen(false);
+    setContextPopupOpen(false);
     if (controls) {
       controls.closeMenus();
     }
@@ -1180,6 +1184,60 @@
     if (firstRunEl && firstRunEl.parentElement) {
       firstRunEl.remove();
     }
+  }
+
+  // RECENT CHATS on the empty chat: the last few in this folder, newest first,
+  // one click to pick one up. They are the history the ⏱ list shows, with no
+  // search; the HOST sends that list whenever the empty chat may need it --
+  // once the daemon answers at startup, after a new chat, /clear or a delete
+  // (chatPanel.ts onHistoryList('')) -- so this panel never asks on its own:
+  // a webview that polled would send messages nobody typed. The current chat
+  // is left out; it is the empty one being shown.
+  const RECENT_MAX = 5;
+  const recentChatsEl = document.getElementById('recentChats');
+  const recentListEl = document.getElementById('recentList');
+  /** @param {{ entries?: any[], query?: string, error?: string }} msg */
+  function renderRecent(msg) {
+    if (!recentChatsEl || !recentListEl || (msg.query || '') !== '' || msg.error) {
+      return;
+    }
+    const all = msg.entries || [];
+    const current = all.find((e) => e.current);
+    const shown = all
+      .filter((e) => !e.current && (!current || e.id !== current.saved_as) && e.turns > 0)
+      .sort((a, b) => (dateOf(b.ended || b.started)?.getTime() || 0) - (dateOf(a.ended || a.started)?.getTime() || 0))
+      .slice(0, RECENT_MAX);
+    clearChildren(recentListEl);
+    recentChatsEl.hidden = shown.length === 0;
+    for (const e of shown) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'recent-row';
+      row.setAttribute('role', 'listitem');
+      const title = document.createElement('span');
+      title.className = 'recent-title';
+      title.textContent = e.title || 'Untitled chat';
+      const age = document.createElement('span');
+      age.className = 'recent-age';
+      age.textContent = whenOf(e.ended || e.started);
+      row.title = 'Open "' + (e.title || 'Untitled chat') + '"';
+      row.appendChild(title);
+      row.appendChild(age);
+      row.addEventListener('click', () => vscode.postMessage({ type: 'historyResume', id: e.id }));
+      recentListEl.appendChild(row);
+    }
+  }
+
+  // The folder this chat works in, beside the name in the header.
+  /** @param {{ name?: string, path?: string }} msg */
+  function showFolder(msg) {
+    const el = document.getElementById('brandFolder');
+    if (!el) {
+      return;
+    }
+    el.textContent = msg.name || '';
+    el.title = msg.path || '';
+    el.hidden = !msg.name;
   }
 
   // A TRANSCRIPT, NOT A CHAT WINDOW.
@@ -3407,21 +3465,15 @@
 
   const controls = window.MochiiiControls
     ? window.MochiiiControls.init(vscode, {
-        toggleSettings: () => toggleSettings(),
         closeSettings: () => setModelPopupOpen(false),
         closePopups: () => {
           setHistoryOpen(false);
           setModelPopupOpen(false);
           setModesPopupOpen(false);
+          setContextPopupOpen(false);
         },
         attachRemaining: () => MAX_ATTACH_FILES - pendingAttachments.length,
         focusComposer: () => inputEl.focus(),
-        // The command, then its default argument selected: typing replaces it.
-        prefill: (/** @type {string} */ cmd, /** @type {string} */ arg) => {
-          inputEl.value = cmd + arg;
-          inputEl.focus();
-          inputEl.setSelectionRange(cmd.length, cmd.length + arg.length);
-        },
       })
     : null;
 
@@ -3717,7 +3769,7 @@
         break;
       case 'modelMenu':
         renderModelMenu(msg);
-        if (controls) controls.renderProviders(msg);
+        if (controls) controls.renderProvider(msg);
         break;
       case 'info':
         addInfoLine(String(msg.text || ''));
@@ -3750,11 +3802,15 @@
         break;
       case 'historyEntries':
         renderHistory(msg);
+        renderRecent(msg);
         break;
       case 'historyChanged':
         if (historyPopup && !historyPopup.hidden) {
           vscode.postMessage({ type: 'historyList', text: historyQuery });
         }
+        break;
+      case 'folder':
+        showFolder(msg);
         break;
       case 'currentBookmark':
         setCurrentBookmark(msg.on === true);
