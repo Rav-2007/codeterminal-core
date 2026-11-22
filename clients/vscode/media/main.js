@@ -3118,12 +3118,22 @@
       b.textContent = `backups: ${summary.backupDir} (restore with: mochiii-daemon edits undo)`;
       container.appendChild(b);
 
+      // A task's parts share one folder and it restores the whole task, so
+      // only the newest card offers it, and says so.
+      for (const older of Array.from(transcriptEl.querySelectorAll('.undo-btn'))) {
+        if (older.getAttribute('data-backup') === summary.backupDir) older.remove();
+      }
       const undoBtn = document.createElement('button');
       undoBtn.className = 'undo-btn';
-      undoBtn.textContent = 'Undo this apply';
+      undoBtn.setAttribute('data-backup', summary.backupDir);
+      undoBtn.textContent = "Undo this task's edits";
       undoBtn.addEventListener('click', () => {
         if (pendingUndoButton) {
           return; // another undo is already in flight; ignore extra clicks
+        }
+        if (streaming) {
+          addInfoLine('Stop the task first, then undo its edits.');
+          return;
         }
         pendingUndoButton = undoBtn;
         undoBtn.disabled = true;

@@ -2495,9 +2495,18 @@ export class ChatPanel {
     if (this.undoInFlight) {
       return;
     }
+    // The folder is the whole task's: undone under a running task, the next
+    // part would build on edits that are no longer there.
+    if (this.inFlight || this.autoApplyRunInFlight) {
+      this.postSafe({ type: 'undoResult', restored: 0, error: 'stop the task first' });
+      return;
+    }
     this.undoInFlight = true;
     try {
       const result = await undoEdits(CLIENT_NAME, workspacePath(), backupDir);
+      if (!result.error && this.task?.backupDir === backupDir) {
+        this.forgetTask(); // nothing of it is left to resume
+      }
       this.host.webview.postMessage({
         type: 'undoResult',
         restored: result.restored,
@@ -4042,7 +4051,7 @@ export function chatPanelStyles(): string {
   }
   .edit-summary .summary-line { font-weight: 600; margin-bottom: 4px; }
   .edit-summary .summary-refusal { color: var(--ct-danger); margin-bottom: 2px; }
-  .edit-summary .summary-backup { color: var(--ct-muted); font-style: italic; margin-top: 4px; }
+  .edit-summary .summary-backup { color: var(--ct-muted); font-style: italic; margin-top: 4px; overflow-wrap: anywhere; }
   .edit-summary .undo-btn { margin-top: 6px; }
   .edit-summary .summary-undo-result { margin-top: 6px; font-style: italic; }
   .sr-only {
