@@ -386,7 +386,10 @@ export function chatLookStyles(): string {
   .edit-proposal .edit-footer .view-diff-btn { margin: 0; border-radius: 6px; padding: 5px 12px; font-size: 12px; color: var(--vscode-button-secondaryForeground, var(--ct-ink)); background: var(--vscode-button-secondaryBackground, transparent); }
   .edit-proposal .edit-footer .actions { margin-left: auto; display: flex; gap: 6px; }
   .edit-proposal .edit-footer .actions button { font: inherit; font-size: 12px; }
-  .edit-proposal .result { margin-top: 8px; }
+  .edit-proposal .result { margin-top: 8px; overflow-wrap: anywhere; }
+  /* A long path has no place to break, and one sideways-scrolled the whole chat. */
+  .msg .body { overflow-wrap: anywhere; }
+  .msg .body table { overflow-wrap: break-word; }
 
   /* Under an answer: what it stood on, and Copy, shown while the answer is
      hovered or the button has the keyboard. */
