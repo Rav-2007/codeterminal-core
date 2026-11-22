@@ -109,7 +109,7 @@
             "plan"
           ],
           "enumDescriptions": [
-            "Works without asking inside the project. Asks before going outside it, sending out, or wiping data.",
+            "Works without asking inside the project. Asks when it recognises going outside it, sending out, or wiping data.",
             "Every edit waits for your Apply.",
             "Reads your code and writes a plan; proposes no edits."
           ],
