@@ -14,8 +14,9 @@ your code, fix bugs, write tests, and review the changes Mochiii makes.
 - **An agent, with your say.** With a provider's model that supports tools,
   Mochiii reads and searches the project, makes edits, and runs commands and
   tests. In Auto it does that without asking, after a warning the first time.
-  It still asks before it reaches outside the project, sends something out, or
-  runs a command it recognises as wiping data. Commands are not sandboxed.
+  It still asks when it recognises something that reaches outside the project,
+  sends something out or wipes data. Commands are not sandboxed, and that check
+  can miss some.
   Web search is off as shipped.
 - **Build from a spec.** `/spec` writes down what you want, `/spec build` builds
   it tests-first, and `/spec check` grades the result.
