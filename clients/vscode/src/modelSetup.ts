@@ -95,7 +95,7 @@ export function queryModelStatus(binaryPath: string, timeoutMs = 20000): Promise
   });
 }
 
-function humanMB(bytes: number): string {
+export function humanMB(bytes: number): string {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
@@ -107,7 +107,7 @@ function humanMB(bytes: number): string {
 // format is specified, and it would silently show nothing the day that format
 // changes -- whereas passing the line through degrades to "slightly less
 // polished" instead of "appears frozen".
-async function runDownload(binaryPath: string, output: vscode.OutputChannel): Promise<boolean> {
+export async function runDownload(binaryPath: string, output: vscode.OutputChannel): Promise<boolean> {
   return vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,

@@ -132,6 +132,11 @@
     },
     "commands": [
       {
+        "command": "mochiii.indexFolder",
+        "title": "Index Folder for Code Search",
+        "category": "Mochiii"
+      },
+      {
         "command": "mochiii.addToChat",
         "title": "Add to Mochiii",
         "category": "Mochiii"

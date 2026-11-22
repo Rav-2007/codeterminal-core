@@ -943,6 +943,12 @@ export class ChatPanel {
 
   // attachText hands the composer one piece of context the way a file arrives:
   // started, then extracted, so it shows as a chip and is counted on the meter.
+  /** Whether a task is running here: the service must not be stopped under it. */
+  static busy(): boolean {
+    const panel = ChatPanel.current;
+    return !!panel && (panel.inFlight !== undefined || panel.autoApplyRunInFlight);
+  }
+
   /** Explorer's "Add to Mochiii", now or once the chat has opened. */
   static addFromExplorer(uris: vscode.Uri[]): void {
     const panel = ChatPanel.current;

@@ -28,12 +28,9 @@ your code, fix bugs, write tests, and review the changes Mochiii makes.
 ## Code search
 
 Code search finds the code that matters for each question and follows your
-saves. It needs an index of the folder, and in this version the terminal app
-builds it:
-
-1. `npm install -g mochiii`
-2. In your project folder, run `mochiii --index`.
-3. In VS Code, run **Mochiii: Restart Daemon**.
+saves. It needs an index of the folder. Mochiii offers to build one the first
+time you open a folder; later, run **Mochiii: Index Folder for Code Search**.
+The first index also downloads a search model, once for your computer.
 
 Without an index the agent can still read and search files with its tools, and
 a model that gets no tools sees only what you attach and the file you have open.
