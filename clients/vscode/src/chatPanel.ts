@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -40,6 +41,8 @@ import {
   streamPrompt,
   TurnError,
   undoEdits,
+  WorkingCopyInfo,
+  spendStatus,
 } from './daemonClient';
 import { ChatHost, panelHost, viewHost } from './chatHost';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
@@ -47,6 +50,7 @@ import { ChatLocation, chatElsewhereHtml, chatElsewhereOptions } from './chatEls
 import { activeWorkingFolder } from './workingFolder';
 import { AUTO_ASK_WHY, AutoAsk, autoAsks, autoPlace, insideProject } from './autoAccess';
 import { askAutoConsent, autoAccepted, autoNeedsConsent } from './autoConsent';
+import { PlanItem, TaskProgress, TaskRun, isContinuation, progressText, stopKind } from './taskRun';
 import { ConnectOutcome, connectKey, hasConnectKey } from './connectBridge';
 import { ANY_KEY_CHOICE, modelChoices, providerChoices } from './connectFlow';
 import { ICONS, chatPagesMarkup, chatPagesStyles, headerPageButtons } from './chatPages/markup';
@@ -162,13 +166,26 @@ function showElsewhere(webview: vscode.Webview, viewId: string, where: ChatLocat
 // that enters this panel from the daemon comes through here. Without this a
 // reopened or compacted chat re-sent every stale copy of the open file as
 // history (withoutEditorState).
+const CONTINUED = '(Mochiii continued the task by itself)';
+// The provider failures worth another try (modelerror.go's classes).
+const RETRYABLE_ERRORS = new Set(['rate_limited', 'upstream_unavailable', 'no_response']);
+const PROGRESS_MS = 1000;
+const SPEND_POLL_MS = 3000;
+// Reasoning kept from a part for the next one's handoff.
+const MAX_THOUGHTS = 4000;
+
 function turnsFromWire(turns: Turn[] | undefined): Turn[] {
   if (!turns) {
     return [];
   }
   return turns
     .filter((t) => t.role === 'user' || t.role === 'assistant')
-    .map((t) => (t.role === 'user' ? { ...t, content: withoutEditorState(t.content) } : t));
+    .map((t) => {
+      if (t.role !== 'user') return t;
+      const typed = withoutEditorState(t.content);
+      // A handoff is stored as a prompt, and was typed by nobody (taskRun.ts).
+      return { ...t, content: isContinuation(typed) ? CONTINUED : typed };
+    });
 }
 
 // ChatPanel owns exactly one webview panel and the extension-host side of
@@ -317,6 +334,8 @@ export class ChatPanel {
 
   // Set while an auto-apply run holds an edit for the person's Apply or Skip.
   private editAnswered: (() => void) | undefined;
+  // Stop was pressed on this run: what would be held is skipped instead.
+  private skipHeld = false;
 
   // FULL ACCESS IS LIVE, unlike currentRunAutoApply: the mode button moved to
   // Auto answers the question already waiting, and moved away from it asks
@@ -325,6 +344,23 @@ export class ChatPanel {
   private liveAuto = false;
   private planTurn = false;
   private consentOpen = false;
+
+  // THE LONG TASK (taskRun.ts): one per prompt, over as many turns as it takes.
+  private task: TaskRun | undefined;
+  private taskHistory: Turn[] = [];
+  private taskSession = '';
+  private taskPlanMode: { kind?: string; mode?: string; autoApply: boolean } = { autoApply: false };
+  private segmentSaved: string[] = [];
+  private segmentNotSaved: { file: string; why: string }[] = [];
+  private segmentRunning = false;
+  // For the handoff (taskRun.ts): the part's last reasoning and what it read.
+  private segmentThoughts = '';
+  private readonly segmentLooked = new Set<string>();
+  private autoApplyDone: Promise<void> = Promise.resolve();
+  private progressTimer: ReturnType<typeof setInterval> | undefined;
+  private meterTokens = 0;
+  private segmentSteps = 0;
+  private shownSteps = 0;
 
   // autoApplyRunInFlight is true for exactly the duration of runAutoApply
   // (see below) -- i.e. from right after edit proposals arrive until every
@@ -712,6 +748,8 @@ export class ChatPanel {
       this.onToolApprovalDecision(msg.callId, msg.decision);
     } else if (msg.type === 'modeChanged' && typeof msg.mode === 'string') {
       void this.onModeChanged(msg.mode);
+    } else if (msg.type === 'resumeTask') {
+      this.onResumeTask();
     } else if (msg.type === 'stopTurn') {
       this.onStopTurn();
     } else if (msg.type === 'ready') {
@@ -1009,6 +1047,7 @@ export class ChatPanel {
       this.resetPending = false;
     }
     this.transcript = [];
+    this.forgetTask();
     this.lastGrounding = undefined;
     this.postSafe({ type: 'clearTranscript' });
     this.postSafe({ type: 'currentBookmark', on: false });
@@ -1025,7 +1064,7 @@ export class ChatPanel {
   private onPrompt(text: string, autoApply: boolean, mode?: string): void {
     if (this.editAnswered) {
       this.replyLocal('First Apply or Skip the edit outside this project, above.');
-      this.postSafe({ type: 'done' });
+      if (!this.inFlight) this.postSafe({ type: 'done' }); // a running task stays working
       return;
     }
     if (this.inFlight || this.autoApplyRunInFlight) {
@@ -1237,6 +1276,8 @@ export class ChatPanel {
       lastGrounding: this.lastGrounding,
       replaceTranscript: (turns) => {
         this.transcript = turns;
+        // /clear and /compact: the paused task's chat is no longer this one.
+        if (!this.inFlight) this.forgetTask();
       },
       forgetGrounding: () => {
         this.lastGrounding = undefined;
@@ -1369,16 +1410,33 @@ export class ChatPanel {
     this.inFlight.abort();
     this.inFlight = undefined;
     this.clearPendingApproval();
-    this.clearPendingReview();
+    // Between segments the last one's edits may still be being saved.
+    if (this.autoApplyRunInFlight) {
+      this.skipHeld = true;
+      if (this.editAnswered) {
+        this.skipForStop();
+      }
+    } else {
+      this.clearPendingReview();
+    }
+    const cutShort = this.segmentRunning;
+    this.segmentRunning = false;
+    this.endProgress('stopped');
     const partial = this.streamingAnswer;
     this.streamingAnswer = '';
     if (partial !== '') {
       // 'stopped' is the incomplete reason, so the next turn's history says the
       // answer was cut off by the user rather than presenting a half sentence
       // as a finished thought.
-      this.transcript.push({ role: 'assistant', content: partial, incomplete: 'stopped' });
+      this.keepAnswer({ role: 'assistant', content: partial, incomplete: 'stopped' }, (this.task?.segments ?? 0) > 0);
     }
-    this.postSafe({ type: 'stopped' });
+    this.postSafe({
+      type: 'stopped',
+      detail: this.task?.continues
+        ? 'You stopped this task. What its finished parts saved stays' +
+          (cutShort ? '; edits from the part that was running were not applied.' : '.')
+        : undefined,
+    });
     this.postSafe({ type: 'done' });
   }
 
@@ -1697,10 +1755,12 @@ export class ChatPanel {
     promptKind: string | undefined,
     autoApply: boolean,
     mode?: string,
-    pipeline?: string[]
+    pipeline?: string[],
+    // A later segment of this task: wirePrompt is then its handoff.
+    continuing?: TaskRun
   ): void {
     if (this.needsApiKey) {
-      void this.connectThenStart(() => this.startModelTurn(displayText, wirePrompt, promptKind, autoApply, mode, pipeline));
+      void this.connectThenStart(() => this.startModelTurn(displayText, wirePrompt, promptKind, autoApply, mode, pipeline, continuing));
       return;
     }
     if (autoApply && mode !== 'plan' && autoNeedsConsent()) {
@@ -1728,11 +1788,27 @@ export class ChatPanel {
     // failed turn left the user's message in the transcript with no reply,
     // and the model would otherwise read the same question asked twice.
     const last = this.transcript[this.transcript.length - 1];
-    if (this.retryingPrompt && last && last.role === 'user' && last.content === displayText) {
+    if (!continuing && this.retryingPrompt && last && last.role === 'user' && last.content === displayText) {
       this.transcript.pop();
     }
-    const history = [...this.transcript];
-    this.transcript.push({ role: 'user', content: displayText });
+    // A segment is sent the chat as it stood before the task: its handoff
+    // carries the task, and each earlier segment's prose again would only
+    // fill the model's window.
+    const history = continuing ? [...this.taskHistory] : [...this.transcript];
+    if (!continuing) {
+      this.transcript.push({ role: 'user', content: displayText });
+      this.beginTask(wirePrompt, history, promptKind, autoApply, mode);
+    }
+    const task = continuing ?? (this.task as TaskRun);
+    this.segmentSaved = [];
+    this.segmentNotSaved = [];
+    this.segmentSteps = 0;
+    this.segmentRunning = true;
+    this.segmentThoughts = '';
+    this.segmentLooked.clear();
+    let usageSeen: TurnUsage | undefined;
+    let check: WorkingCopyInfo | undefined;
+    let stop: IncompleteInfo | undefined;
 
     const controller = new AbortController();
     this.inFlight = controller;
@@ -1786,6 +1862,7 @@ export class ChatPanel {
           this.host.webview.postMessage({ type: 'redactions', kinds });
         },
         onReasoning: (text: string) => {
+          this.segmentThoughts = (this.segmentThoughts + text).slice(-MAX_THOUGHTS);
           this.host.webview.postMessage({ type: 'reasoning', text });
         },
         onDegraded: (items: Degradation[]) => {
@@ -1823,19 +1900,28 @@ export class ChatPanel {
         },
         onIncomplete: (info: IncompleteInfo) => {
           incompleteReason = info.reason;
-          this.host.webview.postMessage({ type: 'incomplete', info });
+          stop = info;
+          // A limit is shown once it is known to be the end (afterSegment).
+          if (stopKind(info) === 'final') {
+            this.host.webview.postMessage({ type: 'incomplete', info });
+          }
         },
         onToolActivity: (activity: ToolActivity) => {
+          if (activity.tool === 'read_file' && activity.target) {
+            this.segmentLooked.add(activity.target);
+          }
           this.host.webview.postMessage({ type: 'toolActivity', activity });
         },
         // The spec workflow's reports, rendered as plain text by the webview.
         onWorkingCopy: (info) => {
+          check = info;
           this.host.webview.postMessage({ type: 'specNotice', kind: 'working-copy', text: workingCopyText(info) });
         },
         onSpecReport: (report) => {
           this.host.webview.postMessage({ type: 'specNotice', kind: 'spec-report', text: specReportText(report) });
         },
         onTasks: (tasks) => {
+          task.setPlan(tasks as PlanItem[]);
           // The text for a screen reader and the old renderer; the items for
           // the checklist (Stage 9).
           this.host.webview.postMessage({ type: 'tasks', text: taskListText(tasks), items: tasks.map((t) => ({ title: t.title, status: t.status })) });
@@ -1857,7 +1943,15 @@ export class ChatPanel {
           const spec = getActiveSpec(workspacePath());
           const specGrant = req.spec_grant && spec ? req.spec_grant : '';
           const label = `${req.server}__${req.tool} ${clip(req.arguments, 120)}`;
-          this.pendingApproval = { callId: req.call_id, respond, specGrant, spec, label, req };
+          // The question's wait is the user's time, not the task's.
+          task.waiting(true);
+          this.postProgress();
+          const answered = (decision: string, auto?: boolean): void => {
+            task.waiting(false);
+            this.postProgress();
+            respond(decision, auto);
+          };
+          this.pendingApproval = { callId: req.call_id, respond: answered, specGrant, spec, label, req };
           this.host.webview.postMessage({
             type: 'toolApproval',
             request: specGrant ? req : { ...req, spec_grant: undefined },
@@ -1875,22 +1969,19 @@ export class ChatPanel {
         // what is in the composer); this is the only number that says what the
         // model was actually given, and the window it was given it against.
         onUsage: (usage: TurnUsage) => {
+          usageSeen = usage;
           this.lastUsage = usage;
           this.host.webview.postMessage({ type: 'usage', usage });
         },
         onDone: () => {
-          this.transcript.push(
+          this.keepAnswer(
             incompleteReason
               ? { role: 'assistant', content: answer, incomplete: incompleteReason }
               : { role: 'assistant', content: answer },
+            !!continuing,
           );
-          this.inFlight = undefined;
           this.clearPendingApproval();
-          this.host.webview.postMessage({ type: 'done' });
-          if (this.chatSync && this.chatRev === '') {
-            // Not under a review: catchUp waits for one to finish (canCatchUp).
-            void this.catchUp();
-          }
+          void this.afterSegment(task, controller, { answer, stop, usage: usageSeen, check });
         },
         onError: (err: Error) => {
           // A stream that fails PARTWAY has already shown the user real text.
@@ -1906,15 +1997,23 @@ export class ChatPanel {
           // onDone are mutually exclusive (daemonClient's `finished` guard), so
           // this cannot double-push.
           if (answer.trim()) {
-            this.transcript.push({
-              role: 'assistant',
-              content: answer,
-              incomplete: incompleteReason || 'provider_error',
-            });
+            this.keepAnswer(
+              { role: 'assistant', content: answer, incomplete: incompleteReason || 'provider_error' },
+              !!continuing,
+            );
           }
-          this.inFlight = undefined;
           this.clearPendingApproval();
           const te = err as TurnError;
+          if (task.continues && RETRYABLE_ERRORS.has(te.errorClass ?? '')) {
+            // Retried, and after that paused with a Resume: what is saved stays.
+            void this.afterSegment(task, controller, {
+              answer, usage: usageSeen, check, stop: { reason: 'provider_error', detail: err.message },
+            });
+            return;
+          }
+          this.inFlight = undefined;
+          this.segmentRunning = false;
+          this.endProgress('stopped');
           this.host.webview.postMessage({
             type: 'error',
             message: err.message,
@@ -1932,8 +2031,177 @@ export class ChatPanel {
         specGrants: this.specGrants.digestsFor(activeSpec),
         reasoningEffort: this.reasoningEffort || undefined,
         chatRevision: sentRev || undefined,
+        session: this.taskSession || undefined,
       }
     );
+  }
+
+  private beginTask(goal: string, history: Turn[], kind: string | undefined, autoApply: boolean, mode?: string): void {
+    this.endProgress();
+    // Where an edit waits for a person (Manual), nothing continues by itself.
+    this.task = new TaskRun(goal, autoApply || mode === 'plan');
+    this.taskHistory = history;
+    this.taskPlanMode = { kind, mode, autoApply };
+    this.taskSession = randomBytes(16).toString('hex');
+    this.meterTokens = 0;
+    this.shownSteps = 0;
+    this.startProgress();
+  }
+
+  // keepAnswer stores a task's segments as the one answer they are, marked as
+  // the LAST one ended. Each ending builds its own turn, cut-off mark and all,
+  // where clients/tui/incompleteparity_test.go looks for it.
+  private keepAnswer(turn: Turn, continued: boolean): void {
+    let content = turn.content;
+    const last = this.transcript[this.transcript.length - 1];
+    if (continued && last && last.role === 'assistant') {
+      content = [last.content, content].filter((text) => text.trim()).join('\n\n');
+      this.transcript.pop();
+    }
+    this.transcript.push({ ...turn, content });
+  }
+
+  // afterSegment runs when a turn ends: saves come first, then what is next.
+  private async afterSegment(
+    task: TaskRun,
+    controller: AbortController,
+    end: { answer: string; stop?: IncompleteInfo; usage?: TurnUsage; check?: WorkingCopyInfo }
+  ): Promise<void> {
+    this.segmentRunning = false;
+    this.streamingAnswer = '';
+    if (this.autoApplyRunInFlight) {
+      await this.autoApplyDone;
+    }
+    if (controller.signal.aborted || this.disposed || this.task !== task) {
+      return; // stopped, or the chat moved on
+    }
+    const next = task.end({
+      answer: end.answer,
+      steps: end.usage?.calls ?? this.segmentSteps,
+      tokens: end.usage ? end.usage.prompt_tokens + end.usage.completion_tokens : 0,
+      stop: end.stop,
+      saved: [...this.segmentSaved],
+      notSaved: [...this.segmentNotSaved],
+      check: end.check,
+      thoughts: this.segmentThoughts,
+      looked: [...this.segmentLooked],
+    });
+    this.segmentSteps = 0;
+
+    if (next.kind === 'continue') {
+      this.postSafe({
+        type: 'segmentEnd',
+        text: end.stop ? 'Continuing by itself.' : 'Checking that the task is finished.',
+      });
+      if (next.waitMs > 0) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, next.waitMs);
+          controller.signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+      }
+      if (controller.signal.aborted || this.disposed || this.task !== task) {
+        return;
+      }
+      this.startSegment(task, next.prompt);
+      return;
+    }
+
+    this.inFlight = undefined;
+    if (next.kind === 'paused') {
+      this.postSafe({ type: 'incomplete', info: { reason: end.stop?.reason ?? 'task_limit', detail: next.why, resume: true } });
+    }
+    this.endProgress(next.kind);
+    this.host.webview.postMessage({ type: 'done' });
+    if (this.chatSync && this.chatRev === '') {
+      // Not under a review: catchUp waits for one to finish (canCatchUp).
+      void this.catchUp();
+    }
+  }
+
+  private startSegment(task: TaskRun, prompt: string): void {
+    const { kind, autoApply, mode } = this.taskPlanMode;
+    this.postSafe({ type: 'segmentStart' });
+    // No pipeline: /team's roles ran in the first segment.
+    this.startModelTurn(task.goal, prompt, kind, autoApply, mode, undefined, task);
+  }
+
+  private onResumeTask(): void {
+    const task = this.task;
+    if (this.inFlight || this.autoApplyRunInFlight) {
+      return;
+    }
+    if (!task) {
+      this.replyLocal('That task is no longer open. Say what to do next.');
+      this.postSafe({ type: 'done' });
+      return;
+    }
+    const prompt = task.resume();
+    this.startProgress();
+    this.startSegment(task, prompt);
+  }
+
+  // THE LINE CLAUDE CODE SHOWS: time, steps and the provider's own tokens.
+  // Steps and tokens are exact at each segment's end; between, tokens come
+  // from the daemon's meter and a step is each time that meter moves.
+  private startProgress(): void {
+    this.stopProgressTimer();
+    let polledAt = 0;
+    let polling = false;
+    const tick = (): void => {
+      this.postProgress();
+      const now = Date.now();
+      if (polling || !this.segmentRunning || now - polledAt < SPEND_POLL_MS) return;
+      polledAt = now;
+      polling = true;
+      const session = this.taskSession;
+      spendStatus(CLIENT_NAME, session)
+        .then((status) => {
+          const tokens = status?.session?.tokens ?? 0;
+          if (session === this.taskSession && tokens > this.meterTokens) {
+            this.meterTokens = tokens;
+            if (this.segmentRunning) this.segmentSteps++;
+          }
+        })
+        .catch(() => undefined) // the line only loses its freshest number
+        .finally(() => (polling = false));
+    };
+    this.progressTimer = setInterval(tick, PROGRESS_MS);
+    this.postProgress();
+  }
+
+  private stopProgressTimer(): void {
+    if (this.progressTimer) clearInterval(this.progressTimer);
+    this.progressTimer = undefined;
+  }
+
+  private postProgress(end?: TaskProgress['state']): void {
+    const task = this.task;
+    if (!task) return;
+    const state = end ?? (this.pendingApproval || this.editAnswered ? 'waiting' : 'working');
+    this.shownSteps = Math.max(this.shownSteps, task.steps + this.segmentSteps);
+    this.postSafe({
+      type: 'taskProgress',
+      working: state === 'working' || state === 'waiting',
+      text: progressText({ state, ms: task.elapsedMs(), steps: this.shownSteps, tokens: Math.max(task.tokens, this.meterTokens) }),
+    });
+  }
+
+  // endProgress stops the line, leaving the totals when the task has an ending.
+  private endProgress(state?: TaskProgress['state']): void {
+    this.stopProgressTimer();
+    if (state && this.task) {
+      this.task.waiting(true);
+      this.postProgress(state);
+    }
+  }
+
+  private forgetTask(): void {
+    this.endProgress();
+    this.task = undefined;
+    this.postSafe({ type: 'taskProgress', working: false, text: '' });
   }
 
   // onToolApprovalDecision relays what the user clicked back to the waiting
@@ -2065,9 +2333,12 @@ export class ChatPanel {
   private startEditReview(blocks: EditBlockWire[]): void {
     this.clearPendingReview();
     this.pendingBlocks = blocks;
+    this.skipHeld = false;
+    // One backup folder for the whole task, so one Undo.
+    this.runBackupDir = this.task?.backupDir || undefined;
     this.postCurrentBlockOrSummary();
     if (this.currentRunAutoApply) {
-      void this.runAutoApply();
+      this.autoApplyDone = this.runAutoApply();
     }
   }
 
@@ -2094,7 +2365,20 @@ export class ChatPanel {
     try {
       while (this.currentIndex < this.pendingBlocks.length) {
         if (this.asksBeforeSaving(this.pendingBlocks[this.currentIndex])) {
-          await new Promise<void>((resolve) => (this.editAnswered = resolve));
+          await new Promise<void>((resolve) => {
+            this.editAnswered = resolve;
+            if (this.skipHeld) {
+              this.skipForStop();
+            } else {
+              // A question like any other: the user's time, not the task's.
+              this.task?.waiting(true);
+              this.postProgress();
+            }
+          });
+          if (!this.skipHeld) {
+            this.task?.waiting(false);
+            this.postProgress();
+          }
         } else {
           await this.onApplyEdit();
         }
@@ -2164,9 +2448,14 @@ export class ChatPanel {
         }
         this.applied++;
         this.appliedPaths.push(edit.file_path);
+        this.segmentSaved.push(edit.file_path);
+        if (this.task && !this.task.backupDir && result.backup_dir) {
+          this.task.backupDir = result.backup_dir;
+        }
       } else {
         this.refused++;
         this.refusalReasons.push(`${edit.file_path}: ${result.error ?? 'refused'}`);
+        this.segmentNotSaved.push({ file: edit.file_path, why: result.error ?? 'refused' });
       }
       this.host.webview.postMessage({
         type: 'applyResult',
@@ -2182,6 +2471,7 @@ export class ChatPanel {
       const message = (err as Error).message;
       this.refused++;
       this.refusalReasons.push(`${edit.file_path}: ${message}`);
+      this.segmentNotSaved.push({ file: edit.file_path, why: message });
       this.host.webview.postMessage({
         type: 'applyResult',
         applied: false,
@@ -2215,6 +2505,12 @@ export class ChatPanel {
     return this.currentRunAutoApply && !insideProject(workspacePath(), edit.file_path);
   }
 
+  // skipForStop answers a held edit for a person who pressed Stop: not saved.
+  private skipForStop(): void {
+    this.postSafe({ type: 'applyResult', applied: false, error: 'not saved: you stopped the task' });
+    this.onSkipEdit();
+  }
+
   private releaseHeldEdit(): void {
     const answered = this.editAnswered;
     this.editAnswered = undefined;
@@ -2225,6 +2521,10 @@ export class ChatPanel {
     if (this.currentIndex >= this.pendingBlocks.length || this.applyInFlight) {
       return;
     }
+    this.segmentNotSaved.push({
+      file: this.pendingBlocks[this.currentIndex].file_path,
+      why: this.skipHeld ? 'the user stopped the task' : 'the user skipped it',
+    });
     this.skipped++;
     this.currentIndex++;
     this.releaseHeldEdit();
@@ -2249,9 +2549,18 @@ export class ChatPanel {
     if (this.undoInFlight) {
       return;
     }
+    // The folder is the whole task's: undone under a running task, the next
+    // part would build on edits that are no longer there.
+    if (this.inFlight || this.autoApplyRunInFlight) {
+      this.postSafe({ type: 'undoResult', restored: 0, error: 'stop the task first' });
+      return;
+    }
     this.undoInFlight = true;
     try {
       const result = await undoEdits(CLIENT_NAME, workspacePath(), backupDir);
+      if (!result.error && this.task?.backupDir === backupDir) {
+        this.forgetTask(); // nothing of it is left to resume
+      }
       this.host.webview.postMessage({
         type: 'undoResult',
         restored: result.restored,
@@ -2418,6 +2727,7 @@ export class ChatPanel {
       }
       this.clearPendingApproval();
       this.clearPendingReview();
+      this.forgetTask();
       this.showTurns(turnsFromWire(r.turns), `Opened “${r.entry?.title ?? 'chat'}” from history`);
       // The resumed chat IS the shared chat now, as of this revision.
       this.chatRev = r.chat_revision ?? '';
@@ -2490,6 +2800,7 @@ export class ChatPanel {
   }
 
   private dispose(): void {
+    this.stopProgressTimer();
     if (this.editAnswered) this.clearPendingReview(); // nobody is left to answer
     // Aborting the panel aborts the in-flight connection -- no orphaned
     // sockets left reading a dead webview.
@@ -3794,7 +4105,7 @@ export function chatPanelStyles(): string {
   }
   .edit-summary .summary-line { font-weight: 600; margin-bottom: 4px; }
   .edit-summary .summary-refusal { color: var(--ct-danger); margin-bottom: 2px; }
-  .edit-summary .summary-backup { color: var(--ct-muted); font-style: italic; margin-top: 4px; }
+  .edit-summary .summary-backup { color: var(--ct-muted); font-style: italic; margin-top: 4px; overflow-wrap: anywhere; }
   .edit-summary .undo-btn { margin-top: 6px; }
   .edit-summary .summary-undo-result { margin-top: 6px; font-style: italic; }
   .sr-only {
@@ -3909,6 +4220,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
   <div id="degraded" role="status" aria-live="polite" aria-label="Degraded functionality notice"></div>
   <div id="provider" role="status" aria-live="polite" aria-label="Serving provider"></div>
   </div>
+  <div id="taskLine" class="task-line" hidden><span id="taskLineText"></span><button type="button" id="taskLineStop" class="task-stop" aria-label="Stop this task" hidden>Stop</button></div>
   <div id="composer">
     <div id="slashMenu" role="listbox" aria-label="Slash commands"></div>
     <!-- Connect a model provider (media/connect.js): the provider, its key, then a

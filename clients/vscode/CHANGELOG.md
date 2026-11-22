@@ -33,6 +33,9 @@ bundles Mochiii 1.6.1.
   settings included), sending out, or wiping data. The check can miss some:
   commands are not sandboxed. Manual and Plan ask as before. Auto as your
   default can only be set in your own user settings, never by a project.
+- **Long tasks continue by themselves** in Auto and Plan, up to an hour or 400
+  steps, then offer Resume. A line shows time, steps and tokens while a task
+  works, and the totals when it ends.
 - **The panel has its own chat**, apart from the terminal app's.
 - **MCP servers** can be added from the built-in Marketplace or by command, URL
   or pasted JSON.

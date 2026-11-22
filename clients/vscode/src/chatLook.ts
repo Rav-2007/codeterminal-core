@@ -335,6 +335,10 @@ export function chatLookStyles(): string {
     padding: 10px 12px;
     font-size: 12.5px;
   }
+  .task-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; padding: 4px 12px; font-size: 12px; color: var(--ct-muted); font-variant-numeric: tabular-nums; }
+  .task-line[hidden], .task-line [hidden] { display: none; }
+  .task-line #taskLineText { min-width: 0; overflow-wrap: anywhere; }
+  .task-line .task-stop { padding: 0; border: 0; background: none; color: var(--ct-ink); text-decoration: underline; cursor: pointer; font: inherit; }
   .tool-approval .approval-auto, .edit-proposal .approval-auto { margin: 6px 0; color: var(--ct-ink); }
   .tool-approval .approval-heading {
     font-weight: 400;
@@ -382,7 +386,10 @@ export function chatLookStyles(): string {
   .edit-proposal .edit-footer .view-diff-btn { margin: 0; border-radius: 6px; padding: 5px 12px; font-size: 12px; color: var(--vscode-button-secondaryForeground, var(--ct-ink)); background: var(--vscode-button-secondaryBackground, transparent); }
   .edit-proposal .edit-footer .actions { margin-left: auto; display: flex; gap: 6px; }
   .edit-proposal .edit-footer .actions button { font: inherit; font-size: 12px; }
-  .edit-proposal .result { margin-top: 8px; }
+  .edit-proposal .result { margin-top: 8px; overflow-wrap: anywhere; }
+  /* A long path has no place to break, and one sideways-scrolled the whole chat. */
+  .msg .body { overflow-wrap: anywhere; }
+  .msg .body table { overflow-wrap: break-word; }
 
   /* Under an answer: what it stood on, and Copy, shown while the answer is
      hovered or the button has the keyboard. */
@@ -467,6 +474,13 @@ export function chatLookStyles(): string {
     #autoApplyToggle.pill { padding: 0 6px; }
     #appHeader { padding-left: 10px; padding-right: 8px; }
     #composer { padding: 8px 8px 10px; }
+  }
+  /* The row was 286px with the notices chip up, so at 280px Send and Stop were
+     cut off. It closes up: still nothing hides. */
+  @media (max-width: 300px) {
+    .composer-bar { gap: 1px; }
+    .composer-bar #noticesChip.pill { padding: 0 3px; gap: 3px; }
+    .composer-bar #modelChip.pill { min-width: 34px; padding: 0 4px; }
   }
 `;
 }
