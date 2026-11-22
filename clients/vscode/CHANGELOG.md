@@ -1,7 +1,44 @@
 # Changelog
 
-All notable changes to the Mochiii extension. Versions follow the extension's
-`version` in `package.json`.
+All notable changes to the Mochiii extension. The extension has its own version
+number; each release also says which Mochiii release it bundles.
+
+## [1.0.1] - 2026-11-22
+
+The first Marketplace update since 0.1.0 (Linux) and 0.1.1 (Windows). It
+bundles Mochiii 1.6.1.
+
+### Before you update
+
+- **Using the terminal app too?** Update it to 1.6.1 or later first, run
+  `mochiii -stop` in each folder you use it in, then reload VS Code. The first
+  new version to open chat memory upgrades it, and an older version cannot use
+  the upgraded file.
+- **Installed a `.vsix` numbered 1.1.0 to 1.6.1 by hand?** Uninstall it first.
+  VS Code will not replace it with a lower number.
+
+### Changed
+
+- **A quieter panel:** one row under the prompt, three buttons in the header,
+  your recent chats in an empty chat, and colours from your VS Code theme.
+- **Clearer cards:** an approval has one primary button and a one-line warning;
+  an edit shows its change in the card.
+- **One place per control:** Settings is one page, Account is one card, and MCP
+  servers are one list with one Add server button.
+- **Agent mode is on** for providers' models that support tools. Commands ask
+  first; web search is off.
+- **The panel has its own chat**, apart from the terminal app's.
+- **MCP servers** can be added from the built-in Marketplace or by command, URL
+  or pasted JSON.
+
+### Fixed
+
+- An MCP server's buttons no longer run off a narrow side bar.
+
+# Earlier builds
+
+Only 0.1.0 and 0.1.1 below were published on the Marketplace. The others,
+including an older build that was also numbered 1.0.1, were installed by hand.
 
 ## [1.6.1] - 2026-11-21
 
@@ -282,7 +319,7 @@ tasks judge every check.
   never brings back a deleted file; a Python `/fix` can finish on a plain
   `pytest` (#43).
 
-## [1.0.1] - 2026-10-16
+## [1.0.1, earlier build] - 2026-10-16
 
 The first non-preview release. Everything since 0.1.1 (PRs #23–#40), plus the
 1.0 fixes below. It is the code tagged v1.0.0, renumbered: that version never

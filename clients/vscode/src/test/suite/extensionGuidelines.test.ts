@@ -179,6 +179,23 @@ suite('the manifest meets the Marketplace guidelines', () => {
       assert.strictEqual(pkg.preview, true, 'a 0.x release is listed as Preview');
     }
   });
+
+  // EXTENSION 1.0.1 CARRIES MOCHIII 1.6.1 (2026-11-22): two numbers. The bundled
+  // service stamped with the extension's was announced by terminal 1.6.1 as
+  // "Mochiii 1.0.1, from another install".
+  test('the bundled service is stamped with appVersion, the package named by version', () => {
+    assert.match(String(pkg.appVersion), /^\d+\.\d+\.\d+$/, 'appVersion: the Mochiii release bundled inside');
+    const local = fs.readFileSync(path.join(ROOT, 'scripts', 'package-local.js'), 'utf8');
+    assert.ok(local.includes('-X main.daemonVersion=${appVersion}'), 'package-local stamps the service with something other than appVersion');
+    assert.ok(local.includes('mochiii-vscode-${target}-${version}.vsix'), 'the package is not named by the extension\'s own version');
+  });
+
+  test('the listing links to mochiii.in and its support address, not to the source', () => {
+    assert.strictEqual(pkg.repository, undefined, 'repository puts the source and its issues on the Marketplace page');
+    assert.strictEqual(pkg.bugs.email, 'supportmochiii@gmail.com', 'the security address is not the support address');
+    const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    assert.ok(!/github\.com/i.test(readme), 'the Marketplace page links to GitHub');
+  });
 });
 
 async function waitUntil(done: () => boolean, timeoutMs: number, what: string): Promise<void> {

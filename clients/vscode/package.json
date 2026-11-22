@@ -1,8 +1,9 @@
 {
   "name": "mochiii-vscode",
   "displayName": "Mochiii",
-  "description": "An AI coding assistant for VS Code. Your code is indexed and searched on your own machine, and you choose which model it talks to.",
-  "version": "1.6.1",
+  "description": "Beta. An AI coding agent for your codebase: answers, edits, tests and commands, with your own model key or a local model.",
+  "version": "1.0.1",
+  "appVersion": "1.6.1",
   "publisher": "MochiiiAIAgent",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/icon.png",
@@ -10,37 +11,32 @@
     "color": "#2B1B24",
     "theme": "dark"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Rav-2007/codeterminal-core.git",
-    "directory": "clients/vscode"
-  },
+  "homepage": "https://www.mochiii.in",
   "bugs": {
-    "url": "https://github.com/Rav-2007/codeterminal-core/issues"
+    "url": "https://www.mochiii.in/support",
+    "email": "supportmochiii@gmail.com"
   },
-  "homepage": "https://github.com/Rav-2007/codeterminal-core/tree/main/clients/vscode#readme",
+  "qna": "https://www.mochiii.in/faq",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "AI",
-    "Chat",
-    "Programming Languages",
-    "Other"
+    "Chat"
   ],
   "keywords": [
     "ai",
-    "assistant",
-    "chat",
-    "coding assistant",
     "agent",
-    "local",
+    "coding agent",
+    "chat",
     "code search",
-    "rag",
-    "refactor",
+    "mcp",
+    "local model",
     "ollama",
     "openrouter",
-    "groq"
+    "refactor",
+    "debugging",
+    "tests"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
