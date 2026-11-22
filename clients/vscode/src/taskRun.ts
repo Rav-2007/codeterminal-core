@@ -69,6 +69,9 @@ export interface SegmentEnd {
   saved: string[];
   notSaved: { file: string; why: string }[];
   check?: LastCheck;
+  // The end of the model's reasoning, and the files it read.
+  thoughts?: string;
+  looked?: string[];
 }
 
 export type NextStep =
@@ -92,6 +95,34 @@ const NOT_CODE_NAMES = new Set(['license', 'changelog', '.gitignore', '.env.exam
 function isCode(file: string): boolean {
   const name = path.basename(file).toLowerCase();
   return !NOT_CODE.has(path.extname(name)) && !NOT_CODE_NAMES.has(name);
+}
+
+// A PASS THAT PROVES LITTLE: one named test or test file, or an exit status
+// the line itself hides. The service reports any passing check as passed, and
+// one named test once ended a task with three of its six bugs untouched.
+// Reading it wrong costs one look back, so it leans that way.
+const NARROW_CHECKS = [
+  /::\w/,
+  /(^|\s)(-k|-t|-run|--run=|--grep|--filter|--tests|--exact|--testNamePattern|--gtest_filter)(\s|=|$)/,
+  /(^|[\s/'"])(test_[\w.-]+|[\w.-]+[._-](test|spec))\.(py|[cm]?[jt]sx?|rb|php|java|rs)\b/,
+];
+const HIDES_FAILURE = [/(^|[^|])\|\s*(head|tail|grep|tee|cat|sed|awk|less)\b/, /\|\|\s*(true|echo|:)/, /;\s*(true|echo|exit 0)\b/];
+
+export function provesLittle(command: string): boolean {
+  return NARROW_CHECKS.concat(HIDES_FAILURE).some((re) => re.test(command));
+}
+
+// The look back, repeated in the handoff if a limit falls inside it.
+const REVIEW =
+  'Go through each thing the task asks, one at a time: read the code as it is now and prove that this part works ' +
+  '(for a reported problem, reproduce what was reported), not that it looks right. Fix what does not. Then run the ' +
+  'whole test suite or build, without piping it or hiding its exit status, and fix what it shows. ' +
+  'Then give the final summary, and say plainly anything that is not done or could not be checked.';
+
+// The service's own record at the end of an answer: not a finding.
+function findings(answer: string): string {
+  const at = answer.indexOf('**Where this stands**');
+  return (at < 0 ? answer : answer.slice(0, at)).replace(/[\s-]+$/, '').trim();
 }
 
 function finished(item: PlanItem): boolean {
@@ -119,6 +150,12 @@ export class TaskRun {
   private check: LastCheck | undefined;
   private changedSinceCheck = false;
   private lastAnswer = '';
+  // WHAT HISTORY DROPS: each earlier part's findings, the newest reasoning and
+  // the files already read. Without them every part read the project again.
+  private readonly notes: string[] = [];
+  private thoughts = '';
+  private readonly looked = new Set<string>();
+  private changedCode = false;
   private finishPassUsed = false;
   private retries = 0;
   // Where this hour and these 400 steps started: Resume moves both.
@@ -159,10 +196,19 @@ export class TaskRun {
     this.segments++;
     this.steps += seg.steps;
     this.tokens += seg.tokens;
-    if (seg.answer.trim()) this.lastAnswer = seg.answer.trim();
+    if (seg.answer.trim()) {
+      const earlier = findings(this.lastAnswer);
+      if (earlier) this.notes.push(earlier);
+      this.lastAnswer = seg.answer.trim();
+    }
+    if (seg.thoughts?.trim()) this.thoughts = seg.thoughts.trim();
+    for (const file of seg.looked ?? []) this.looked.add(file);
     for (const file of seg.saved) this.saved.add(file);
     this.notSaved = seg.notSaved;
-    if (seg.saved.some(isCode)) this.changedSinceCheck = true;
+    if (seg.saved.some(isCode)) {
+      this.changedSinceCheck = true;
+      this.changedCode = true;
+    }
     if (seg.check?.checked) {
       this.check = seg.check;
       if (seg.check.passed && !seg.check.stale) this.changedSinceCheck = false;
@@ -197,11 +243,18 @@ export class TaskRun {
   private atEnd(seg: SegmentEnd): NextStep {
     if (!this.continues || this.finishPassUsed || asksTheUser(seg.answer)) return { kind: 'done' };
     const open = this.plan.filter((item) => !finished(item));
-    if (open.length === 0 && !this.changedSinceCheck) return { kind: 'done' };
+    // Code that changed is taken as finished only from a short task with a
+    // check of the whole: across several parts, the claim is all there is.
+    const unproven = this.changedCode && (this.segments > 1 || this.changedSinceCheck || this.checkProvesLittle());
+    if (open.length === 0 && !unproven) return { kind: 'done' };
     const next = this.next(this.finishPass(open), 0);
     if (next.kind !== 'continue') return { kind: 'done' };
     this.finishPassUsed = true;
     return next;
+  }
+
+  private checkProvesLittle(): boolean {
+    return !!this.check?.checked && provesLittle(this.check.checked);
   }
 
   private next(prompt: string, waitMs: number): NextStep {
@@ -252,8 +305,18 @@ export class TaskRun {
       const since = this.check.stale || (this.check.passed && this.changedSinceCheck) ? ', and code changed after it' : '';
       out.push('', `Last check: \`${keepStart(this.check.checked, 500)}\` ${result}${since}.`);
     }
+    if (this.looked.size > 0) {
+      out.push('', `Files you already read: ${keepEnd([...this.looked].join(', '), 2_500)}`);
+    }
+    if (this.notes.length > 0) {
+      const each = this.notes.map((note) => `- ${keepEnd(note, 1_500)}`).join('\n');
+      out.push('', 'What you found in earlier parts:', keepEnd(each, 5_000));
+    }
     if (this.lastAnswer) {
       out.push('', 'What you wrote when the last part stopped:', keepEnd(this.lastAnswer, 6_000));
+    }
+    if (this.thoughts) {
+      out.push('', 'The end of your reasoning in that part (your notes, not yet verified):', keepEnd(this.thoughts, 3_500));
     }
     return out;
   }
@@ -266,8 +329,10 @@ export class TaskRun {
       '',
       'Carry on from there. Nobody is waiting to reply, so do not stop to ask whether to continue. ' +
         'Do not redo finished work or read again what you do not need. Use relative paths. ' +
+        'Make each change as soon as you know its cause: changes are saved at the end of every part, ' +
+        'and findings you neither act on nor write down are lost. ' +
         (this.plan.length > 0 ? 'Keep the task list up to date. ' : '') +
-        'When all of it is done, check it works and give the final summary.',
+        (this.finishPassUsed ? `You were checking that the task is finished. ${REVIEW}` : 'When all of it is done, check it works and give the final summary.'),
     ].join('\n');
   }
 
@@ -275,14 +340,17 @@ export class TaskRun {
     const gaps: string[] = [];
     if (open.length > 0) gaps.push(`these items of your task list are still open: ${open.map((i) => i.title).join('; ')}`);
     if (this.changedSinceCheck) gaps.push('code changed and no check has passed since');
+    else if (this.checkProvesLittle()) gaps.push('the last check covered one part or hid whether it failed');
     return [
       CONTINUATION_MARK,
       '',
       ...this.state(),
       '',
-      `You said you were finished, but ${gaps.join(', and ')}. ` +
-        "Finish what is open, run the project's own tests or build and fix what they show. " +
-        'Then give the final summary, and say plainly anything that is not done or could not be checked.',
+      (gaps.length > 0
+        ? `You said you were finished, but ${gaps.join(', and ')}. `
+        : 'You said you were finished. Before that stands, check it. ') +
+        (open.length > 0 ? 'Finish what is open. ' : '') +
+        REVIEW,
     ].join('\n');
   }
 }
