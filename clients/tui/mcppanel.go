@@ -82,12 +82,14 @@ func (m chatModel) openMCPPanel() (tea.Model, tea.Cmd) {
 	p := &mcpPanel{loading: true, picker: newListPicker("", nil)}
 	p.picker.bare = true
 	m.mcpPanel = p
+	m.fitPanelRows()
 	return m, submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionServers})
 }
 
 // closeMCPPanel puts the transcript back.
 func (m *chatModel) closeMCPPanel() {
 	m.mcpPanel = nil
+	m.fitPanelRows()
 	if m.pendingMCPAdd == nil {
 		m.input.Placeholder = defaultInputPlaceholder
 	}
