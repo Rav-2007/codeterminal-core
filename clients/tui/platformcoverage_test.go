@@ -44,6 +44,7 @@ var linuxOnlySuites = map[string]string{
 	"brokenpipe_pty_test.go":    "an early reader closing the pipe under it",
 	"sanitize_pty_test.go":      "escape filtering measured at an actual terminal",
 	"renderprofile_pty_test.go": "the 14-environment x 4-profile determinism matrix (2.4)",
+	"paste_pty_test.go":         "a bracketed paste written as a terminal writes it: one question, cut with a notice",
 }
 
 func TestPlatformCoverageIsStated(t *testing.T) {
