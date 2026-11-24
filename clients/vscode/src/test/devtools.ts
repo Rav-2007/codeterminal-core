@@ -277,6 +277,115 @@ export class ChatDevTools {
     await sleep(60);
   }
 
+  /**
+   * A key with modifiers, as a hand presses it: ctrl+c, shift+ArrowLeft. `key`
+   * is the KeyboardEvent key ('c', 'ArrowLeft', 'Escape'); text is never sent,
+   * so a chord types nothing.
+   */
+  async chord(key: string, mods: { ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean } = {}): Promise<void> {
+    const named: Record<string, [string, number]> = {
+      ArrowLeft: ['ArrowLeft', 37], ArrowRight: ['ArrowRight', 39], ArrowUp: ['ArrowUp', 38], ArrowDown: ['ArrowDown', 40],
+      Escape: ['Escape', 27], Home: ['Home', 36], End: ['End', 35], Enter: ['Enter', 13],
+    };
+    const [code, vk] = named[key] ?? ['Key' + key.toUpperCase(), key.toUpperCase().charCodeAt(0)];
+    const modifiers = (mods.alt ? 1 : 0) | (mods.ctrl ? 2 : 0) | (mods.meta ? 4 : 0) | (mods.shift ? 8 : 0);
+    const base = { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers };
+    await this.page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
+    await this.page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+    await sleep(80);
+  }
+
+  /** The chat view's point (x, y) in workbench pixels: for input beyond the chat's own edges. */
+  async toPage(x: number, y: number): Promise<{ x: number; y: number }> {
+    const [ox, oy] = await this.origin();
+    return { x: ox + x, y: oy + y };
+  }
+
+  /** The left button pressed at a chat point, and held. */
+  async mouseDown(x: number, y: number): Promise<void> {
+    const at = await this.toPage(x, y);
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at });
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button: 'left', buttons: 1, clickCount: 1 });
+  }
+
+  /** The mouse moved, button held, to a chat point (which may be outside the chat), in `steps` moves. */
+  async mouseDragTo(x: number, y: number, steps = 8, from?: { x: number; y: number }): Promise<void> {
+    const to = await this.toPage(x, y);
+    const start = from ? await this.toPage(from.x, from.y) : to;
+    for (let i = 1; i <= steps; i++) {
+      const at = { x: start.x + ((to.x - start.x) * i) / steps, y: start.y + ((to.y - start.y) * i) / steps };
+      await this.page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'left', buttons: 1 });
+      await sleep(16);
+    }
+  }
+
+  /** The button held still where it is: Chromium autoscrolls on its own timer while it is. */
+  async mouseHold(x: number, y: number, ms: number): Promise<void> {
+    const at = await this.toPage(x, y);
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      await this.page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'left', buttons: 1 });
+      await sleep(50);
+    }
+  }
+
+  async mouseUp(x: number, y: number): Promise<void> {
+    const at = await this.toPage(x, y);
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(60);
+  }
+
+  /** The mouse moved over a chat point with no button held. */
+  async mouseMove(x: number, y: number): Promise<void> {
+    const at = await this.toPage(x, y);
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, buttons: 0 });
+    await sleep(60);
+  }
+
+  /** A right click at a chat point. */
+  async rightClick(x: number, y: number): Promise<void> {
+    const at = await this.toPage(x, y);
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at });
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button: 'right', buttons: 2, clickCount: 1 });
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button: 'right', buttons: 0, clickCount: 1 });
+    await sleep(300);
+  }
+
+  /** A click at a workbench point (a VS Code menu drawn over the chat). */
+  async clickPage(x: number, y: number): Promise<void> {
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(200);
+  }
+
+  /** The mouse wheel turned over a chat point: deltaY < 0 scrolls up. */
+  async wheel(x: number, y: number, deltaY: number): Promise<void> {
+    const at = await this.toPage(x, y);
+    await this.page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...at, deltaX: 0, deltaY });
+    await sleep(120);
+  }
+
+  /**
+   * Puts kinds of data on the system clipboard together, as a browser's copy
+   * does (text/html beside text/plain, or an image), from the workbench page --
+   * vscode.env.clipboard writes text only.
+   */
+  async writeClipboard(items: Record<string, string>): Promise<void> {
+    // From the chat's own frame: the webview may write the clipboard (its Copy
+    // buttons do), the workbench page is refused.
+    const js =
+      "(async () => { const f = document.getElementById('active-frame'); const w = f ? f.contentWindow : window;" +
+      ` const items = ${JSON.stringify(items)}; const blobs = {};` +
+      ' for (const [type, data] of Object.entries(items)) {' +
+      "   blobs[type] = type.startsWith('image/') ? new w.Blob([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], { type }) : new w.Blob([data], { type }); }" +
+      ' await w.navigator.clipboard.write([new w.ClipboardItem(blobs)]); return true; })()';
+    const r = await this.chat.send('Runtime.evaluate', { expression: js, awaitPromise: true, userGesture: true });
+    if (r.exceptionDetails) {
+      throw new Error('writing the clipboard: ' + (r.exceptionDetails.exception?.description ?? r.exceptionDetails.text));
+    }
+  }
+
   async screenshot(file: string): Promise<void> {
     const r = await this.page.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(file, Buffer.from(r.data, 'base64'));

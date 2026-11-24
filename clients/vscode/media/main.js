@@ -1260,6 +1260,162 @@
   }
 
   /** @param {string} role @param {string} text @param {boolean} [restored] */
+  // FOLLOWING THE ANSWER, AND LEAVING A READER ALONE (2026-11-24).
+  //
+  // Every update -- each streamed token, a tool line, a notice -- used to set
+  // the chat's scrollTop to the bottom. A reader who had scrolled up was pulled
+  // back down at every token, and a drag-select upwards was undone as fast as
+  // the mouse made it. The chat now follows the end only while the reader is
+  // AT the end: scrolling up stops it, scrolling back down starts it again, and
+  // nothing scrolls while the mouse button is down in the chat. What the reader
+  // must answer (a tool question, an edit waiting for Apply) and what they sent
+  // themselves still bring the end into view.
+  let followingEnd = true;
+  let pointerInTranscript = false;
+  let followedBeforePress = true;
+  const END_SLACK_PX = 24;
+
+  function nearEnd() {
+    return transcriptEl.scrollHeight - transcriptEl.clientHeight - transcriptEl.scrollTop <= END_SLACK_PX;
+  }
+
+  /** Shows the end of the chat if the reader is following it; `force` starts following again. */
+  function followEnd(force) {
+    if (force && !pointerInTranscript) {
+      followingEnd = true;
+    }
+    if (!followingEnd || pointerInTranscript) {
+      return;
+    }
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
+  transcriptEl.addEventListener(
+    'scroll',
+    () => {
+      // The reader's position decides, and only theirs: the chat's own scroll
+      // to the end lands at the end, so it keeps following on.
+      if (!nearEnd()) {
+        followingEnd = false;
+      } else if (!pointerInTranscript) {
+        followingEnd = true;
+      }
+    },
+    { passive: true }
+  );
+  transcriptEl.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    pointerInTranscript = true;
+    followedBeforePress = followingEnd;
+  });
+  function pointerReleased() {
+    if (!pointerInTranscript) return;
+    pointerInTranscript = false;
+    dragPoint = null;
+    const sel = window.getSelection();
+    // A click (nothing selected) changes nothing; a selection keeps the chat
+    // where it is, to be copied, unless the reader ended it at the very end.
+    followingEnd = sel && !sel.isCollapsed && transcriptEl.contains(sel.anchorNode) ? nearEnd() : followedBeforePress;
+    flushFinalRenders();
+    followEnd();
+  }
+  window.addEventListener('mouseup', pointerReleased);
+  window.addEventListener('blur', pointerReleased);
+
+  // A DRAG-SELECT THAT LEAVES THE CHAT. Above the chat (its header, or the
+  // editor outside the panel) the browser moved the selection's end to the
+  // start of the page at once -- everything above, header and all -- and the
+  // selection stopped following as the chat scrolled. While the button is
+  // down and the pointer is above or below the chat, the end is put on the
+  // chat's first or last visible line instead, at every move and at every step
+  // of the browser's own scrolling, so the selection grows as the chat scrolls.
+  /** @type {{ x: number, y: number } | null} */
+  let dragPoint = null;
+  function keepSelectionInChat() {
+    if (!pointerInTranscript || !dragPoint) return;
+    const r = transcriptEl.getBoundingClientRect();
+    if (dragPoint.y >= r.top && dragPoint.y <= r.bottom) return; // inside: the browser's own end is right
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !transcriptEl.contains(sel.anchorNode) || !document.caretRangeFromPoint) return;
+    const up = dragPoint.y < r.top;
+    const x = Math.min(Math.max(dragPoint.x, r.left + 4), r.right - 4);
+    // The first line of the chat's text in from that edge: the header's logo
+    // overlaps the chat's top corner, and padding or a gap between messages
+    // has no text to put the end on.
+    for (let step = 4; step < Math.min(120, r.height / 2); step += 8) {
+      const pos = document.caretRangeFromPoint(x, up ? r.top + step : r.bottom - step);
+      if (pos && transcriptEl.contains(pos.startContainer) && pos.startContainer.nodeType === Node.TEXT_NODE) {
+        sel.extend(pos.startContainer, pos.startOffset);
+        return;
+      }
+    }
+  }
+  document.addEventListener(
+    'mousemove',
+    (e) => {
+      if (!pointerInTranscript) return;
+      if ((e.buttons & 1) === 0) {
+        // Let go outside the chat, where its mouseup never arrives: the first
+        // move back over it, with no button held, ends the drag.
+        pointerReleased();
+        return;
+      }
+      dragPoint = { x: e.clientX, y: e.clientY };
+      // After the browser's own update for this move, which this corrects.
+      requestAnimationFrame(keepSelectionInChat);
+    },
+    true
+  );
+  transcriptEl.addEventListener('scroll', () => keepSelectionInChat(), { passive: true });
+
+  // A streamed token is ADDED to the text already there. Setting the whole
+  // text again on each one replaced the text node, which threw away any
+  // selection inside the answer -- a reader could not select what was still
+  // being written.
+  /** @param {HTMLElement} bubble @param {string} text */
+  function appendStreamText(bubble, text) {
+    const last = bubble.lastChild;
+    if (last && last.nodeType === Node.TEXT_NODE) {
+      /** @type {Text} */ (last).appendData(text);
+    } else {
+      bubble.appendChild(document.createTextNode(text));
+    }
+  }
+
+  // The finished answer is drawn as markdown, which replaces its text. Not
+  // while the reader holds the button in the chat or has a selection in that
+  // answer: it is drawn when they let go.
+  /** @type {Map<HTMLElement, string>} */
+  const finalRenders = new Map();
+  /** @param {HTMLElement} el */
+  function selectionTouches(el) {
+    const sel = window.getSelection();
+    return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(el);
+  }
+  /** @param {HTMLElement} bubble @param {string} raw */
+  function renderFinalWhenFree(bubble, raw) {
+    if (pointerInTranscript || selectionTouches(bubble)) {
+      finalRenders.set(bubble, raw);
+      return;
+    }
+    renderFencedContent(bubble, raw);
+    followEnd();
+  }
+  function flushFinalRenders() {
+    for (const [bubble, raw] of Array.from(finalRenders)) {
+      if (!bubble.isConnected) {
+        finalRenders.delete(bubble);
+      } else if (!pointerInTranscript && !selectionTouches(bubble)) {
+        finalRenders.delete(bubble);
+        renderFencedContent(bubble, raw);
+        followEnd();
+      }
+    }
+  }
+  document.addEventListener('selectionchange', () => {
+    if (finalRenders.size > 0) flushFinalRenders();
+  });
+
   function addBubble(role, text, restored) {
     if (role === 'user' || role === 'assistant') {
       dismissFirstRun();
@@ -1302,7 +1458,7 @@
 
     msg.appendChild(card);
     transcriptEl.appendChild(msg);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd(role === 'user' && !restored);
 
     if (role === 'assistant') {
       currentAssistantCard = card;
@@ -1339,7 +1495,7 @@
     } else {
       transcriptEl.appendChild(line);
     }
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
   }
 
   // renderFencedContent builds DOM for assistant text with ``` fences.
@@ -1700,7 +1856,13 @@
         ln.textContent = String(n + 1);
         const lc = document.createElement('span');
         lc.className = 'lc';
-        lc.textContent = lines[n];
+        // An empty line is a <br>, not an empty span: a selection copied
+        // across it lost the blank line (2026-11-24).
+        if (lines[n] === '') {
+          lc.appendChild(document.createElement('br'));
+        } else {
+          lc.textContent = lines[n];
+        }
         row.appendChild(ln);
         row.appendChild(lc);
         block.appendChild(row);
@@ -1789,7 +1951,7 @@
   function finalizeAssistant() {
     if (currentAssistantBubble && currentAssistantCard) {
       if (!currentAssistantPlain) {
-        renderFencedContent(currentAssistantBubble, currentAssistantRaw);
+        renderFinalWhenFree(currentAssistantBubble, currentAssistantRaw);
       }
       attachCopyFooter(currentAssistantCard, currentAssistantRaw, lastGroundingInfo);
     }
@@ -1904,7 +2066,7 @@
       currentReasoningBody = body;
     }
     currentReasoningBody.textContent += text;
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
   }
 
   // setRedactions renders the kinds of secret-shaped text the daemon's
@@ -2051,7 +2213,7 @@
     cta.appendChild(button);
 
     transcriptEl.appendChild(cta);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd(true); // a question for the reader
     // Focus is deliberately NOT moved to the button: the composer holds it
     // when the panel opens, and stealing it would interrupt someone already
     // typing. #transcript is a polite live region (see chatPanel.ts), so a
@@ -2135,7 +2297,7 @@
     pre.textContent = technical;
     details.appendChild(pre);
     body.appendChild(details);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
   }
 
   // applyConnection renders the one state the host reported. Called for every
@@ -2194,7 +2356,7 @@
     div.appendChild(document.createTextNode(' '));
     div.appendChild(cont);
     transcriptEl.appendChild(div);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
   }
 
   // showEditProposal renders ONE edit block as a whole-block diff -- the
@@ -2376,7 +2538,7 @@
     }
 
     transcriptEl.appendChild(container);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd(!(currentRunAuto && !autoAsk)); // an edit waiting for Apply is a question
     currentEditProposalEl = container;
   }
 
@@ -2475,7 +2637,7 @@
     // Found by turning on checkJs for this file, which had never been
     // typechecked or linted by anything.
     transcriptEl.appendChild(el);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
   }
 
   // The spec workflow's reports -- whether the change was built or tested, a
@@ -2491,7 +2653,7 @@
     el.setAttribute('role', 'status');
     el.textContent = text;
     transcriptEl.appendChild(el);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
   }
 
   // A build's task list, updated IN PLACE while the turn runs, so the user
@@ -2513,7 +2675,7 @@
     }
     if (!Array.isArray(items) || items.length === 0) {
       currentTasksEl.textContent = String(text || '');
-      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      followEnd();
       return;
     }
     clearChildren(currentTasksEl);
@@ -2542,7 +2704,7 @@
       list.appendChild(li);
     }
     currentTasksEl.appendChild(list);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
   }
 
   // setActiveSpec shows the spec every prompt now works to, or hides the chip.
@@ -2746,7 +2908,7 @@
     });
 
     transcriptEl.appendChild(container);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd(true); // a question for the reader
 
     currentApprovalEl = container;
     currentApprovalCallId = req.call_id;
@@ -2863,7 +3025,7 @@
     note.setAttribute('role', 'status');
     note.textContent = label + ' — ' + toolLabel({ server: req.server, tool: req.tool });
     transcriptEl.appendChild(note);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
     inputEl.focus();
   }
 
@@ -3089,7 +3251,7 @@
     if (block) {
       refreshWorkSummary(block);
     }
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
   }
 
   // showEditSummary renders the end-of-run outcome once every block in a
@@ -3144,7 +3306,7 @@
     }
 
     transcriptEl.appendChild(container);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    followEnd();
   }
 
   // showUndoResult replaces the clicked Undo button with an honest outcome
@@ -3317,6 +3479,7 @@
       return;
     }
     hideSlashMenu();
+    hidePasteNote();
     clearEditProposal();
     clearToolApproval();
     toolActivityEls.clear();
@@ -3586,6 +3749,8 @@
 
   function clearTranscriptView() {
     clearChildren(transcriptEl);
+    finalRenders.clear();
+    followingEnd = true;
     if (firstRunEl) {
       transcriptEl.appendChild(firstRunEl);
     }
@@ -3693,6 +3858,61 @@
     );
   }
 
+  // PASTE (2026-11-24). Text pastes as a textarea pastes it: plain text, also
+  // from a web page, and a multi-line paste is never sent by its newlines. Two
+  // things are added. A long paste says, under the composer, how long it is --
+  // all of it goes with the question, and nothing else said so. A pasted image
+  // is attached, read on this machine as one picked with + Image is: the
+  // composer used to drop it without a word.
+  const PASTE_NOTE_CHARS = 10000;
+  const PASTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024; // ATTACH_LIMITS.maxImageBytes in src/attachmentExtract.ts
+  const PASTE_IMAGE_TYPES = /^image\/(png|jpeg|webp|gif|bmp)$/;
+  const pasteNoteEl = document.getElementById('pasteNote');
+  function hidePasteNote() {
+    if (pasteNoteEl) {
+      pasteNoteEl.hidden = true;
+      pasteNoteEl.textContent = '';
+    }
+  }
+  /** @param {File} file */
+  function attachPastedImage(file) {
+    if (file.size > PASTE_IMAGE_MAX_BYTES) {
+      addBubble('error', 'The pasted image is larger than 20 MB, the most an attached image can be.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result || '');
+      const comma = url.indexOf(',');
+      if (comma < 0) return;
+      vscode.postMessage({ type: 'pasteImage', mime: file.type, data: url.slice(comma + 1), remaining: MAX_ATTACH_FILES - pendingAttachments.length });
+    };
+    reader.readAsDataURL(file);
+  }
+  inputEl.addEventListener('paste', (e) => {
+    const data = e.clipboardData;
+    if (!data) return;
+    const text = data.getData('text/plain');
+    if (!text) {
+      const item = Array.from(data.items).find((it) => it.kind === 'file' && PASTE_IMAGE_TYPES.test(it.type));
+      const file = item ? item.getAsFile() : null;
+      if (file) {
+        e.preventDefault();
+        attachPastedImage(file);
+      }
+      return;
+    }
+    if (text.length >= PASTE_NOTE_CHARS && pasteNoteEl) {
+      pasteNoteEl.textContent =
+        'Pasted ' + text.length.toLocaleString('en-US') + ' characters (about ' + Math.round(text.length / 4).toLocaleString('en-US') +
+        ' tokens). All of it is sent with your question.';
+      pasteNoteEl.hidden = false;
+    }
+  });
+  inputEl.addEventListener('input', () => {
+    if (inputEl.value === '') hidePasteNote();
+  });
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (connectPopup && connectPopup.handle(msg)) {
@@ -3736,6 +3956,7 @@
             body.textContent = turn.content || '';
           }
         }
+        followEnd(true);
         break;
       case 'clearTranscript':
         clearTranscriptView();
@@ -3814,8 +4035,8 @@
         }
         currentAssistantRaw += msg.text;
         currentAssistantPlain = msg.plain === true;
-        currentAssistantBubble.textContent = currentAssistantRaw;
-        transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        appendStreamText(currentAssistantBubble, msg.text);
+        followEnd();
         break;
       case 'done':
         currentTasksEl = null;
