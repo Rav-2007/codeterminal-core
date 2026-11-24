@@ -365,10 +365,10 @@ suite('chat pages: what the panel no longer shows', () => {
     assert.match(panel, /type: 'folder', name: path\.basename\(workspacePath\(\)\)/, 'the host must name the folder');
   });
 
-  test('the ⋯ menu lists the pages, then the bookmark', () => {
+  test('the ⋯ menu lists the pages, Open in new window, then the bookmark', () => {
     const menu = body.slice(body.indexOf('id="moreMenu"'), body.indexOf('id="historyPopup"'));
     const ids = [...menu.matchAll(/<button[^>]*id="([a-zA-Z]+)"/g)].map((m) => m[1]);
-    assert.deepStrictEqual(ids, ['customizeBtn', 'accountBtn', 'settingsBtn', 'bookmarkBtn']);
+    assert.deepStrictEqual(ids, ['customizeBtn', 'accountBtn', 'settingsBtn', 'newWindowBtn', 'bookmarkBtn']);
   });
 
   test('the composer is one row: mode, model, effort ... add, context, send', () => {
