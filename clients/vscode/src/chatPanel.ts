@@ -46,6 +46,7 @@ import {
   spendStatus,
 } from './daemonClient';
 import { ChatHost, panelHost, viewHost } from './chatHost';
+import { OPEN_CHAT_IN_NEW_WINDOW_COMMAND } from './chatWindow';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
 import { ChatLocation, chatElsewhereHtml, chatElsewhereOptions } from './chatElsewhere';
 import { activeWorkingFolder } from './workingFolder';
@@ -756,6 +757,8 @@ export class ChatPanel {
     }
     if (msg.type === 'pickAttachments' && typeof msg.remaining === 'number') {
       void this.onPickAttachments(msg.remaining);
+    } else if (msg.type === 'openInNewWindow') {
+      void vscode.commands.executeCommand(OPEN_CHAT_IN_NEW_WINDOW_COMMAND);
     } else if (msg.type === 'pasteImage' && typeof msg.mime === 'string' && typeof msg.data === 'string' && typeof msg.remaining === 'number') {
       void this.onPastedImage(msg.mime, msg.data, msg.remaining);
     } else if (msg.type === 'listModels') {
@@ -4283,6 +4286,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
     <div id="moreMenu" class="pop-menu more-menu" hidden>
       ${headerPageButtons()}
       <div class="menu-sep" role="separator"></div>
+      <button type="button" id="newWindowBtn" class="menu-item" title="Open this chat in a window of its own" aria-label="Open in new window">${ICONS.window}<span class="mi-text"><span class="mi-name">Open in new window</span><span class="mi-desc">This chat in a window of its own</span></span></button>
       <button type="button" id="bookmarkBtn" class="menu-item" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">${ICONS.star}<span class="mi-text"><span class="mi-name" id="bookmarkLabel">Bookmark this chat</span></span></button>
     </div>
     <!-- History, Claude Code style: every chat, newest first, bookmarks pinned

@@ -47,6 +47,7 @@ export const ICONS = {
   key: svg('<circle cx="5.2" cy="10.8" r="2.7"/><path d="m7.2 8.8 6-6M11 5l1.8 1.8M12.5 3.5l1.3 1.3"/>'),
   globe: svg('<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c1.8 1.7 2.6 3.7 2.6 6S9.8 12.3 8 14C6.2 12.3 5.4 10.3 5.4 8S6.2 3.7 8 2z"/>'),
   dot: svg('<circle cx="8" cy="8" r="4.5"/>'),
+  window: svg('<rect x="1.8" y="4.2" width="9.5" height="9.5" rx="1.5"/><path d="M5.2 2.2h7.1a1.5 1.5 0 0 1 1.5 1.5v7.1"/>'),
 };
 
 /** The three ⋯ menu items that open a page (Stage 9: they were header icons). */

@@ -152,6 +152,11 @@
         "category": "Mochiii"
       },
       {
+        "command": "mochiii.openChatInNewWindow",
+        "title": "Open Chat in New Window",
+        "category": "Mochiii"
+      },
+      {
         "command": "mochiii.restartDaemon",
         "title": "Restart Daemon",
         "category": "Mochiii"

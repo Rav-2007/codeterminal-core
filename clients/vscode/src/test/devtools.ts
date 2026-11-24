@@ -122,26 +122,34 @@ export class ChatDevTools {
     // Earlier tests leave other Mochiii webviews behind (a disposed panel, the
     // sidebar view), so the chat is the one whose frame is on screen and has a
     // composer -- not merely the first that matches.
-    let page: Target | undefined;
     let pageSession: Session | undefined;
     let chatSession: Session | undefined;
     let chatUrl = '';
     let seen = '';
     while (!chatSession) {
       const targets: Target[] = await getJson(port, '/json/list');
-      page = page ?? targets.find((t) => t.type === 'page' && t.url.includes('workbench'));
-      if (page && !pageSession) {
-        pageSession = await Session.open(page.webSocketDebuggerUrl);
+      // THE WINDOW THE CHAT IS IN, which need not be the main one: "Open Chat
+      // in New Window" moves it into a window of its own, another page.
+      let shown: string[] = [];
+      for (const page of targets.filter((t) => t.type === 'page')) {
+        const s = await Session.open(page.webSocketDebuggerUrl).catch(() => undefined);
+        if (!s) continue;
+        const r = await s
+          .send('Runtime.evaluate', {
+            expression:
+              "Array.from(document.querySelectorAll('iframe')).filter(e => /mochiii/i.test(e.src || '') && e.getClientRects().length).map(e => e.src)",
+            returnByValue: true,
+          })
+          .catch(() => undefined);
+        const here: string[] = r?.result?.value ?? [];
+        if (here.length > 0) {
+          pageSession?.close();
+          pageSession = s;
+          shown = here;
+          break;
+        }
+        s.close();
       }
-      const shown: string[] = pageSession
-        ? (
-            await pageSession.send('Runtime.evaluate', {
-              expression:
-                "Array.from(document.querySelectorAll('iframe')).filter(e => /mochiii/i.test(e.src || '') && e.getClientRects().length).map(e => e.src)",
-              returnByValue: true,
-            })
-          ).result.value
-        : [];
       const candidates = targets.filter((t) => t.type === 'iframe' && t.url.startsWith('vscode-webview://') && shown.includes(t.url));
       seen = `${shown.length} on screen, ${candidates.length} matching targets`;
       for (const t of candidates) {

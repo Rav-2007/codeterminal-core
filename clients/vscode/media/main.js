@@ -1025,6 +1025,11 @@
       }, 200);
     });
   }
+  // ⋯ > Open in new window: the host runs Mochiii: Open Chat in New Window.
+  const newWindowBtn = document.getElementById('newWindowBtn');
+  if (newWindowBtn) {
+    newWindowBtn.addEventListener('click', () => vscode.postMessage({ type: 'openInNewWindow' }));
+  }
   if (bookmarkBtn) {
     bookmarkBtn.addEventListener('click', () => {
       vscode.postMessage({ type: 'historyBookmark', id: '', on: !currentBookmarked });

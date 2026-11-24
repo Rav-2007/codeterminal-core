@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 
 import { CHAT_VIEW_ID, CHAT_VIEW_IDS, CHAT_VIEW_TYPE, CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
+import { OPEN_CHAT_IN_NEW_WINDOW_COMMAND, openChatInNewWindow } from './chatWindow';
 import { MOVE_CHAT_HERE_COMMAND } from './chatElsewhere';
 import { bundledDaemonDir, daemonBinaryName, resolveConfigPathSetting } from './daemonBinary';
 import { ConnectResponse, probeDaemon, resolvedWorkspaceRoot, sendConnect, setWorkspaceRoot } from './daemonClient';
@@ -444,6 +445,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       ChatPanel.createOrShow(context.extensionUri);
+    })
+  );
+
+  // The chat in a window of its own (chatWindow.ts): the editor tab, moved.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(OPEN_CHAT_IN_NEW_WINDOW_COMMAND, async () => {
+      if (!root) {
+        vscode.window.showInformationMessage(NO_WORKSPACE);
+        return;
+      }
+      await openChatInNewWindow({
+        commands: () => vscode.commands.getCommands(true),
+        openInEditor: () => ChatPanel.createOrShow(context.extensionUri),
+        chatIsActiveEditor: () => {
+          const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+          return input instanceof vscode.TabInputWebview && input.viewType.endsWith(CHAT_VIEW_TYPE);
+        },
+        execute: (command) => vscode.commands.executeCommand(command),
+        say: (line) => void vscode.window.showInformationMessage(line),
+        version: vscode.version,
+      });
     })
   );
 
