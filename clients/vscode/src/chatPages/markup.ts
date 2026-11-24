@@ -221,9 +221,9 @@ function settingsPage(): string {
           <label class="field" for="setDefaultMode">
             <span class="field-label">Mode for a new chat</span>
             <select id="setDefaultMode" data-setting="defaultMode">
-              <option value="auto">Auto — edits apply as they arrive</option>
-              <option value="manual">Manual — every edit waits for Apply</option>
-              <option value="plan">Plan — reads and plans, edits nothing</option>
+              <option value="auto">Auto — works without asking inside the project</option>
+              <option value="manual">Manual — every edit waits for your Apply</option>
+              <option value="plan">Plan — reads your code and writes a plan</option>
             </select>
           </label>
           <label class="field" for="setToolActivity">

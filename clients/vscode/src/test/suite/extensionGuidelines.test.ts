@@ -198,6 +198,55 @@ suite('the manifest meets the Marketplace guidelines', () => {
   });
 });
 
+// WHAT THE DOCS SAY AGAINST WHAT THE CODE DOES. Each claim below was true once
+// and was left behind by a change to the code; each row names the code that
+// makes it false, and the test reads that code too, so a row stops failing only
+// if the claim comes back true.
+suite('the docs say what the code does', () => {
+  const REPO = path.resolve(ROOT, '..', '..');
+  const read = (rel: string) => fs.readFileSync(path.join(REPO, rel), 'utf8');
+  const flat = (s: string) => s.replace(/\s+/g, ' ');
+
+  test('the Marketplace page does not say a model on your computer gets no tools', () => {
+    // The extension declares tool_approval on every chat connection and ships
+    // models.json with tools on; the daemon runs its agent loop for any model on
+    // that (daemon/agentloop.go agentModeEngaged). Only the terminal app holds a
+    // local model to chat until /agent on.
+    assert.match(read('clients/vscode/src/daemonClient.ts'), /handlers\.onToolApproval \? \[CAP_TOOL_APPROVAL\]/);
+    assert.strictEqual(JSON.parse(read('models.json')).mcp.enabled, true);
+    const readme = flat(read('clients/vscode/README.md'));
+    assert.ok(!/chat only, without tools/i.test(readme), 'clients/vscode/README.md says a local model starts as chat only');
+    assert.match(readme, /model on your computer is offered the same tools as any other model/);
+  });
+
+  test('README.md and REFERENCE.md do not say every edit waits for you (Auto, #130)', () => {
+    // Auto applies an edit inside the project without asking (chatPanel.ts
+    // runAutoApply), and a new chat starts in Auto (package.json defaultMode).
+    assert.strictEqual(pkg.contributes.configuration.properties['mochiii.defaultMode'].default, 'auto');
+    assert.match(read('clients/vscode/src/chatPanel.ts'), /private async runAutoApply\(\)[\s\S]*?await this\.onApplyEdit\(\);/);
+    const readme = flat(read('README.md'));
+    for (const stale of ['It shows you every change before it lands', 'Nothing is written until you say so', 'Anything that changes a file or runs a command waits for your approval']) {
+      assert.ok(!readme.includes(stale), `README.md still says "${stale}"`);
+    }
+    const ref = flat(read('docs/REFERENCE.md'));
+    assert.ok(!ref.includes('Nothing is applied without a human decision'), 'REFERENCE.md still says nothing is applied without a human decision');
+  });
+
+  test('REFERENCE.md describes VS Code\'s /connect, /mcp-server and chat as they are', () => {
+    const ref = flat(read('docs/REFERENCE.md'));
+    // The connect pop-up has three steps (media/connect.js), and /account exists.
+    assert.match(read('clients/vscode/media/connect.js'), /heading\('Step 3 of 3'/);
+    assert.match(read('clients/vscode/src/slashCommands.ts'), /name: 'account', kind: 'local'/);
+    assert.ok(!ref.includes('takes the key only, and has none of these screens'), 'REFERENCE.md says VS Code /connect takes the key only');
+    // /mcp-server opens the page; "/mcp-server add" opens the add form (RELEASE_NOTES 1.6.0).
+    assert.match(read('clients/vscode/src/localCommands.ts'), /case 'mcp-server':\s*await host\.openPage\('customize'/);
+    assert.ok(!ref.includes('runs `mcp list` from its packaged daemon, and has no `add`'), 'REFERENCE.md says VS Code /mcp-server has no add');
+    // The terminal and the panel each have their own chat since 1.6.0.
+    assert.match(read('docs/RELEASE_NOTES.md'), /The terminal and VS Code no longer share a chat/);
+    assert.ok(!ref.includes('The chat is shared with the VS Code panel for the same folder'), 'REFERENCE.md says the terminal and the panel share a chat');
+  });
+});
+
 async function waitUntil(done: () => boolean, timeoutMs: number, what: string): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

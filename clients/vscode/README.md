@@ -43,7 +43,8 @@ OpenRouter, Anthropic, Google Gemini and Groq.
 For a model server on your computer (Ollama, LM Studio, llama.cpp, vLLM), set
 `mochiii.apiBase` to its address and `mochiii.model` to the model's name in VS
 Code's Settings, then run **Mochiii: Restart Daemon**. A model on your computer
-starts as chat only, without tools.
+is offered the same tools as any other model; if its server says the model cannot
+use tools, Mochiii answers without them.
 
 ## Where your code goes
 

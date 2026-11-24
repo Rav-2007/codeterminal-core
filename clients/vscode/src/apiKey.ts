@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 
+import { providerForBase } from './connectFlow';
+
 // THE CREDENTIAL THE PACKAGED EXTENSION COULD NOT RECEIVE.
 //
 // The daemon reads its model-provider key from exactly one place --
@@ -161,11 +163,29 @@ export async function clearApiKey(context: KeyContext): Promise<void> {
  * `env` is a parameter rather than a read of process.env so a test states the
  * environment it means instead of mutating the one it runs in.
  */
-export type KeyPromptDecision = 'have-key' | 'from-env' | 'dismissed' | 'ask';
+export type KeyPromptDecision = 'have-key' | 'from-env' | 'no-key-needed' | 'dismissed' | 'ask';
+
+/**
+ * Whether the address questions go to is a cloud provider, which refuses a
+ * question without a key. `configuredBase` is the mochiii.apiBase setting; the
+ * address is read as daemonEnvironment() hands it over (the setting, else an
+ * inherited MOCHIII_API_BASE), and none at all is the daemon's default,
+ * OpenRouter (daemon/main.go).
+ *
+ * Only the named providers count. A model server on this machine needs no key,
+ * and any other address (a server on the network, a company gateway) may run
+ * without one -- the daemon draws the same line (daemon/credentials.go
+ * fillFromStored) -- so saying "every answer will fail" there would not be true.
+ */
+export function cloudProviderSelected(configuredBase: string | undefined, env: NodeJS.ProcessEnv): boolean {
+  const base = (configuredBase ?? '').trim() || (env.MOCHIII_API_BASE ?? '').trim();
+  return base === '' || providerForBase(base) !== undefined;
+}
 
 export async function apiKeyPromptDecision(
   context: KeyContext,
   env: NodeJS.ProcessEnv,
+  configuredBase?: string,
 ): Promise<KeyPromptDecision> {
   if (await getApiKey(context)) {
     return 'have-key';
@@ -176,6 +196,11 @@ export async function apiKeyPromptDecision(
   // create two sources of truth for one credential.
   if ((env.MOCHIII_API_KEY ?? '').trim() !== '') {
     return 'from-env';
+  }
+  // mochiii.apiBase at a model server on this machine: answers work with no
+  // key, and a notice saying they will all fail is false.
+  if (!cloudProviderSelected(configuredBase, env)) {
+    return 'no-key-needed';
   }
   if (context.globalState.get<boolean>(DISMISSED_KEY)) {
     return 'dismissed';
@@ -198,8 +223,13 @@ export async function ensureApiKey(
   onStored: (key: string) => Promise<void>,
 ): Promise<void> {
   try {
-    const decision = await apiKeyPromptDecision(context, process.env);
+    const configuredBase = vscode.workspace.getConfiguration('mochiii').get<string>('apiBase');
+    const decision = await apiKeyPromptDecision(context, process.env, configuredBase);
     if (decision === 'have-key') {
+      return;
+    }
+    if (decision === 'no-key-needed') {
+      output.appendLine('api key: none set, and none is needed: questions go to an address that is not a cloud provider; not prompting');
       return;
     }
     if (decision === 'from-env') {
