@@ -22,12 +22,45 @@ suite('E2E chat — in a new window', () => {
   let realHandle: unknown;
   const got: { type?: string; [k: string]: unknown }[] = [];
 
+  // Whatever happened, no later suite inherits the chat in a window of its
+  // own: the files do not run in a fixed order (CI ran this one before
+  // unknownCommand.test.ts), and a chat left there with a question open made
+  // that suite's ordinary question go nowhere.
   suiteTeardown(async () => {
     if (panel && realHandle) {
       panel.handleMessage = realHandle;
     }
     dt?.close();
+    if ((ChatPanel as any).current === panel && panel) {
+      panel.host.close();
+      await sleep(500);
+    }
   });
+
+  /** Where a button is, once it is drawn and scrolled into view and the scroll has settled. */
+  async function buttonAt(selector: string, label: string): Promise<{ x: number; y: number } | null> {
+    const find = `Array.from(d.querySelectorAll(${JSON.stringify(selector)})).find((e) => e.textContent.trim() === ${JSON.stringify(label)})`;
+    const end = Date.now() + 10000;
+    while (Date.now() < end) {
+      if (await dt!.chatEval<boolean>(`(() => { const b = ${find}; if (!b) return false; b.scrollIntoView({ block: 'center' }); return true; })()`)) {
+        await sleep(250);
+        return dt!.chatEval(`(() => { const r = ${find}.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      }
+      await sleep(100);
+    }
+    return null;
+  }
+
+  /** The host has the answer: what is posted travels between processes, slowly on a loaded runner. */
+  async function until(cond: () => boolean, what: string, ms = 10000): Promise<void> {
+    const end = Date.now() + ms;
+    while (!cond()) {
+      if (Date.now() > end) {
+        assert.fail(what);
+      }
+      await sleep(100);
+    }
+  }
 
   test('the chat moves into a second window and works there', async function () {
     this.timeout(120000);
@@ -76,7 +109,7 @@ suite('E2E chat — in a new window', () => {
     await dt.click(c.x, c.y);
     await dt.type('hello from the new window');
     await dt.press('Enter');
-    await sleep(500);
+    await until(() => got.some((m) => m.type === 'prompt'), 'Enter in the new window sent nothing').catch(() => undefined);
     assert.deepStrictEqual(
       got.filter((m) => m.type === 'prompt').map((m) => m.text),
       ['hello from the new window'],
@@ -87,24 +120,23 @@ suite('E2E chat — in a new window', () => {
     await post({ type: 'token', text: 'Streamed into ' });
     await sleep(150);
     await post({ type: 'token', text: 'the new window.' });
-    await sleep(300);
-    assert.ok(
-      await dt.chatEval<boolean>("Array.from(d.querySelectorAll('.msg.assistant')).some((e) => e.textContent.includes('Streamed into the new window.'))"),
-      'the streamed answer is not in the new window',
-    );
+    const streamedBy = Date.now() + 10000;
+    let streamed = false;
+    while (!streamed && Date.now() < streamedBy) {
+      streamed = await dt.chatEval<boolean>("Array.from(d.querySelectorAll('.msg.assistant')).some((e) => e.textContent.includes('Streamed into the new window.'))");
+      if (!streamed) await sleep(100);
+    }
+    assert.ok(streamed, 'the streamed answer is not in the new window');
 
     // Approves: a tool question answered with Allow, in the new window.
     await post({
       type: 'toolApproval',
       request: { call_id: 'nw1', server: '', tool: 'run_command', arguments: '{"command":"npm test"}', arguments_sha256: 'x', lane: 'builtin', confined: false, iteration: 1 },
     });
-    await sleep(400);
-    const allow = await dt.chatEval<{ x: number; y: number } | null>(
-      "(() => { const b = Array.from(d.querySelectorAll('.tool-approval button')).find((e) => e.textContent.trim() === 'Allow'); if (!b) return null; b.scrollIntoView({ block: 'center' }); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()",
-    );
+    const allow = await buttonAt('.tool-approval button', 'Allow');
     assert.ok(allow, 'no Allow on the tool question');
     await dt.click(allow.x, allow.y);
-    await sleep(300);
+    await until(() => got.some((m) => m.type === 'toolApprovalDecision'), 'Allow in the new window did not answer the host').catch(() => undefined);
     assert.deepStrictEqual(
       got.filter((m) => m.type === 'toolApprovalDecision').map((m) => [m.callId, m.decision]),
       [['nw1', 'approve']],
@@ -113,13 +145,10 @@ suite('E2E chat — in a new window', () => {
 
     // Applies an edit: Apply on an edit waiting for it.
     await post({ type: 'editProposal', edit: { file_path: 'src/app.js', search: 'a', replace: 'b' }, index: 0, total: 1 });
-    await sleep(400);
-    const apply = await dt.chatEval<{ x: number; y: number } | null>(
-      "(() => { const b = Array.from(d.querySelectorAll('.edit-proposal button')).find((e) => e.textContent.trim() === 'Apply'); if (!b) return null; b.scrollIntoView({ block: 'center' }); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()",
-    );
+    const apply = await buttonAt('.edit-proposal button', 'Apply');
     assert.ok(apply, 'no Apply on the edit');
     await dt.click(apply.x, apply.y);
-    await sleep(300);
+    await until(() => got.some((m) => m.type === 'applyEdit'), 'Apply in the new window did not reach the host').catch(() => undefined);
     assert.strictEqual(got.filter((m) => m.type === 'applyEdit').length, 1, 'Apply in the new window did not reach the host');
     await post({ type: 'done' });
     await post({ type: 'setModeFromHost', mode: 'auto' });
