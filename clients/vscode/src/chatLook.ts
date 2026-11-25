@@ -95,6 +95,9 @@ export function chatLookStyles(): string {
     padding: 2px 2px 6px;
   }
   #composerShell .attach-list { padding: 0 0 8px; }
+  /* How long a long paste is (media/main.js): one quiet line under the text. */
+  #composerShell .paste-note { padding: 2px 2px 6px; font-size: 11px; color: var(--ct-muted); }
+  #composerShell .paste-note[hidden] { display: none; }
   .composer-bar { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; min-width: 0; }
   .composer-bar .bar-gap { flex: 1; min-width: 2px; }
   .composer-icon { width: 28px; height: 28px; border-radius: 7px; flex-shrink: 0; }
@@ -222,7 +225,10 @@ export function chatLookStyles(): string {
   .msg.user .card .body { font-size: 13px; }
   .msg.assistant { margin-top: 2px; }
   .msg .code-block { border: 1px solid var(--ct-border); }
+  /* The block's language and its Copy are the panel's words, not the answer's:
+     a selection across the block copied "python" and "Copy" with the code. */
   .msg .code-block .code-head {
+    user-select: none;
     display: flex;
     align-items: center;
     justify-content: space-between;

@@ -24,9 +24,10 @@
 ---
 
 Mochiii reads your project, answers questions about it, writes and fixes code,
-runs your tests, and works through long tasks. It shows you every change before
-it lands. Your code is indexed on your own machine, and you choose the model
-provider that answers.
+runs your tests, and works through long tasks. You choose how much it does
+without asking, and every edit it applies is backed up and can be undone. Your
+code is indexed on your own machine, and you choose the model provider that
+answers.
 
 ## Install
 
@@ -109,16 +110,21 @@ Mochiii indexes your project on your machine and finds the code that matters for
 each question. The index updates as you save, so answers match the code you have
 now.
 
-### You review every edit
+### You choose what waits for you
 
-Changes show up as a diff. Apply or skip each one. Nothing is written until you
-say so, and an applied change can be undone in one step.
+In VS Code, a chat's mode decides. **Auto**, where a new chat starts, works
+without asking inside the project and asks when it recognises going outside it,
+sending something out, or wiping data. **Manual** shows each change as a diff
+that waits for your Apply, and asks before each command. **Plan** reads your code
+and writes a plan, and edits nothing. In the terminal app, each change and command
+waits for you unless you turn on auto-approve (`ctrl+space`). Either way an
+applied change can be undone in one step.
 
 ### Agent mode
 
 Mochiii can read files, search, run commands and tests, and look things up on the
-web. Anything that changes a file or runs a command waits for your approval, and
-an answer that used the web lists the pages it read.
+web. Whether a call waits for your approval depends on the mode above, and an
+answer that used the web lists the pages it read.
 
 ### Long tasks
 

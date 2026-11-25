@@ -212,7 +212,9 @@ suite('composer controls say what they are', () => {
     const panel = fs.readFileSync(CHAT_PANEL_TS, 'utf8');
     assert.match(panel, /type: 'token', text: reply, plain: true/);
     const js = fs.readFileSync(MAIN_JS, 'utf8');
-    assert.match(js, /if \(!currentAssistantPlain\) \{\s*renderFencedContent/);
+    assert.match(js, /if \(!currentAssistantPlain\) \{\s*renderFinalWhenFree\(/);
+    // ...which is renderFencedContent, once the reader has let go of the answer.
+    assert.match(js, /function renderFinalWhenFree\([\s\S]*?renderFencedContent\(bubble, raw\);/);
   });
 
   test('the hidden attribute wins over component display rules', () => {

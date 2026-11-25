@@ -83,6 +83,9 @@ function load() {
     document: { createElement: (t: string) => new El(t) },
     transcriptEl,
     toolActivityEls: new Map(),
+    // Following the end of the chat is selectCopyScroll.test.ts's; here the
+    // block's own rows are what is checked.
+    followEnd: () => undefined,
   };
   vm.runInNewContext(
     src.slice(start, end) +

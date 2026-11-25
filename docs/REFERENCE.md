@@ -666,8 +666,8 @@ empty; only a chat you saved is kept, and `/resume` brings it back. Leaving on p
 first when the chat is not saved — **"This chat is not saved and will be erased. Save or
 quit?"** — `s` saves and then quits, `q` quits and erases it, Esc stays, and ctrl+c again
 quits and erases. ctrl+c and `/exit` ask the same. Closing the terminal window cannot ask,
-so a chat left that way is erased by the next launch. The chat is shared with the VS Code
-panel for the same folder, so a new launch starts a new chat there too. If the daemon does
+so a chat left that way is erased by the next launch. The VS Code panel has its own chat
+(since 1.6.0), so a new launch leaves the panel's chat as it was. If the daemon does
 not answer when the old chat is to be erased, the launch shows that chat as it was and says
 so in one line: when it began, how many turns it holds, how many of them are on screen, and
 whether it is saved. Everything stays on this machine:
@@ -846,8 +846,9 @@ terminal the name is cut, or left out, before the line is shortened.
   likely as not the key, so it is not taken.
 
 `/provider <provider>` or `/provider <address>` skips the list. VS Code's
-`/connect` takes the key only, and has none of these screens, `/provider` or
-`/account` yet.
+`/connect` opens the same three steps in a pop-up over the chat (a provider, its
+key, then a model), and `/connect <provider>` skips the list; VS Code has no
+`/provider`, and its `/account` opens the Account page.
 
 **An answer is drawn as markdown, in blue and grey (TUI).** A model writes
 markdown, and the TUI draws it instead of printing its punctuation:
@@ -1057,12 +1058,13 @@ order:
 | 4 | **Confirm** | Everything except a literal `y` at the diff prompt |
 | 5 | **Backup** | Nothing — it records pre- and post-edit content under `.mochiii/backups/<ts>/{before,after}/` before the real write |
 
-**Nothing is applied without a human decision.** In the CLI and the TUI that is an
-explicit `y` per edit. The VS Code panel additionally offers a session-scoped
-auto-apply which the user turns on deliberately; it drives the *same* per-block
-path a manual click would, so all five gates still run on every block
-([`chatPanel.ts`](../clients/vscode/src/chatPanel.ts)). What no surface has is an
-edit reaching disk that the user did not ask for.
+**What applies without a question is the user's choice.** In the CLI and the TUI
+it is an explicit `y` per edit, unless auto-approve is on (`ctrl+space`, off at
+every start). In the VS Code panel it depends on the chat's mode: Manual waits for
+Apply on every edit, and Auto (where a new chat starts) applies edits inside the
+project without asking but still holds an edit outside it. Auto drives the *same*
+per-block path a manual click would, so all five gates still run on every block
+([`chatPanel.ts`](../clients/vscode/src/chatPanel.ts)).
 
 **Creating a file** is the same mechanism, not a second one: a block with an
 **empty `SEARCH`** means "this file's content is, or should be, nothing", so
@@ -1233,8 +1235,9 @@ thing with no daemon running.)
 `/mcp-server` reports on **the daemon that is running**. It used to start a
 second copy of the daemon to ask, which read whatever `models.json` it found
 for itself — so a daemon started with `models.agent.json` was described as
-"Agent mode is OFF" (fixed 2026-10-11). VS Code's `/mcp-server` still runs
-`mcp list` from its packaged daemon, and has no `add`.
+"Agent mode is OFF" (fixed 2026-10-11). VS Code's `/mcp-server` opens the
+MCP servers page, which asks the running daemon; words after it search the
+Marketplace, and `/mcp-server add` opens the add form.
 
 **The working copy.** A turn that edits or runs something does it in a private
 copy of the project: its edits land there, `read_file` shows them and

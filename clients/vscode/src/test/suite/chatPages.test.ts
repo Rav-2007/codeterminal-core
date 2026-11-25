@@ -177,6 +177,23 @@ suite('chat pages: markup', () => {
     assert.strictEqual(js.match(/['"`]\s*<\/?[a-zA-Z][a-zA-Z0-9-]*[\s/>]/g), null, 'media/pages.js assembles markup as strings');
   });
 
+  // The Settings page's mode list said "Auto — edits apply as they arrive" after
+  // #130 made Auto full access inside the project. Each option now says what the
+  // modes menu over the composer says, in that menu's own first sentence.
+  test('the Settings page describes each mode as the modes menu does', () => {
+    const menu = chatPanelBodyMarkup();
+    const firstSentence = (s: string) => s.split(/(?<=\.)\s/)[0].replace(/\.$/, '').toLowerCase();
+    for (const mode of ['auto', 'manual', 'plan']) {
+      const item = menu.match(new RegExp(`data-mode="${mode}">[\\s\\S]*?<div class="mode-name">([^<]+)</div>\\s*<div class="mode-desc">([^<]+)</div>`));
+      assert.ok(item, `the modes menu has no ${mode}`);
+      const option = html.match(new RegExp(`<option value="${mode}">([^<]+)</option>`));
+      assert.ok(option, `the Settings page has no ${mode} option`);
+      const [name, said] = option[1].split(' — ');
+      assert.strictEqual(name, item[1], `the ${mode} option is not named as in the modes menu`);
+      assert.strictEqual(said.toLowerCase(), firstSentence(item[2]), `the Settings page describes ${mode} differently from the modes menu`);
+    }
+  });
+
   test('pages.js names commands, links and settings, never ids or URLs', () => {
     const js = code('pages.js');
     assert.ok(!/mochiii\.[a-z]+\.?[a-zA-Z]*['"]/.test(js.replace(/mochiii\.in/g, '')), 'pages.js names a VS Code command or setting id');
@@ -348,10 +365,10 @@ suite('chat pages: what the panel no longer shows', () => {
     assert.match(panel, /type: 'folder', name: path\.basename\(workspacePath\(\)\)/, 'the host must name the folder');
   });
 
-  test('the ⋯ menu lists the pages, then the bookmark', () => {
+  test('the ⋯ menu lists the pages, Open in new window, then the bookmark', () => {
     const menu = body.slice(body.indexOf('id="moreMenu"'), body.indexOf('id="historyPopup"'));
     const ids = [...menu.matchAll(/<button[^>]*id="([a-zA-Z]+)"/g)].map((m) => m[1]);
-    assert.deepStrictEqual(ids, ['customizeBtn', 'accountBtn', 'settingsBtn', 'bookmarkBtn']);
+    assert.deepStrictEqual(ids, ['customizeBtn', 'accountBtn', 'settingsBtn', 'newWindowBtn', 'bookmarkBtn']);
   });
 
   test('the composer is one row: mode, model, effort ... add, context, send', () => {

@@ -231,6 +231,49 @@ suite('api key — the credential reaches the daemon, on stdin and never in its 
       const d = await apiKeyPromptDecision(fakeContext(), { MOCHIII_API_KEY: '   ' });
       assert.strictEqual(d, 'ask');
     });
+
+    // mochiii.apiBase at a model server on this machine: answers work with no
+    // key, so "every answer will fail" must not be said (found 2026-11-24 with
+    // llama.cpp on 127.0.0.1).
+    test('aModelServerOnThisMachineNeedsNoKey', async () => {
+      for (const base of ['http://127.0.0.1:18080/v1', 'http://localhost:11434/v1', 'http://[::1]:1234/v1', ' http://127.0.0.1:8080/v1 ']) {
+        assert.strictEqual(await apiKeyPromptDecision(fakeContext(), {}, base), 'no-key-needed', base);
+      }
+    });
+
+    test('anInheritedAddressCountsWhenTheSettingIsEmpty', async () => {
+      const env = { MOCHIII_API_BASE: 'http://localhost:11434/v1' };
+      assert.strictEqual(await apiKeyPromptDecision(fakeContext(), env, ''), 'no-key-needed');
+      assert.strictEqual(await apiKeyPromptDecision(fakeContext(), env, '   '), 'no-key-needed');
+    });
+
+    test('aCloudProviderWithNoKeyStillAsks', async () => {
+      for (const base of ['https://openrouter.ai/api/v1', 'https://api.groq.com/openai/v1', 'https://api.anthropic.com/v1', 'https://API.GROQ.COM/v1']) {
+        assert.strictEqual(await apiKeyPromptDecision(fakeContext(), {}, base), 'ask', base);
+      }
+      // No address anywhere is the daemon's default, OpenRouter.
+      assert.strictEqual(await apiKeyPromptDecision(fakeContext(), {}, ''), 'ask');
+      assert.strictEqual(await apiKeyPromptDecision(fakeContext(), {}, undefined), 'ask');
+    });
+
+    test('theSettingWinsOverAnInheritedAddress', async () => {
+      const env = { MOCHIII_API_BASE: 'http://localhost:11434/v1' };
+      assert.strictEqual(await apiKeyPromptDecision(fakeContext(), env, 'https://api.groq.com/openai/v1'), 'ask');
+      assert.strictEqual(
+        await apiKeyPromptDecision(fakeContext(), { MOCHIII_API_BASE: 'https://api.groq.com/openai/v1' }, 'http://127.0.0.1:8080/v1'),
+        'no-key-needed',
+      );
+    });
+
+    test('aKeyIsStillUsedWhenTheServerIsLocal', async () => {
+      const d = await apiKeyPromptDecision(fakeContext({ stored: 'sk-stored' }), {}, 'http://localhost:11434/v1');
+      assert.strictEqual(d, 'have-key');
+    });
+
+    test('dontAskAgainStillAppliesToACloudProvider', async () => {
+      const d = await apiKeyPromptDecision(fakeContext({ dismissed: true }), {}, 'https://api.groq.com/openai/v1');
+      assert.strictEqual(d, 'dismissed');
+    });
   });
 });
 

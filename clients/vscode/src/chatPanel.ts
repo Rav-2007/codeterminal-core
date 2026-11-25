@@ -1,8 +1,9 @@
 import { randomBytes } from 'crypto';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { AttachmentError, extractAttachmentFile } from './attachmentExtract';
+import { ATTACH_LIMITS, AttachmentError, extractAttachmentFile } from './attachmentExtract';
 import { resolveConfigPathSetting } from './daemonBinary';
 
 // fs and path used to be imported here solely to build executable paths out of
@@ -45,6 +46,7 @@ import {
   spendStatus,
 } from './daemonClient';
 import { ChatHost, panelHost, viewHost } from './chatHost';
+import { OPEN_CHAT_IN_NEW_WINDOW_COMMAND } from './chatWindow';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
 import { ChatLocation, chatElsewhereHtml, chatElsewhereOptions } from './chatElsewhere';
 import { activeWorkingFolder } from './workingFolder';
@@ -137,6 +139,16 @@ export const CHAT_VIEW_IDS: readonly string[] = [CHAT_VIEW_ID, CHAT_ACTIVITY_VIE
 // (connectThenStart). Client-side: the daemon never sends it.
 export const NO_KEY_CLASS = 'no_key';
 
+// The image types a paste may attach, and the file extension each is read as
+// (onPastedImage); the same kinds the + Image picker offers.
+const PASTED_IMAGE_TYPES: ReadonlyMap<string, string> = new Map([
+  ['image/png', 'png'],
+  ['image/jpeg', 'jpg'],
+  ['image/webp', 'webp'],
+  ['image/gif', 'gif'],
+  ['image/bmp', 'bmp'],
+]);
+
 const PREFLIGHT_WAIT_MS = 15_000;
 const PREFLIGHT_RETRY_MS = 300;
 
@@ -227,6 +239,7 @@ export class ChatPanel {
   private transcript: Turn[] = [];
   // Ids for attachment chips, so a reply finds the chip it belongs to.
   private attachmentSeq = 0;
+  private pastedImageSeq = 0;
   // The composer's effort picker. '' is Auto: no reasoning_effort is sent and the
   // model uses its own default.
   private reasoningEffort: '' | 'low' | 'medium' | 'high' = '';
@@ -732,6 +745,9 @@ export class ChatPanel {
     // connectSubmit: the provider chosen in the connect popup and its key.
     apiBase?: string;
     key?: string;
+    // pasteImage: a picture pasted into the composer, base64.
+    mime?: string;
+    data?: string;
   }): void {
     if (this.pages.handle(msg as unknown as Record<string, unknown>)) {
       return;
@@ -741,6 +757,10 @@ export class ChatPanel {
     }
     if (msg.type === 'pickAttachments' && typeof msg.remaining === 'number') {
       void this.onPickAttachments(msg.remaining);
+    } else if (msg.type === 'openInNewWindow') {
+      void vscode.commands.executeCommand(OPEN_CHAT_IN_NEW_WINDOW_COMMAND);
+    } else if (msg.type === 'pasteImage' && typeof msg.mime === 'string' && typeof msg.data === 'string' && typeof msg.remaining === 'number') {
+      void this.onPastedImage(msg.mime, msg.data, msg.remaining);
     } else if (msg.type === 'listModels') {
       void this.onListModels();
     } else if (msg.type === 'selectModel' && typeof msg.tier === 'string') {
@@ -1060,13 +1080,20 @@ export class ChatPanel {
     // The display name from the URI (always '/'-separated): this file keeps no
     // `path` import, per the note at its top; the file itself is opened by
     // extractAttachmentFile, which does not take a path from the workspace.
-    const jobs = files.map((uri) => ({ uri, id: `att${++this.attachmentSeq}`, name: uri.path.slice(uri.path.lastIndexOf('/') + 1) }));
+    const jobs = files.map((uri) => ({ fsPath: uri.fsPath, id: `att${++this.attachmentSeq}`, name: uri.path.slice(uri.path.lastIndexOf('/') + 1) }));
+    await this.extractAttachments(jobs, post);
+  }
+
+  private async extractAttachments(
+    jobs: { fsPath: string; id: string; name: string }[],
+    post: (m: Record<string, unknown>) => void,
+  ): Promise<void> {
     for (const j of jobs) {
       post({ type: 'attachmentStarted', id: j.id, name: j.name });
     }
     for (const j of jobs) {
       try {
-        const r = await extractAttachmentFile(j.uri.fsPath, (note) => post({ type: 'attachmentProgress', id: j.id, note }));
+        const r = await extractAttachmentFile(j.fsPath, (note) => post({ type: 'attachmentProgress', id: j.id, note }));
         post({ type: 'attachmentExtracted', id: j.id, name: j.name, kind: r.kind, text: r.text, note: r.note, desc: r.desc });
       } catch (err) {
         post({
@@ -1074,6 +1101,50 @@ export class ChatPanel {
           id: j.id,
           error: err instanceof AttachmentError ? err.message : `${j.name}: could not be read (${err instanceof Error ? err.message : String(err)}).`,
         });
+      }
+    }
+  }
+
+  // A PICTURE PASTED INTO THE COMPOSER (2026-11-24): what + Image does with a
+  // file, for an image on the clipboard. The webview hands over the bytes; they
+  // are written to a new temporary folder, read the way any attached image is
+  // (attachmentExtract.ts, on this machine), and the folder is removed. The
+  // type and size are checked here as well, since the webview is not trusted
+  // to have done it.
+  private async onPastedImage(mime: string, data: string, remaining: number): Promise<void> {
+    const post = (m: Record<string, unknown>): void => {
+      try {
+        this.host.webview.postMessage(m).then(undefined, () => undefined);
+      } catch {
+        // The panel was closed while the image was being read.
+      }
+    };
+    const ext = PASTED_IMAGE_TYPES.get(mime);
+    if (!ext) {
+      post({ type: 'attachmentNotice', text: 'A pasted image can be PNG, JPEG, WebP, GIF or BMP.' });
+      return;
+    }
+    if (remaining <= 0) {
+      post({ type: 'attachmentNotice', text: 'No more files can be attached to this message.' });
+      return;
+    }
+    const bytes = Buffer.from(data, 'base64');
+    if (bytes.length === 0 || bytes.length > ATTACH_LIMITS.maxImageBytes) {
+      post({ type: 'attachmentNotice', text: 'The pasted image is empty or larger than 20 MB, the most an attached image can be.' });
+      return;
+    }
+    const name = `pasted-image-${++this.pastedImageSeq}.${ext}`;
+    let dir: string | undefined;
+    try {
+      dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mochiii-paste-'));
+      const file = path.join(dir, name);
+      await fs.promises.writeFile(file, bytes, { mode: 0o600 });
+      await this.extractAttachments([{ fsPath: file, id: `att${++this.attachmentSeq}`, name }], post);
+    } catch (err) {
+      post({ type: 'attachmentNotice', text: `The pasted image could not be attached (${err instanceof Error ? err.message : String(err)}).` });
+    } finally {
+      if (dir) {
+        await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => undefined);
       }
     }
   }
@@ -3215,7 +3286,10 @@ export function chatPanelStyles(): string {
     white-space: pre;
     overflow-x: auto;
   }
+  /* Copy and "Used 3 passages ..." are the panel's, not the answer's: a
+     selection across two answers copied them between the two. */
   .msg-footer {
+    user-select: none;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -4212,6 +4286,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
     <div id="moreMenu" class="pop-menu more-menu" hidden>
       ${headerPageButtons()}
       <div class="menu-sep" role="separator"></div>
+      <button type="button" id="newWindowBtn" class="menu-item" title="Open this chat in a window of its own" aria-label="Open in new window">${ICONS.window}<span class="mi-text"><span class="mi-name">Open in new window</span><span class="mi-desc">This chat in a window of its own</span></span></button>
       <button type="button" id="bookmarkBtn" class="menu-item" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">${ICONS.star}<span class="mi-text"><span class="mi-name" id="bookmarkLabel">Bookmark this chat</span></span></button>
     </div>
     <!-- History, Claude Code style: every chat, newest first, bookmarks pinned
@@ -4321,6 +4396,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       <div id="attachList" class="attach-list" hidden></div>
       <label for="promptInput" class="sr-only">Ask a question about your code</label>
       <textarea id="promptInput" rows="2" placeholder="Ask Mochiii… / for commands, @ for files"></textarea>
+      <div id="pasteNote" class="paste-note" role="status" hidden></div>
       <!-- ONE ROW. What this message is sent with on the left -- the mode, the
            model, the effort -- and what acts on the right: add context, how full
            the context is, send. The model chip is the one that gives way when
