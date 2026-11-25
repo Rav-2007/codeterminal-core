@@ -80,6 +80,13 @@ func (m chatModel) welcomeScreen(bottomLine, status string) string {
 		words = append(words, "")
 		words = append(words, notes...)
 	}
+	// The first screen has no header, and a paste cut to the box's size is
+	// said in the header (stateLabel). Without this line a 50 KB paste into a
+	// fresh chat was cut to 4,000 characters with nothing on screen to say so
+	// (FOUND 2026-11-24, in a pty).
+	if label := m.stateLabel(); label != "" {
+		words = append(words, "", lipgloss.PlaceHorizontal(w, lipgloss.Center, ansi.Truncate(label, w, "…")))
+	}
 
 	// The rows under the prompt come drawn the prompt's width (withStatusLine),
 	// so the bottom right corner is the column's.

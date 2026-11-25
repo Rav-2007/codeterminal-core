@@ -814,3 +814,47 @@ func TestThePanelFitsASmallTerminal(t *testing.T) {
 		t.Errorf("the long review does not say it scrolls:\n%s", plainScreen(small))
 	}
 }
+
+// THE PANEL IN INLINE MODE (1.6.1: the chat in the terminal's scrollback). The
+// panel is drawn in the transcript part, and that part's height followed only
+// what was still being written: on a fresh launch nothing is, so /mcp opened a
+// panel with no rows to draw it in and the screen showed only the prompt, while
+// the keys went to the invisible panel. FOUND 2026-11-24 in a pty on 26ef54d
+// (a second launch in one folder, no notice on screen).
+func TestTheMCPPanelIsDrawnInInlineModeWithNothingBeingWritten(t *testing.T) {
+	newFakeMCP(t, panelServers)
+	m := newTestModel()
+	m.inline.on = true
+	m.inline.welcome, m.inline.welcomeTurns = true, len(m.turns) // a fresh launch: the first screen
+	sized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = sized.(chatModel)
+	if !strings.Contains(plainScreen(m), "What can I do for you?") {
+		t.Fatalf("precondition: a fresh launch shows the first screen:\n%s", plainScreen(m))
+	}
+	if m.viewport.Height != 0 {
+		t.Fatalf("precondition: with nothing being written the transcript part takes no rows; it takes %d", m.viewport.Height)
+	}
+	m = typeText(m, "/mcp")
+	m, cmd := pressEnter(m)
+	m = settle(m, cmd)
+	if m.mcpPanel == nil {
+		t.Fatal("/mcp opened no panel")
+	}
+	screen := plainScreen(m)
+	for _, want := range []string{"MCP Servers", "4 servers · 2 need you", "+ Add a server…", "esc close"} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("/mcp in inline mode does not show %q:\n%s", want, screen)
+		}
+	}
+
+	m = pressPanel(m, "esc")
+	if m.mcpPanel != nil {
+		t.Fatal("esc did not close the panel")
+	}
+	if m.viewport.Height != 0 {
+		t.Errorf("closing the panel left the transcript part %d rows high, with nothing in it", m.viewport.Height)
+	}
+	if screen := plainScreen(m); strings.Contains(screen, "MCP Servers") || !strings.Contains(screen, "What can I do for you?") {
+		t.Errorf("after esc the screen is not the first screen again:\n%s", screen)
+	}
+}

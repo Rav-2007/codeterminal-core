@@ -536,6 +536,17 @@ func (m *chatModel) liveHeight(max int) int {
 	return m.fitLive()
 }
 
+// fitPanelRows sizes the transcript part again when the MCP panel opens or
+// closes. In inline mode that part is only as high as what is still being
+// written, and setLive sizes it when that changes; the panel opening is not a
+// change to it, so the part kept its old height -- none on a fresh launch --
+// and /mcp opened a panel with no rows to draw it in (FOUND 2026-11-24).
+func (m *chatModel) fitPanelRows() {
+	if m.inline.on {
+		m.viewport.Height = m.fitLive()
+	}
+}
+
 func (m chatModel) fitLive() int {
 	if m.mcpPanel != nil {
 		return m.inline.maxHeight // the panel is drawn where the transcript is, at full height
