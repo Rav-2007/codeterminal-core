@@ -268,6 +268,44 @@ function scanForSecrets(buf, entries) {
   return found;
 }
 
+// LINKS TO THIS PROJECT'S GITHUB. Nothing a user sees links to it: the
+// Marketplace page is built from package.json, and the chat's own pages open
+// mochiii.in. Only the text a user can see is read (the bundle, the webview
+// media, the README and CHANGELOG, package.json), and only this project's
+// owners are refused: the licence notices name third-party modules by their
+// github.com paths, and the service binary may download from releases.
+const OWN_GITHUB = /github\.com\/(?:Rav-2007|Mochiii1612)\b/i;
+const SHOWN_TEXT = /^extension\/(?:out\/.+\.js|media\/.+\.(?:js|css|html)|[^/]+\.md|package\.json)$/i;
+
+// checkListingLinks: the packaged package.json fields the Marketplace page
+// renders as links.
+function checkListingLinks(pkg, failures) {
+  if (pkg.repository !== undefined) {
+    failures.push('PRESENT  "repository" in the packaged package.json — the Marketplace page would link to the source and its issues');
+  }
+  for (const [field, url] of [['homepage', pkg.homepage], ['bugs.url', pkg.bugs && pkg.bugs.url], ['qna', pkg.qna]]) {
+    if (typeof url === 'string' && /github\.com/i.test(url)) {
+      failures.push(`GITHUB   packaged package.json ${field} links to GitHub: ${url}`);
+    }
+  }
+}
+
+function scanForOwnGitHub(buf, entries) {
+  const found = [];
+  for (const entry of entries) {
+    if (!SHOWN_TEXT.test(entry.name)) continue;
+    let content;
+    try {
+      content = readEntry(buf, entry).toString('utf8');
+    } catch {
+      continue; // an unreadable entry is reported by the checks above, not here
+    }
+    const hit = OWN_GITHUB.exec(content);
+    if (hit) found.push(`GITHUB   ${entry.name} links to this project's GitHub (${hit[0]})`);
+  }
+  return found;
+}
+
 // --self-test proves THIS GATE can still fail, using inputs whose answer is
 // known. It follows the convention scripts/docs-claims.sh and
 // scripts/go-toolchain-pinned.sh already use in this repo: a checker that only
@@ -658,6 +696,46 @@ function selfTest() {
     }
   }
 
+  // (j) links to this project's GitHub: the listing fields, and the text a
+  // user sees. Third-party github.com paths (licence notices) are not refused.
+  const listingCases = [
+    [{ homepage: 'https://www.mochiii.in', bugs: { url: 'https://www.mochiii.in/support' }, qna: 'https://www.mochiii.in/faq' }, 0, 'mochiii.in links'],
+    [{ homepage: 'https://www.mochiii.in', repository: { type: 'git', url: 'https://example.com/x.git' } }, 1, 'a repository field'],
+    [{ homepage: 'https://github.com/Rav-2007/codeterminal-core' }, 1, 'a GitHub homepage'],
+    [{ homepage: 'https://www.mochiii.in', bugs: { url: 'https://github.com/Rav-2007/codeterminal-core/issues' } }, 1, 'GitHub issues as bugs.url'],
+  ];
+  for (const [pkg, wantFailures, why] of listingCases) {
+    const probe = [];
+    checkListingLinks(pkg, probe);
+    if (probe.length !== wantFailures) {
+      failures.push(`SELF-TEST: ${why} gave ${probe.length} listing failure(s), expected ${wantFailures}`);
+    }
+  }
+  const ownGitHubCases = [
+    ["issues: 'https://github.com/Rav-2007/codeterminal-core/issues'", true],
+    ['see github.com/Mochiii1612/mochiii_website', true],
+    ['Name:    widget (github.com/acme/widget)', false],
+    ["issues: 'https://www.mochiii.in/support'", false],
+  ];
+  for (const [text, want] of ownGitHubCases) {
+    if (OWN_GITHUB.test(text) !== want) {
+      failures.push(`SELF-TEST: "${text}" was ${want ? 'not ' : ''}taken as a link to this project's GitHub`);
+    }
+  }
+  const shownCases = [
+    ['extension/out/extension.js', true],
+    ['extension/media/main.js', true],
+    ['extension/README.md', true],
+    ['extension/package.json', true],
+    ['extension/THIRD_PARTY_LICENSES.txt', false],
+    ['extension/daemon/mochiii-daemon', false],
+  ];
+  for (const [name, want] of shownCases) {
+    if (SHOWN_TEXT.test(name) !== want) {
+      failures.push(`SELF-TEST: ${name} is ${want ? 'not ' : ''}read as text a user sees`);
+    }
+  }
+
   if (failures.length > 0) {
     console.error('verify-vsix: SELF-TEST FAILED');
     for (const f of failures) console.error('  ' + f);
@@ -670,7 +748,8 @@ function selfTest() {
     `(the real floor, from go.work, is go${goFloorFromWorkspace()}), ` +
     `${staleInRuntime.length} stale files kept out of the ${DAEMON_ALLOWED.size}-file runtime directory, ` +
     `${outRejected.length} unbundled outputs refused, ${buildCases.length} build-setting cases, ` +
-    `${noticeCases.length} licence-coverage cases, ${targetCases.length} target-platform cases)`);
+    `${noticeCases.length} licence-coverage cases, ${targetCases.length} target-platform cases, ` +
+    `${listingCases.length + ownGitHubCases.length + shownCases.length} GitHub-link cases)`);
   process.exit(0);
 }
 
@@ -738,6 +817,7 @@ function main() {
   }
 
   failures.push(...scanForSecrets(buf, entries));
+  failures.push(...scanForOwnGitHub(buf, entries));
 
   // The manifest must not be marked private, and must carry the fields the
   // marketplace listing is built from.
@@ -748,6 +828,7 @@ function main() {
       failures.push('PRESENT  "private": true in the PACKAGED package.json — vsce refuses to publish this');
     }
     // No `repository`: the listing links to mochiii.in, not to the source.
+    checkListingLinks(pkg, failures);
     // `appVersion` is the Mochiii release bundled inside (package-local.js).
     for (const field of ['license', 'icon', 'homepage', 'publisher', 'appVersion']) {
       if (!pkg[field]) {

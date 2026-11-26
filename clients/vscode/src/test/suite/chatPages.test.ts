@@ -77,6 +77,12 @@ suite('chat pages: what a page may ask for', () => {
     }
   });
 
+  test('"Report a problem" opens Support and "Documentation" opens the docs site', () => {
+    assert.strictEqual(pageLink('issues'), 'https://www.mochiii.in/support');
+    assert.strictEqual(pageLink('docs'), 'https://docs.mochiii.in');
+    assert.strictEqual(pageLink('site'), 'https://www.mochiii.in/');
+  });
+
   test('every command a page may run exists', async () => {
     const ext = vscode.extensions.getExtension('MochiiiAIAgent.mochiii-vscode');
     await ext?.activate();

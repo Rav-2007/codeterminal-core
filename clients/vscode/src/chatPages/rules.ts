@@ -70,8 +70,8 @@ export function pageCommand(name: unknown): string | undefined {
 /** Links a page may open, by name. Fixed: a page never supplies a URL. */
 export const PAGE_LINKS: Record<string, string> = {
   site: 'https://www.mochiii.in/',
-  issues: 'https://github.com/Rav-2007/codeterminal-core/issues',
-  docs: 'https://github.com/Rav-2007/codeterminal-core/tree/main/clients/vscode#readme',
+  issues: 'https://www.mochiii.in/support',
+  docs: 'https://docs.mochiii.in',
 };
 
 /** pageLink maps a page's link name to its URL, or undefined. */
