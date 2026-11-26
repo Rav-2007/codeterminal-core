@@ -72,9 +72,10 @@ function platformFields(target) {
 const common = (version) => ({
   version,
   license: 'SEE LICENSE IN LICENSE',
-  homepage: 'https://github.com/Rav-2007/codeterminal-core',
-  repository: { type: 'git', url: 'https://github.com/Rav-2007/codeterminal-core.git' },
-  bugs: { url: 'https://github.com/Rav-2007/codeterminal-core/issues' },
+  // The npm page links to these. No repository: npm would show the source
+  // and its issues there, and users are pointed at mochiii.in instead.
+  homepage: 'https://www.mochiii.in',
+  bugs: { url: 'https://www.mochiii.in/support', email: 'supportmochiii@gmail.com' },
 });
 
 function writeJSON(file, value) {
@@ -119,19 +120,13 @@ index the folder so answers are grounded in your code.
 
 This package installs the one \`mochiii\` binary for your computer: Linux x64 and
 ARM64, macOS on Apple Silicon, and Windows x64 and on ARM. On Linux with musl
-(Alpine), it is a build without code search, which needs glibc. Without
-Node.js, the same binary installs with one command:
+(Alpine), it is a build without code search, which needs glibc.
 
-\`\`\`
-curl -fsSL https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.sh | sh
-\`\`\`
+Mochiii ${version}.
 
-\`\`\`
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/Rav-2007/codeterminal-core/releases/latest/download/install.ps1 | iex"
-\`\`\`
-
-Mochiii ${version}. Documentation, release notes and the source:
-https://github.com/Rav-2007/codeterminal-core
+- Website: https://www.mochiii.in
+- Documentation: https://docs.mochiii.in
+- Support: https://www.mochiii.in/support
 `;
 
 // The release targets, stopping the build unless platform.js names the same.

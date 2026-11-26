@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 
 import { CHAT_ACTIVITY_VIEW_ID, CHAT_VIEW_ID, CHAT_VIEW_IDS, CHAT_VIEW_TYPE, ChatPanel } from '../../chatPanel';
 import { MOVE_CHAT_HERE_COMMAND, chatElsewhereHtml, chatElsewhereOptions } from '../../chatElsewhere';
+import { PAGE_LINKS } from '../../chatPages/rules';
 import { StubDaemon, pointAtEmptyRuntimeDir, writeLine } from '../stubDaemon';
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -195,6 +196,15 @@ suite('the manifest meets the Marketplace guidelines', () => {
     assert.strictEqual(pkg.bugs.email, 'supportmochiii@gmail.com', 'the security address is not the support address');
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     assert.ok(!/github\.com/i.test(readme), 'the Marketplace page links to GitHub');
+    for (const [field, url] of [['homepage', pkg.homepage], ['bugs.url', pkg.bugs?.url], ['qna', pkg.qna]]) {
+      assert.ok(!/github\.com/i.test(String(url ?? '')), `${field} links to GitHub: ${url}`);
+    }
+  });
+
+  test('the links inside the chat pages go to mochiii.in, not to GitHub', () => {
+    for (const [name, url] of Object.entries(PAGE_LINKS)) {
+      assert.ok(!/github\.com/i.test(url), `the "${name}" button opens GitHub: ${url}`);
+    }
   });
 });
 
