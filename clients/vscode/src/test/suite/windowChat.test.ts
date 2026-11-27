@@ -22,11 +22,32 @@ suite('E2E chat — in a new window', () => {
   let realHandle: unknown;
   const got: { type?: string; [k: string]: unknown }[] = [];
 
+  // NO FIRST-RUN CONNECT POPUP IN THIS TEST. CI builds the real daemon and the
+  // extension runs it with no key, so a chat that opens offers the provider
+  // list as soon as the daemon answers its preflight (chatPanel.ts,
+  // firstRunConnectShown). That popup stands over the transcript, up to 440px
+  // above the composer, and only Esc or Cancel close it. When the daemon
+  // answered before the Allow click, the click landed on the provider list and
+  // no decision reached the host -- "Allow in the new window did not answer the
+  // host", on most CI runs from 2026-11-24. Which came first was a race, so the
+  // offer is turned off before the chat opens. What the test is about (typing,
+  // streaming, Allow and Apply in a second window) is untouched.
+  const realOpenConnect = (ChatPanel as any).prototype.openConnect;
+  suiteSetup(() => {
+    (ChatPanel as any).prototype.openConnect = function (this: unknown, base?: string, opts?: { firstRun?: boolean }) {
+      if (opts?.firstRun) {
+        return new Promise(() => undefined); // never offered, so never answered
+      }
+      return realOpenConnect.call(this, base, opts);
+    };
+  });
+
   // Whatever happened, no later suite inherits the chat in a window of its
   // own: the files do not run in a fixed order (CI ran this one before
   // unknownCommand.test.ts), and a chat left there with a question open made
   // that suite's ordinary question go nowhere.
   suiteTeardown(async () => {
+    (ChatPanel as any).prototype.openConnect = realOpenConnect;
     if (panel && realHandle) {
       panel.handleMessage = realHandle;
     }
@@ -35,6 +56,32 @@ suite('E2E chat — in a new window', () => {
       panel.host.close();
       await sleep(500);
     }
+  });
+
+  // If a click still does not take, the log says what was over the button, so
+  // the next failure names its cause instead of leaving it to be guessed.
+  teardown(async function () {
+    if (this.currentTest?.state !== 'failed' || !dt) {
+      return;
+    }
+    const seen = await dt
+      .chatEval(
+        `(() => {
+          const shown = (e) => !!e && !e.hidden && e.getClientRects().length > 0;
+          const popups = Array.from(d.querySelectorAll('.connect-popup, .modes-popup, .context-popup, .history-popup, .mcp-popup, #slashMenu')).filter(shown).map((e) => e.id || e.className);
+          const b = Array.from(d.querySelectorAll('.tool-approval button, .edit-proposal button')).find((e) => ['Allow', 'Apply'].includes(e.textContent.trim()));
+          let over = null;
+          if (b) {
+            b.scrollIntoView({ block: 'center' });
+            const r = b.getBoundingClientRect();
+            const e = d.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            over = e ? e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (e.className ? '.' + String(e.className).trim().split(/\\s+/).join('.') : '') : null;
+          }
+          return { popups, button: b ? b.textContent.trim() : null, over, viewport: [w.innerWidth, w.innerHeight] };
+        })()`,
+      )
+      .catch((err: Error) => err.message);
+    console.log('new-window chat at the failure: ' + JSON.stringify(seen));
   });
 
   /** Where a button is, once it is drawn and scrolled into view and the scroll has settled. */
