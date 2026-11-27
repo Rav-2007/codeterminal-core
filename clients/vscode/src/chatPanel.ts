@@ -51,6 +51,7 @@ import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
 import { ChatLocation, chatElsewhereHtml, chatElsewhereOptions } from './chatElsewhere';
 import { activeWorkingFolder } from './workingFolder';
 import { AUTO_ASK_WHY, AutoAsk, autoAsks, autoPlace, insideProject } from './autoAccess';
+import { afterTaint, sourceIsUntrusted } from './autoTaint';
 import { askAutoConsent, autoAccepted, autoNeedsConsent } from './autoConsent';
 import { PlanItem, TaskProgress, TaskRun, isContinuation, progressText, stopKind } from './taskRun';
 import { ConnectOutcome, connectKey, hasConnectKey } from './connectBridge';
@@ -360,6 +361,10 @@ export class ChatPanel {
   // begun in Plan never auto-answers, whatever the button says later.
   private liveAuto = false;
   private planTurn = false;
+  // Set once a turn ingests untrusted external content (a web or MCP result);
+  // while set, Auto no longer auto-approves run_command/sandbox_exec (autoTaint).
+  // Reset at the start of every turn.
+  private turnTainted = false;
   private consentOpen = false;
 
   // THE LONG TASK (taskRun.ts): one per prompt, over as many turns as it takes.
@@ -1931,6 +1936,7 @@ export class ChatPanel {
     this.segmentRunning = true;
     this.segmentThoughts = '';
     this.segmentLooked.clear();
+    this.turnTainted = false;
     let usageSeen: TurnUsage | undefined;
     let check: WorkingCopyInfo | undefined;
     let stop: IncompleteInfo | undefined;
@@ -2034,6 +2040,10 @@ export class ChatPanel {
         onToolActivity: (activity: ToolActivity) => {
           if (activity.tool === 'read_file' && activity.target) {
             this.segmentLooked.add(activity.target);
+          }
+          // A finished web or MCP result brings outside content into the turn.
+          if (activity.phase === 'succeeded' && sourceIsUntrusted(activity.server, activity.tool)) {
+            this.turnTainted = true;
           }
           this.host.webview.postMessage({ type: 'toolActivity', activity });
         },
@@ -2362,7 +2372,9 @@ export class ChatPanel {
       return undefined;
     }
     const place = autoPlace(workspacePath());
-    return place ? autoAsks(req, place) : undefined;
+    if (!place) return undefined;
+    // Once the turn is tainted, a command runner that would auto-approve asks.
+    return afterTaint(autoAsks(req, place), req.tool, this.turnTainted);
   }
 
   private async onModeChanged(mode: string): Promise<void> {
