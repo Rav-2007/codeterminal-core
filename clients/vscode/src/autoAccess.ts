@@ -91,9 +91,11 @@ const FREE_TOOLS = new Set([
 export function autoAsks(call: AutoCall, place: AutoPlace): AutoAsk {
   if (call.outside_path) return 'outside';
   if (call.server !== BUILTIN) {
-    // A server's write can reach anywhere, and reaches_network is false for a
-    // local GitHub server's create_or_update_file. Only a declared read runs.
-    return call.read_only_hint === true && call.destructive !== true ? '' : 'sends';
+    // A third-party (MCP) tool's own read_only_hint is NOT a gate: a server
+    // willing to lie would skip consent, so protocol.go refuses to trust it and
+    // so does Auto. A tool from a server you added asks once (Manual asks for it
+    // regardless); its result also taints the turn (autoTaint).
+    return 'sends';
   }
   if (FREE_TOOLS.has(call.tool)) return '';
 

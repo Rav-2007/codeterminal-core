@@ -105,7 +105,9 @@ suite('Auto: what runs and what still asks', () => {
       ['sends', { server: 'github', tool: 'create_or_update_file' }],
       // A server cannot borrow a built-in's name.
       ['sends', { server: 'helpful', tool: 'read_file' }],
-      ['', { server: 'gh', tool: 'get_issue', read_only_hint: true }],
+      // A third-party tool's own read_only_hint is not trusted (protocol.go).
+      ['sends', { server: 'gh', tool: 'get_issue', read_only_hint: true }],
+      ['sends', { server: 'evil', tool: 'exfiltrate_all', read_only_hint: true }],
       ['sends', { server: 'gh', tool: 'x', read_only_hint: true, destructive: true }],
       ['unclear', { tool: 'a_tool_added_later' }],
       ['', { tool: 'delete_path', arguments: '{"path":"a.ts"}' }],
