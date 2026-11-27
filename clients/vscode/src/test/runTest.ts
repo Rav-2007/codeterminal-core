@@ -80,6 +80,37 @@ async function main(): Promise<void> {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-vscode-ws-'));
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-vscode-user-'));
 
+    // TURN OFF VS CODE'S OWN AI, and the first-run furniture, in the test
+    // profile. Recent stable builds start a built-in "agent host" (Copilot
+    // chat) on launch; in a fresh profile it churns -- the log fills with
+    // "[AgentHost] No signed-in session resolved for https://api.github.com" --
+    // and on a loaded runner it can draw or shift layout WHILE a test is
+    // clicking a button in our chat webview, so a click measured a moment
+    // earlier lands next to the button. (The new-window E2E failed ~half the
+    // CI runs on 1.148 for exactly this; it had 0 agent-host lines on a passing
+    // run and 200+ on the failing ones.) The click-reliability loop in
+    // windowChat.test.ts is the guarantee; this removes the cause. A user
+    // profile at <user-data-dir>/User/settings.json is read on launch.
+    const userSettingsDir = path.join(userDataDir, 'User');
+    fs.mkdirSync(userSettingsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userSettingsDir, 'settings.json'),
+      JSON.stringify(
+        {
+          'chat.disableAIFeatures': true,
+          'chat.commandCenter.enabled': false,
+          'workbench.startupEditor': 'none',
+          'workbench.enableExperiments': false,
+          'telemetry.telemetryLevel': 'off',
+          'update.mode': 'none',
+          'extensions.autoCheckUpdates': false,
+          'extensions.autoUpdate': false,
+        },
+        null,
+        2,
+      ),
+    );
+
     try {
       // THE TESTS CAN LOOK AT THE CHAT AS A USER DOES. A DevTools endpoint on
       // a port the OS picks (0), loopback only, for this throwaway host: the

@@ -38,9 +38,9 @@ suite('E2E chat — in a new window', () => {
   });
 
   /** Where a button is, once it is drawn and scrolled into view and the scroll has settled. */
-  async function buttonAt(selector: string, label: string): Promise<{ x: number; y: number } | null> {
+  async function buttonAt(selector: string, label: string, timeoutMs = 10000): Promise<{ x: number; y: number } | null> {
     const find = `Array.from(d.querySelectorAll(${JSON.stringify(selector)})).find((e) => e.textContent.trim() === ${JSON.stringify(label)})`;
-    const end = Date.now() + 10000;
+    const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
       if (await dt!.chatEval<boolean>(`(() => { const b = ${find}; if (!b) return false; b.scrollIntoView({ block: 'center' }); return true; })()`)) {
         await sleep(250);
@@ -60,6 +60,56 @@ suite('E2E chat — in a new window', () => {
       }
       await sleep(100);
     }
+  }
+
+  /**
+   * Click a chat button and WAIT FOR THE CLICK TO TAKE, re-measuring and
+   * re-clicking until the effect shows (`done`). A synthetic click is a point in
+   * time: between measuring the button and dispatching the mouse event, VS Code
+   * can scroll the chat or draw over it (its built-in agent host starting up in a
+   * fresh profile), so a single measured click can land beside the button. Each
+   * try re-finds the button, checks nothing is over the point AND that the point
+   * is this button (not a neighbour after a shift), clicks, then waits briefly.
+   * Safe to repeat: once answered the button is removed, so a later try finds
+   * nothing and the loop exits on `done`.
+   */
+  async function clickUntil(selector: string, label: string, done: () => boolean, what: string): Promise<void> {
+    const end = Date.now() + 20000;
+    let why = 'the button never appeared';
+    while (Date.now() < end && !done()) {
+      const at = await buttonAt(selector, label, 2000);
+      if (!at) {
+        why = 'the button was not found';
+        await sleep(100);
+        continue;
+      }
+      // The fundamental check that fixes the observed drift: inside the chat, is
+      // the measured point THIS button (not a neighbour after a scroll)?
+      const onButton = await dt!.chatEval<boolean>(
+        `(() => { const e = d.elementFromPoint(${at.x}, ${at.y}); const b = e && e.closest(${JSON.stringify(selector)});` +
+          ` return !!b && b.textContent.trim() === ${JSON.stringify(label)}; })()`,
+      );
+      if (!onButton) {
+        why = 'the button moved under the cursor';
+        await sleep(150);
+        continue;
+      }
+      // Nothing of VS Code's is drawn OVER the iframe at that point (a toast, a
+      // panel). This guards a page-level overlay the check above cannot see; in
+      // the final stretch we stop letting it alone block, so a click is always
+      // attempted even if this check behaves oddly on some VS Code build.
+      const relax = Date.now() > end - 4000;
+      if (!relax && !(await dt!.chatIsAt(at.x, at.y))) {
+        why = 'something is drawn over the button';
+        await sleep(150);
+        continue;
+      }
+      await dt!.click(at.x, at.y);
+      for (let i = 0; i < 25 && !done(); i++) {
+        await sleep(100); // the posted message travels between processes
+      }
+    }
+    assert.ok(done(), `${what} (${why})`);
   }
 
   test('the chat moves into a second window and works there', async function () {
@@ -133,10 +183,12 @@ suite('E2E chat — in a new window', () => {
       type: 'toolApproval',
       request: { call_id: 'nw1', server: '', tool: 'run_command', arguments: '{"command":"npm test"}', arguments_sha256: 'x', lane: 'builtin', confined: false, iteration: 1 },
     });
-    const allow = await buttonAt('.tool-approval button', 'Allow');
-    assert.ok(allow, 'no Allow on the tool question');
-    await dt.click(allow.x, allow.y);
-    await until(() => got.some((m) => m.type === 'toolApprovalDecision'), 'Allow in the new window did not answer the host').catch(() => undefined);
+    await clickUntil(
+      '.tool-approval button',
+      'Allow',
+      () => got.some((m) => m.type === 'toolApprovalDecision'),
+      'Allow in the new window did not answer the host',
+    );
     assert.deepStrictEqual(
       got.filter((m) => m.type === 'toolApprovalDecision').map((m) => [m.callId, m.decision]),
       [['nw1', 'approve']],
@@ -145,10 +197,12 @@ suite('E2E chat — in a new window', () => {
 
     // Applies an edit: Apply on an edit waiting for it.
     await post({ type: 'editProposal', edit: { file_path: 'src/app.js', search: 'a', replace: 'b' }, index: 0, total: 1 });
-    const apply = await buttonAt('.edit-proposal button', 'Apply');
-    assert.ok(apply, 'no Apply on the edit');
-    await dt.click(apply.x, apply.y);
-    await until(() => got.some((m) => m.type === 'applyEdit'), 'Apply in the new window did not reach the host').catch(() => undefined);
+    await clickUntil(
+      '.edit-proposal button',
+      'Apply',
+      () => got.some((m) => m.type === 'applyEdit'),
+      'Apply in the new window did not reach the host',
+    );
     assert.strictEqual(got.filter((m) => m.type === 'applyEdit').length, 1, 'Apply in the new window did not reach the host');
     await post({ type: 'done' });
     await post({ type: 'setModeFromHost', mode: 'auto' });
