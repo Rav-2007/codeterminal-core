@@ -85,9 +85,9 @@ suite('E2E chat — in a new window', () => {
   });
 
   /** Where a button is, once it is drawn and scrolled into view and the scroll has settled. */
-  async function buttonAt(selector: string, label: string): Promise<{ x: number; y: number } | null> {
+  async function buttonAt(selector: string, label: string, timeoutMs = 10000): Promise<{ x: number; y: number } | null> {
     const find = `Array.from(d.querySelectorAll(${JSON.stringify(selector)})).find((e) => e.textContent.trim() === ${JSON.stringify(label)})`;
-    const end = Date.now() + 10000;
+    const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
       if (await dt!.chatEval<boolean>(`(() => { const b = ${find}; if (!b) return false; b.scrollIntoView({ block: 'center' }); return true; })()`)) {
         await sleep(250);
@@ -107,6 +107,42 @@ suite('E2E chat — in a new window', () => {
       }
       await sleep(100);
     }
+  }
+
+  /**
+   * Click a chat button and WAIT FOR THE CLICK TO TAKE, re-measuring and
+   * re-clicking until the effect shows (`done`). A synthetic click is a point in
+   * time: between measuring the button and dispatching the mouse event the chat
+   * can settle or scroll a little on a loaded runner, so a single measured click
+   * can land just beside the button and nothing happens. Each round re-finds the
+   * button at its CURRENT position, clicks, and waits briefly for the effect;
+   * if it did not take, it tries again.
+   *
+   * Safe to repeat: once answered the button is removed, so the next round finds
+   * nothing and the loop ends on `done`; and only the click that actually lands
+   * posts a decision (the host keys on the call id), so one decision reaches it.
+   * (This deliberately does NOT gate on elementFromPoint: measuring the point
+   * and testing it are two round-trips, and any settle between them made the
+   * test on it miss every time -- which blocked the click rather than steadying
+   * it. The real cause, VS Code's own agent host churning in a fresh profile,
+   * is removed in runTest.ts by turning its AI features off.)
+   */
+  async function clickUntil(selector: string, label: string, done: () => boolean, what: string): Promise<void> {
+    const end = Date.now() + 20000;
+    let sawButton = false;
+    while (Date.now() < end && !done()) {
+      const at = await buttonAt(selector, label, 2000);
+      if (!at) {
+        await sleep(100);
+        continue;
+      }
+      sawButton = true;
+      await dt!.click(at.x, at.y);
+      for (let i = 0; i < 20 && !done(); i++) {
+        await sleep(100); // the posted decision travels between processes
+      }
+    }
+    assert.ok(done(), sawButton ? what : `${what} (the button never appeared)`);
   }
 
   test('the chat moves into a second window and works there', async function () {
@@ -180,10 +216,12 @@ suite('E2E chat — in a new window', () => {
       type: 'toolApproval',
       request: { call_id: 'nw1', server: '', tool: 'run_command', arguments: '{"command":"npm test"}', arguments_sha256: 'x', lane: 'builtin', confined: false, iteration: 1 },
     });
-    const allow = await buttonAt('.tool-approval button', 'Allow');
-    assert.ok(allow, 'no Allow on the tool question');
-    await dt.click(allow.x, allow.y);
-    await until(() => got.some((m) => m.type === 'toolApprovalDecision'), 'Allow in the new window did not answer the host').catch(() => undefined);
+    await clickUntil(
+      '.tool-approval button',
+      'Allow',
+      () => got.some((m) => m.type === 'toolApprovalDecision'),
+      'Allow in the new window did not answer the host',
+    );
     assert.deepStrictEqual(
       got.filter((m) => m.type === 'toolApprovalDecision').map((m) => [m.callId, m.decision]),
       [['nw1', 'approve']],
@@ -192,10 +230,12 @@ suite('E2E chat — in a new window', () => {
 
     // Applies an edit: Apply on an edit waiting for it.
     await post({ type: 'editProposal', edit: { file_path: 'src/app.js', search: 'a', replace: 'b' }, index: 0, total: 1 });
-    const apply = await buttonAt('.edit-proposal button', 'Apply');
-    assert.ok(apply, 'no Apply on the edit');
-    await dt.click(apply.x, apply.y);
-    await until(() => got.some((m) => m.type === 'applyEdit'), 'Apply in the new window did not reach the host').catch(() => undefined);
+    await clickUntil(
+      '.edit-proposal button',
+      'Apply',
+      () => got.some((m) => m.type === 'applyEdit'),
+      'Apply in the new window did not reach the host',
+    );
     assert.strictEqual(got.filter((m) => m.type === 'applyEdit').length, 1, 'Apply in the new window did not reach the host');
     await post({ type: 'done' });
     await post({ type: 'setModeFromHost', mode: 'auto' });
