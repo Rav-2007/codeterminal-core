@@ -65,51 +65,37 @@ suite('E2E chat — in a new window', () => {
   /**
    * Click a chat button and WAIT FOR THE CLICK TO TAKE, re-measuring and
    * re-clicking until the effect shows (`done`). A synthetic click is a point in
-   * time: between measuring the button and dispatching the mouse event, VS Code
-   * can scroll the chat or draw over it (its built-in agent host starting up in a
-   * fresh profile), so a single measured click can land beside the button. Each
-   * try re-finds the button, checks nothing is over the point AND that the point
-   * is this button (not a neighbour after a shift), clicks, then waits briefly.
-   * Safe to repeat: once answered the button is removed, so a later try finds
-   * nothing and the loop exits on `done`.
+   * time: between measuring the button and dispatching the mouse event the chat
+   * can settle or scroll a little on a loaded runner, so a single measured click
+   * can land just beside the button and nothing happens. Each round re-finds the
+   * button at its CURRENT position, clicks, and waits briefly for the effect;
+   * if it did not take, it tries again.
+   *
+   * Safe to repeat: once answered the button is removed, so the next round finds
+   * nothing and the loop ends on `done`; and only the click that actually lands
+   * posts a decision (the host keys on the call id), so one decision reaches it.
+   * (This deliberately does NOT gate on elementFromPoint: measuring the point
+   * and testing it are two round-trips, and any settle between them made the
+   * test on it miss every time -- which blocked the click rather than steadying
+   * it. The real cause, VS Code's own agent host churning in a fresh profile,
+   * is removed in runTest.ts by turning its AI features off.)
    */
   async function clickUntil(selector: string, label: string, done: () => boolean, what: string): Promise<void> {
     const end = Date.now() + 20000;
-    let why = 'the button never appeared';
+    let sawButton = false;
     while (Date.now() < end && !done()) {
       const at = await buttonAt(selector, label, 2000);
       if (!at) {
-        why = 'the button was not found';
         await sleep(100);
         continue;
       }
-      // The fundamental check that fixes the observed drift: inside the chat, is
-      // the measured point THIS button (not a neighbour after a scroll)?
-      const onButton = await dt!.chatEval<boolean>(
-        `(() => { const e = d.elementFromPoint(${at.x}, ${at.y}); const b = e && e.closest(${JSON.stringify(selector)});` +
-          ` return !!b && b.textContent.trim() === ${JSON.stringify(label)}; })()`,
-      );
-      if (!onButton) {
-        why = 'the button moved under the cursor';
-        await sleep(150);
-        continue;
-      }
-      // Nothing of VS Code's is drawn OVER the iframe at that point (a toast, a
-      // panel). This guards a page-level overlay the check above cannot see; in
-      // the final stretch we stop letting it alone block, so a click is always
-      // attempted even if this check behaves oddly on some VS Code build.
-      const relax = Date.now() > end - 4000;
-      if (!relax && !(await dt!.chatIsAt(at.x, at.y))) {
-        why = 'something is drawn over the button';
-        await sleep(150);
-        continue;
-      }
+      sawButton = true;
       await dt!.click(at.x, at.y);
-      for (let i = 0; i < 25 && !done(); i++) {
-        await sleep(100); // the posted message travels between processes
+      for (let i = 0; i < 20 && !done(); i++) {
+        await sleep(100); // the posted decision travels between processes
       }
     }
-    assert.ok(done(), `${what} (${why})`);
+    assert.ok(done(), sawButton ? what : `${what} (the button never appeared)`);
   }
 
   test('the chat moves into a second window and works there', async function () {
