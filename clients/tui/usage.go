@@ -69,6 +69,24 @@ func (t *usageTotals) addStopped(u protocol.TurnUsage) {
 	t.stopped++
 }
 
+// addSummary counts a summary the daemon wrote -- a fold's, or /compact's: its
+// calls, tokens and cost, but not a turn, since nobody asked anything.
+func (t *usageTotals) addSummary(u protocol.TurnUsage) {
+	t.add(u)
+	t.turns--
+}
+
+// recordSummaryUsage adds a summary's bill to this chat's and this session's
+// totals. The context line is left alone: it describes the conversation's own
+// newest call, not the summary's.
+func (m *chatModel) recordSummaryUsage(u *protocol.TurnUsage) {
+	if u == nil {
+		return
+	}
+	m.chatUsage.addSummary(*u)
+	m.sessionUsage.addSummary(*u)
+}
+
 // usageReport renders /usage.
 func (m chatModel) usageReport() string {
 	if m.sessionUsage.turns == 0 {

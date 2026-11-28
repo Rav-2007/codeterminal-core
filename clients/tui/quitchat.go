@@ -101,6 +101,7 @@ func (m chatModel) answerQuitQuestion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m chatModel) saveThenQuit() (tea.Model, tea.Cmd) {
 	if _, err := sendHistory(m.clientName, protocol.HistoryRequest{
 		Action: protocol.HistorySave, Workspace: m.workspaceRoot, Spec: m.activeSpec,
+		HistoryRequestExtras: m.foldedForSave(), // fold.go
 	}); err != nil {
 		m.appendTurn(turn{role: roleSystem, text: "the chat could not be saved, so it was not closed: " + err.Error()})
 		m.resizeViewport()

@@ -74,6 +74,9 @@ type serverExtras struct {
 	// localFit is the last fit of the code budget into a local model's
 	// context window (localfit.go).
 	localFit localFitState
+	// folds is, per chat, the summary being written ahead of the question that
+	// will need it (fold.go).
+	folds foldCache
 }
 
 // handleConnectOrMCP answers whichever of the two requests serveConn's connect

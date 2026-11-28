@@ -76,6 +76,11 @@ type chatExtras struct {
 	// autoApprove answers the questions a tool call or an edit would ask, as y
 	// would; off at every start (autoapprove.go, 2026-11-21).
 	autoApprove bool
+	// fold is where the history sent starts with the daemon's summary instead
+	// of the turns it stands for, and foldPending how many messages a summary
+	// the question is waiting for takes in (fold.go, 2026-11-27).
+	fold        *foldPoint
+	foldPending int
 }
 
 // connInfo is what the daemon last said it is sending to.
@@ -223,6 +228,8 @@ func (m chatModel) handleSideAnswer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleApprovalLost(msg)
 	case copyViewMsg: // /copy on its way back to the chat (copyview.go)
 		return m.handleCopyView(msg)
+	case foldMsg: // the daemon folded the conversation's older part (fold.go)
+		return m.handleFold(msg)
 	}
 	return m, nil
 }

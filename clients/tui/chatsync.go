@@ -139,7 +139,7 @@ func (m *chatModel) adoptChat(resp protocol.HistoryResponse) {
 		m.turns = added
 		m.chatIDs = nil
 		m.lastGrounding, m.lastRedactions, m.lastDegraded = nil, nil, nil
-		m.lastProvider, m.lastHistoryTruncated = "", false
+		m.lastProvider, m.lastHistoryTruncated, m.fold = "", false, nil
 		if !quiet {
 			note := "↻ this chat was changed in another Mochiii window -- showing it as it is now"
 			if len(added) == 0 {

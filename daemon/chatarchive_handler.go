@@ -86,7 +86,16 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 		reply(protocol.HistoryResponse{Entry: &entry, Pruned: pruned})
 
 	case protocol.HistoryCompact:
-		entry, turns, compacted, rev, err := s.compactChat(ctx, archive, req.Spec, req.Tier)
+		// The summary is a model call like any other: refused at a reached
+		// spending limit, and billed -- to the day's limit, to the daemon log,
+		// and back to the client for /usage. It used to be none of those.
+		if stop := s.spend.reached(sessionID(""), 0); stop != nil {
+			reply(protocol.HistoryResponse{Error: stop.refusal()})
+			return
+		}
+		cctx, tally := withUsageTally(ctx)
+		tally.logger, tally.spend = s.logger, s.spend
+		entry, turns, compacted, rev, err := s.compactChat(cctx, archive, req.Spec, req.Tier)
 		if err != nil {
 			if errors.Is(err, errNothingToCompact) {
 				reply(protocol.HistoryResponse{Error: err.Error()})
@@ -105,18 +114,21 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 			fail("compacting this chat", err)
 			return
 		}
-		reply(protocol.HistoryResponse{Entry: &entry, Turns: turns, Compacted: compacted, ChatRevision: rev})
+		// The bill's tokens and cost are what the client counts; which model
+		// wrote the summary is in the daemon log.
+		reply(protocol.HistoryResponse{Entry: &entry, Turns: turns, Compacted: compacted, ChatRevision: rev,
+			HistoryExtras: protocol.HistoryExtras{Usage: tally.report("", 0)}})
 
 	case protocol.HistorySave:
 		s.chatOf(archive.scope).mu.Lock()
-		id, h, pruned, err := s.saveChatLocked(ctx, archive, req.Spec, req.Name)
+		id, h, pruned, fromClient, err := s.saveFoldedChatLocked(ctx, archive, req.Spec, req.Name, req.Folded) // fold.go
 		s.chatOf(archive.scope).mu.Unlock()
 		if err != nil {
 			fail("saving this chat", err)
 			return
 		}
 		entry := s.entryFor(id, h, false)
-		reply(protocol.HistoryResponse{Entry: &entry, Pruned: pruned})
+		reply(protocol.HistoryResponse{Entry: &entry, Pruned: pruned, HistoryExtras: protocol.HistoryExtras{FoldedSaved: fromClient}})
 
 	case protocol.HistoryShow:
 		h, turns, err := archive.load(req.ID)

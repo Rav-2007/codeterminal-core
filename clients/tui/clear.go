@@ -92,6 +92,7 @@ func (m chatModel) answerNewChatQuestion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m chatModel) saveThenClear() (tea.Model, tea.Cmd) {
 	resp, err := sendHistory(m.clientName, protocol.HistoryRequest{
 		Action: protocol.HistorySave, Workspace: m.workspaceRoot, Spec: m.activeSpec,
+		HistoryRequestExtras: m.foldedForSave(), // fold.go
 	})
 	if err != nil {
 		m.appendTurn(turn{role: roleSystem, text: "the chat could not be saved, so it was not cleared: " + err.Error()})
@@ -107,6 +108,9 @@ func (m chatModel) saveThenClear() (tea.Model, tea.Cmd) {
 	}
 	if resp.Pruned > 0 {
 		saved += fmt.Sprintf(" · the oldest %d saved chat(s) were removed to keep history within its size limit", resp.Pruned)
+	}
+	if note := m.savedFromScreenNote(resp); note != "" {
+		saved += " · " + note
 	}
 	next, cmd := m.clearConversation()
 	cm := next.(chatModel)

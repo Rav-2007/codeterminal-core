@@ -47,13 +47,22 @@ const (
 
 var errNothingToCompact = errors.New("nothing to compact yet")
 
+// compactWords is the length compactSystemPrompt asks for; the summary kept is
+// bounded by it (summaryCapBytes). compactSummaryLead opens the summary turn
+// /compact writes, one of the exact shapes isSummaryPair knows (fold.go).
+const (
+	compactLeadIn      = "Summarise this conversation:\n\n"
+	compactWords       = 250
+	compactSummaryLead = summaryLeadPrefix + "the earlier part was summarised by /compact; the full chat is saved in history):"
+)
+
 // Not only about code: chats in this panel are as often about a document, a
 // pitch or a form. MEASURED 2026-10-06: a prompt that said "coding assistant"
 // and asked for "file names, functions, commands" had the model answer a chat
 // about a pitch deck with "no code or repository was provided" -- a summary of
 // what was absent.
 const compactSystemPrompt = "You compress a conversation between a user and an AI assistant so it can " +
-	"continue later from your summary alone. Write at most 250 words, as short bullet points, one group per " +
+	"continue later from your summary alone. Write at most 250 words, as short bullet points, one group per " + // compactWords
 	"topic in the order they came up: what the user wanted, what was found, decided or produced, and the " +
 	"exact details that matter later (names, numbers, reference ids, file names, commands, errors). End with " +
 	"what is still open. Summarise only what the conversation contains: never mention what it lacks, do not " +
@@ -94,13 +103,12 @@ func (s *Server) compactChat(ctx context.Context, archive *chatArchive, spec, ti
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	title := h.displayTitle()
+	title := strings.TrimPrefix(h.displayTitle(), continuingPrefix) // never "Continuing: Continuing: …" (fold.go)
 	// The first prompt is the chat's title in history, so it is only that; the
 	// explanation goes with the summary.
 	compacted := []storedTurn{
-		{Role: "user", CreatedAt: now, Content: "Continuing: " + title},
-		{Role: "assistant", CreatedAt: now, Content: "Summary of the conversation so far (the earlier part was " +
-			"summarised by /compact; the full chat is saved in history):\n\n" + summary},
+		{Role: "user", CreatedAt: now, Content: continuingPrefix + title},
+		{Role: "assistant", CreatedAt: now, Content: compactSummaryLead + "\n\n" + summary},
 	}
 	compacted = append(compacted, turns[cut:]...)
 	if err := s.memory.ReplaceWorkspace(ctx, archive.scope, compacted); err != nil {
@@ -123,15 +131,20 @@ func (s *Server) compactChat(ctx context.Context, archive *chatArchive, spec, ti
 func (s *Server) summarizeTurns(ctx context.Context, turns []storedTurn, tier string) (string, error) {
 	decision := s.route("", tier)
 	routing := s.tierConfig().routingFor(decision.Tier)
+	turns = forSummary(turns, s.noScrub()) // summaryguard.go
 	budget := compactInputChars
 	for attempt := 0; ; attempt++ {
-		transcript := compactTranscript(turns, budget)
-		summary, err := s.summarizeOnce(ctx, decision.Slug, routing, transcript)
+		tag := newMsgTag()
+		transcript := compactTranscript(turns, budget, tag)
+		summary, err := s.summarizeOnce(ctx, decision.Slug, routing, transcript, tag)
 		var me *ModelError
 		if err == nil || !errors.As(err, &me) || me.Class != ClassContextTooLarge || attempt == compactShrinkAttempts {
 			return summary, err
 		}
-		next := shrinkCompactBudget(len(transcript), me.detail)
+		// The provider's figures are for the whole request; the system prompt and
+		// the lead-in do not shrink, so they come off what the transcript may be.
+		fixed := len(compactSystemPrompt) + 1 + len(summaryRules(tag)) + len(compactLeadIn)
+		next := shrinkCompactBudget(len(transcript)+fixed, me.detail) - fixed
 		if next < compactMinInputChars {
 			return "", err
 		}
@@ -140,21 +153,20 @@ func (s *Server) summarizeTurns(ctx context.Context, turns []storedTurn, tier st
 	}
 }
 
-func (s *Server) summarizeOnce(ctx context.Context, model string, routing providerRouting, transcript string) (string, error) {
+func (s *Server) summarizeOnce(ctx context.Context, model string, routing providerRouting, transcript, tag string) (string, error) {
 	key, base := s.credentials()
-	var out strings.Builder
+	limit := summaryCapBytes(compactWords)
+	collect, out := summaryCollector(limit)
 	_, err := streamWithRetry(ctx, base, key, model,
 		[]chatMessage{
-			{Role: "system", Content: compactSystemPrompt},
-			{Role: "user", Content: "Summarise this conversation:\n\n" + transcript},
+			{Role: "system", Content: compactSystemPrompt + " " + summaryRules(tag)},
+			{Role: "user", Content: compactLeadIn + transcript},
 		},
-		nil, routing,
-		func(tok string) error { out.WriteString(tok); return nil },
-		nil, nil, nil, s.logger)
-	if err != nil {
+		nil, routing, collect, nil, nil, nil, s.logger)
+	if err != nil && !errors.Is(err, errSummaryFull) {
 		return "", fmt.Errorf("the model could not write the summary: %w", err)
 	}
-	summary := strings.TrimSpace(out.String())
+	summary := finishSummary(out.String(), limit)
 	if summary == "" {
 		return "", errors.New("the model returned an empty summary")
 	}
@@ -182,23 +194,25 @@ func shrinkCompactBudget(size int, detail string) int {
 	return next
 }
 
-// compactTranscript renders turns as "User: ... / Assistant: ..." in at most
-// budget bytes. Over budget, the LONGEST messages give way first: every message
+// compactTranscript renders turns as messages wrapped in tag (summaryguard.go:
+// the role is the daemon's, and markup inside a message that could pass for a
+// boundary is defused) in at most budget bytes. Over budget, the LONGEST
+// messages give way first: every message
 // is cut to one shared length, the largest that fits, so each exchange is still
 // there for the summary (it is the long answers -- tables, code -- that fill a
 // chat, while the questions that say what the chat was about are short). Only
 // when even compactMinExcerpt per message does not fit are the earliest
 // messages dropped, the newest being closest to where the chat continues.
-func compactTranscript(turns []storedTurn, budget int) string {
+func compactTranscript(turns []storedTurn, budget int, tag string) string {
 	type line struct{ who, text string }
 	lines := make([]line, len(turns))
 	longest := 0
 	for i, t := range turns {
-		who := "User"
+		who := "user"
 		if t.Role == "assistant" {
-			who = "Assistant"
+			who = "assistant"
 		}
-		lines[i] = line{who, strings.TrimSpace(t.Content)}
+		lines[i] = line{who, defuseMessageMarkup(strings.TrimSpace(t.Content))}
 		longest = max(longest, len(lines[i].text))
 	}
 	render := func(from, limit int) string {
@@ -211,7 +225,7 @@ func compactTranscript(turns []storedTurn, budget int) string {
 			if len(text) > limit {
 				text = clipUTF8(text, limit) + " […]"
 			}
-			fmt.Fprintf(&b, "%s: %s\n\n", l.who, text)
+			b.WriteString(wrappedMessage(tag, l.who, text))
 		}
 		return b.String()
 	}

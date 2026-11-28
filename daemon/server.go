@@ -724,7 +724,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		s.logger.Print("the client's copy of the chat is behind the stored one (another client changed it); " +
 			"answering from the stored chat")
 	}
-	historyOutcome := prepareHistory(history, s.noScrub())
+	historyOutcome := s.foldOrPrepare(ctx, enc, hsReq, &promptReq, decision, history, fromStore) // fold.go
 	s.logHistory(historyOutcome)
 
 	// WHAT CODE GOES IN BEFORE THE MODEL STARTS. An agent turn gets only what
@@ -1672,7 +1672,7 @@ func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec,
 		// A copy that is gone (deleted, pruned) or cannot be read is not
 		// updated and not removed: this save simply becomes a new chat.
 		if h, saved, err := archive.loadStored(link.ID); err == nil {
-			if extended, ok := extendSaved(saved, current); ok {
+			if extended, ok := extendSaved(saved, current[summaryLead(current):]); ok { // a fold's summary is never saved (fold.go)
 				toSave, replaces = extended, link.ID
 				if name == "" {
 					name = h.Name

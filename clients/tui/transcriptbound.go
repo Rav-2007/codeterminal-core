@@ -169,6 +169,7 @@ func (m *chatModel) enforceTranscriptBound() {
 	kept = append(kept, turn{role: roleSystem, text: m.evictionNotice()})
 	kept = append(kept, m.turns[i:]...)
 	m.turns = kept
+	m.followFoldPoint(i, 1) // the fold point moves with its turn (fold.go)
 }
 
 func (m *chatModel) evictionNotice() string {

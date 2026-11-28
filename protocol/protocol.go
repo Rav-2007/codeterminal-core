@@ -748,10 +748,10 @@ type TokenResponse struct {
 	// no Since) before it can say what the conversation is. Additive.
 	ChatRevision string `json:"chat_revision,omitempty"`
 	ChatBehind   bool   `json:"chat_behind,omitempty"`
-	// Spend is what this session and this day have spent against their limits,
-	// on the final Done message of a turn that reached the model and on the
-	// answer to a BudgetAction. Additive.
-	Spend *SpendStatus `json:"spend,omitempty"`
+	// Spend is what this session and this day have spent against their limits, on
+	// the final Done of a turn that reached the model and on a BudgetAction's answer.
+	Spend       *SpendStatus `json:"spend,omitempty"`
+	TokenExtras              // fields added after 2026-11-27 (extras.go): this struct keeps its lines
 }
 
 // SpendStatus is where spending stands against the two limits the daemon
@@ -1625,9 +1625,9 @@ type HistoryRequest struct {
 	// so HistoryCompact's summary is written by the model the chat is using.
 	// Empty, or one the daemon does not offer, means the default.
 	Tier string `json:"tier,omitempty"`
-	// Since is HistoryCurrent's starting point: the ChatRevision the client
-	// already shows.
-	Since string `json:"since,omitempty"`
+	// Since is HistoryCurrent's starting point: the ChatRevision the client already shows.
+	Since                string `json:"since,omitempty"`
+	HistoryRequestExtras        // fields added after 2026-11-28 (extras.go): this struct keeps its lines
 }
 
 // HistoryEntry is one chat in a list. Current marks the live conversation,
@@ -1674,11 +1674,11 @@ type HistoryResponse struct {
 	// Compacted is how many turns HistoryCompact folded into its summary.
 	Compacted int    `json:"compacted,omitempty"`
 	Error     string `json:"error,omitempty"`
-	// ChatRevision is the current chat's revision after this action, on
-	// current, resume and compact -- the three answers whose Turns are the
-	// current chat (or, with Append, its new part).
-	ChatRevision string `json:"chat_revision,omitempty"`
-	Append       bool   `json:"append,omitempty"`
+	// ChatRevision is the chat's revision after this action, on current, resume and
+	// compact -- the answers whose Turns are the chat (or, with Append, its new part).
+	ChatRevision  string `json:"chat_revision,omitempty"`
+	Append        bool   `json:"append,omitempty"`
+	HistoryExtras        // fields added after 2026-11-27 (extras.go): this struct keeps its lines
 }
 
 // StatusRequest asks the daemon to describe its own current state. It is the

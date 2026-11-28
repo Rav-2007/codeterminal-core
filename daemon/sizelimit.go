@@ -158,7 +158,11 @@ func messageBytes(m chatMessage) int {
 //     so each still answers its call;
 //  2. the chat before the question, oldest first, a whole exchange at a time
 //     so what is left still starts with the user;
-//  3. the NEWEST tool results, cut to what is over, never below keepOfNewest.
+//  3. the NEWEST tool results, cut to what is over, never below keepOfNewest;
+//  4. a fold's summary pair (fold.go), which opens the chat when there is one:
+//     it is the densest text before the question -- it stands for everything
+//     the chat had before it -- so step 2 starts after it, and it goes only
+//     when nothing else was enough.
 //
 // Never the system message, never the question (messages[prompt]), never the
 // model's own tool calls. ok is false when all of that is not enough; saved
@@ -181,7 +185,11 @@ func shrinkMessages(messages []chatMessage, prompt, need int) (sh shrink, ok boo
 	for first < prompt && out[first].Role == "system" {
 		first++
 	}
-	cut := first
+	summary := first // out[first:summary] is a fold's summary pair, kept until last
+	if first+1 < prompt && isSummaryPair(out[first].Role, out[first].Content, out[first+1].Role, out[first+1].Content) {
+		summary = first + 2
+	}
+	cut := summary
 	for cut < prompt && sh.saved < need {
 		sh.saved += messageBytes(out[cut])
 		cut++
@@ -190,7 +198,7 @@ func shrinkMessages(messages []chatMessage, prompt, need int) (sh shrink, ok boo
 			cut++
 		}
 	}
-	sh.dropped = cut - first
+	sh.dropped = cut - summary
 	for i := newest; i < len(out) && sh.saved < need; i++ {
 		c := out[i].Content
 		keep := max(keepOfNewest, len(c)-len(clippedResult)-(need-sh.saved))
@@ -201,10 +209,15 @@ func shrinkMessages(messages []chatMessage, prompt, need int) (sh shrink, ok boo
 		sh.saved += len(c) - len(out[i].Content)
 		sh.clipped++
 	}
+	if sh.saved < need && summary > first {
+		sh.saved += messageBytes(out[first]) + messageBytes(out[first+1])
+		sh.dropped += summary - first
+		summary = first
+	}
 	if sh.saved < need {
 		return shrink{saved: sh.saved}, false
 	}
-	sh.messages = append(out[:first:first], out[cut:]...)
+	sh.messages = append(append(out[:first:first], out[first:summary]...), out[cut:]...)
 	return sh, true
 }
 
