@@ -39,7 +39,7 @@ on:
   # the Windows cross job -- roughly 50-60 billable minutes to re-prove that
   # unchanged Go still compiles. On main it would also have paid macOS at 10x.
   push:
-    branches: ["**"]
+    branches: ["**", "!ci/macos-main-check"] # throwaway branch: only macos-main-check.yml runs on it
     paths-ignore: ["**.md"]
   # Kept, and deliberately narrower. A pull_request run tests the MERGE RESULT
   # (branch + current main), which is a different question from the branch head

@@ -75,7 +75,7 @@ on:
   # The list that used to stand here is scripts/retrieval-paths.txt, with why
   # each entry is there in this file's history.
   push:
-    branches: ["**"]
+    branches: ["**", "!ci/macos-main-check"] # throwaway branch: only macos-main-check.yml runs on it
   # MONDAYS ON MAIN: the drift alarm, against the fixed floors.
   schedule:
     - cron: "30 5 * * 1"
