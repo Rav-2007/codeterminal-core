@@ -218,13 +218,32 @@ func (c *foldClient) history() []protocol.Turn {
 	return append(append([]protocol.Turn(nil), c.summary...), c.shown[c.from:]...)
 }
 
+// ask asks one question, then lets the daemon's look-ahead for the next one
+// decide -- the order a person's pause between questions gives. When it decides
+// is otherwise up to the scheduler: on macOS CI (2026-11-28) the next question
+// often came first, and a test that assumed the usual order failed there only.
+// A test that wants a question to race the look-ahead uses tryAsk.
 func (c *foldClient) ask(t *testing.T, question string) protocol.TokenResponse {
 	t.Helper()
 	tok, err := c.tryAsk(question)
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.d.settle(t)
 	return tok
+}
+
+// settle waits until no look-ahead (prefetchFoldAfter) is still deciding
+// whether to write a summary. Any summary one began is registered by then.
+func (d *foldDaemon) settle(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for d.srv.folds.lookAheads.Load() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("a look-ahead was still deciding after 10s")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // tryAsk is ask for a goroutine, where a test may not stop: it returns what

@@ -422,7 +422,8 @@ func TestFold_AQuestionWaitsForTheSummaryBeingWrittenAndNeverStartsASecond(t *te
 	for i := 1; i <= 7; i++ {
 		c.ask(t, question(i))
 	}
-	c.ask(t, question(8)) // at once: the summary for it is being written now
+	d.waitForSummaries(t, 1) // counted on arrival: the provider now takes 400 ms over it
+	c.ask(t, question(8))    // so the summary for it is being written now
 	if n, _ := d.counts(); n != 1 {
 		t.Errorf("%d summary requests, want the one written ahead", n)
 	}
@@ -529,6 +530,7 @@ func TestFold_ASummaryWrittenForAChatThatMovedOnIsStillBilled(t *testing.T) {
 	for i := 1; i <= 7; i++ {
 		c.ask(t, question(i))
 	}
+	d.waitForSummaries(t, 1) // the summary written ahead begins only once the seventh turn's connection has closed
 	waitForFoldJobs(t, d)
 	resp := askHistory(t, d.srv, protocol.HistoryRequest{Action: protocol.HistoryCompact})
 	if resp.Error != "" {
@@ -541,12 +543,14 @@ func TestFold_ASummaryWrittenForAChatThatMovedOnIsStillBilled(t *testing.T) {
 	}
 }
 
-// waitForFoldJobs waits until no summary is being written for any chat.
+// waitForFoldJobs waits until no summary is being written for any chat, and
+// none is about to be: no look-ahead is still deciding (it registers a job it
+// begins before it stops counting, so reading lookAheads first is enough).
 func waitForFoldJobs(t *testing.T, d *foldDaemon) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		busy := false
+		busy := d.srv.folds.lookAheads.Load() > 0
 		d.srv.folds.mu.Lock()
 		for _, j := range d.srv.folds.jobs {
 			busy = busy || !j.finished()
@@ -1117,8 +1121,9 @@ func TestFold_SummariesThatKeepFailingPauseFolding(t *testing.T) {
 	for i := 1; i <= 7; i++ {
 		c.ask(t, question(i))
 	}
-	waitForFoldJobs(t, d) // written ahead for question 8, and refused
-	c.ask(t, question(8)) // tried again, refused: the pause begins
+	d.waitForSummaries(t, 1) // written ahead for question 8, once the seventh turn's connection has closed,
+	waitForFoldJobs(t, d)    // and refused
+	c.ask(t, question(8))    // tried again, refused: the pause begins
 	waitForFoldJobs(t, d)
 	byEight, _ := d.counts()
 	c.ask(t, question(9))

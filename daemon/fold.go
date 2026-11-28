@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -779,6 +780,10 @@ type foldCache struct {
 	jobs  map[string]*foldJob
 	owed  map[string]*protocol.TurnUsage
 	fails map[string]*foldFails
+	// lookAheads counts prefetchFoldAfter goroutines that have not yet decided
+	// whether to write a summary. Nothing here waits on it; tests do, because
+	// when a look-ahead decides is up to the scheduler (macOS CI, 2026-11-28).
+	lookAheads atomic.Int32
 }
 
 // foldFails is a chat's run of failed summaries, and until when its folding
@@ -1017,7 +1022,9 @@ func (c *foldCache) evictLocked(now time.Time) {
 func (s *Server) prefetchFoldAfter(ctx context.Context, session string, d RouteDecision, window int) {
 	sc := s.scope(ctx)
 	base := s.shutdownContext()
+	s.folds.lookAheads.Add(1)
 	go func() {
+		defer s.folds.lookAheads.Add(-1) // after startFoldJob has registered any job it begins
 		<-ctx.Done()
 		if base.Err() != nil {
 			return
