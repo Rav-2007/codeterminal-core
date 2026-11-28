@@ -305,6 +305,11 @@ const UNSUPPLIED = {
     'The daemon this extension ships is built without that tag and contains no code that reads it, so there is ' +
     'nothing for the extension to supply. A developer who built a traced daemon sets it themselves ' +
     '(docs/EXECUTION_TRACE.md).',
+  MOCHIII_FOLD:
+    'an off switch: "0" stops the daemon summarising a long chat\'s older messages (foldEnabled, ' +
+    'daemon/fold.go). The daemon folds only for a client that declares the fold capability, and this ' +
+    'extension does not, so nothing the panel does depends on the value and unset is the intended default. ' +
+    'A terminal user who wants folding off sets it in the shell that starts their daemon (docs/REFERENCE.md).',
 };
 
 function goFiles(dir) {
