@@ -75,6 +75,12 @@ export interface HandshakeRequest {
 
 // CAP_TOOL_APPROVAL mirrors protocol.CapToolApproval.
 export const CAP_TOOL_APPROVAL = 'tool_approval';
+// CAP_NO_NETWORK_TOOLS mirrors protocol.CapNoNetworkTools: neither offer nor
+// run a tool that reaches the internet (daemon/localhandler.go).
+export const CAP_NO_NETWORK_TOOLS = 'no_network_tools';
+// FEATURE_LOCAL_IN_FORCE mirrors protocol.FeatureLocalInForce: prompts go to a
+// model on this computer (a loopback address).
+export const FEATURE_LOCAL_IN_FORCE = 'local_model_in_force';
 
 // Decisions a client may return on a ToolApprovalResponse, mirroring
 // protocol.Approval*. Anything not in this set is treated by the daemon as a
@@ -1146,6 +1152,17 @@ export async function streamPrompt(
   let conn: DaemonConnection;
   try {
     conn = await connectToDaemon(clientName, signal, capabilities);
+    // A MODEL ON THIS COMPUTER KEEPS ITS OWN RULE: no internet tools, the
+    // terminal's default until /web on. The staged models.json turns the web
+    // tools on (scripts/webTools.js); before that they were off for every
+    // model here, so a local one never had them, and it still must not. Which
+    // model is in force is the daemon's to say, at the handshake, so the
+    // question is asked again declaring it -- as the terminal's
+    // connectWithPolicy does.
+    if (capabilities.length > 0 && (conn.handshake.features ?? []).includes(FEATURE_LOCAL_IN_FORCE)) {
+      conn.socket.destroy();
+      conn = await connectToDaemon(clientName, signal, [...capabilities, CAP_NO_NETWORK_TOOLS]);
+    }
   } catch (err) {
     if (!signal.aborted) {
       handlers.onError?.(err as Error);

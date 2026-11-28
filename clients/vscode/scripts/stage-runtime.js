@@ -19,7 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { withSegmentBudget } = require('./segmentBudget');
+const { stagedModelsJson } = require('./stagedConfig');
 
 const extRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(extRoot, '..', '..');
@@ -75,13 +75,14 @@ requireFile(
 );
 
 // models.json is tracked at the repo root and is not a secret; the daemon reads
-// it from <exedir> first. The extension's copy differs in its budgets only
-// (segmentBudget.js): the root file, and so the terminal's, is untouched.
+// it from <exedir> first. The extension's copy differs in its budgets
+// (segmentBudget.js) and its web tools (webTools.js) only: the root file is
+// untouched, and the terminal runs the one built into its binary.
 {
   const to = path.join(runtimeDir, 'models.json');
   fs.mkdirSync(runtimeDir, { recursive: true });
-  fs.writeFileSync(to, withSegmentBudget(fs.readFileSync(path.join(repoRoot, 'models.json'), 'utf8')));
-  console.log(`  staged ${path.relative(extRoot, to)}  (segment budgets)`);
+  fs.writeFileSync(to, stagedModelsJson(fs.readFileSync(path.join(repoRoot, 'models.json'), 'utf8')));
+  console.log(`  staged ${path.relative(extRoot, to)}  (segment budgets, web tools)`);
 }
 
 // vsce wants the licence inside the packaged folder. The root LICENSE is the
