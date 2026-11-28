@@ -27,7 +27,7 @@ name: gates
 # is free, which is the other reason it can afford to run on every push.
 on:
   push:
-    branches: ["**"]
+    branches: ["**", "!ci/macos-fold-check"] # throwaway branch: only macos-fold-check.yml runs on it
   pull_request:
     branches: [main]
   workflow_dispatch:

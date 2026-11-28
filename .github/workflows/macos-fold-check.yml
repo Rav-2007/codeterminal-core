@@ -1,0 +1,48 @@
+name: macos check (throwaway)
+
+# THROWAWAY, NOT FOR MERGING. Asked for on 2026-11-28: run feat/fold-history's
+# tests on macOS through CI. build.yml has had no macOS job since 2026-09-17,
+# although darwin-arm64 ships again since 2026-10-17 (release-targets.txt). This
+# runs build.yml's `cross` steps unchanged, on macos-latest, for the same five
+# modules, on pushes to this one branch only; build, gates and the retrieval eval
+# skip this branch so its push starts nothing else.
+on:
+  push:
+    branches: [ci/macos-fold-check]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.11"
+
+jobs:
+  cross:
+    name: cross (macos-latest, ${{ matrix.module }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [daemon, protocol, editapply, clients/tui, helper]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+
+      - name: Build
+        run: go build ./...
+        working-directory: ${{ matrix.module }}
+
+      - name: Vet
+        run: go vet ./...
+        working-directory: ${{ matrix.module }}
+
+      - name: Test
+        run: go test -count=1 ./...
+        working-directory: ${{ matrix.module }}
+
+      - name: What this platform does not run
+        run: go test -run TestPlatformCoverageIsStated -v -count=1 .
+        working-directory: ${{ matrix.module }}
