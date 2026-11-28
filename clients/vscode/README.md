@@ -17,7 +17,8 @@ your code, fix bugs, write tests, and review the changes Mochiii makes.
   It still asks when it recognises something that reaches outside the project,
   sends something out or wipes data. Commands are not sandboxed, and that check
   can miss some.
-  Web search is off as shipped.
+  Web search and page fetching ask in Manual and run without asking in Auto;
+  a model on your computer gets neither.
 - **Build from a spec.** `/spec` writes down what you want, `/spec build` builds
   it tests-first, and `/spec check` grades the result.
 - **MCP servers.** Add them from the built-in Marketplace, or your own by
