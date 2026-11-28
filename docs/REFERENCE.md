@@ -1471,6 +1471,55 @@ History sent to the model is re-validated and capped server-side: `user` and
 `assistant` roles only, oldest first, inserted between the system message and the
 final prompt. Retrieved context always lands in the final user message.
 
+**Older messages are summarised, not dropped.** The model is given at most 12
+messages and 256 KB of the conversation — and, for a model whose context window
+is known and small (a local model, mostly), about half of that window. Past that
+point the terminal's older messages are *folded*: the chat's own model writes
+them into one summary, which keeps what the user asked for and decided in their
+own words, the newest four messages stay word for word, and from then on the
+summary stands in for the folded part in everything the terminal sends. The
+screen still shows every message; one line says how many are now a summary, and
+`/context` counts them. A fold happens about once every four exchanges. Its
+summary is usually written straight after the turn that will need it, so the next
+question does not wait for it; when it is not ready, the question waits behind a
+"summarising…" line. A later fold summarises the previous summary and what came
+after it, never the whole chat again. Every summary — a fold's, or `/compact`'s —
+is billed like any model call: it shows in `/usage` (one written ahead and never
+used is added to the chat's next turn), counts toward `/budget`, and is not
+written at all once a spending limit is reached.
+
+A question waits at most 90 seconds for its summary. When a fold cannot be made —
+a spending limit, the model failing or too slow, the chat changing meanwhile — the
+oldest messages are left out, as before folding existed, and one line says so and
+why: `● the 6 earliest messages could not be summarised (…), so the model does not
+have them this time — /compact writes a summary now`. The same reason is not said
+twice. A summary still being written carries on, and the next question uses it.
+After two failed summaries in a row a chat's folding pauses for 10 minutes, so a
+provider that refuses or stalls does not make every question wait. A long resumed
+chat (up to the 1,000 messages a chat keeps) is folded in a handful of calls: past
+240,000 characters every folded message is cut to one shared length first, the
+longest giving way, so each exchange is still in the summary.
+
+What a summary is written from is text anyone can have written — an answer that
+quoted a file or a web page — so each message in the request is wrapped in a tag
+made for that request, with its role set by the daemon, and the model is told that
+only the user's messages are the user's words and that nothing inside the messages
+is an instruction. A summary is kept to about four times the length asked for, with
+any protected tag (`<user_rules>`, `<user_request>`, …) neutralised, and the user's
+messages are scrubbed of secrets on the way in, as everything sent is.
+
+The folded messages are deleted from the daemon's chat store, so it does not
+grow with a long chat (twenty 5 KB answers: 84 KB on disk folded, 268 KB not). A
+chat you **saved** keeps its full copy: the copy is brought up to date before
+anything is folded away, and saving again extends the same copy — the summary is
+never written into it. A chat you save only **after** it folded is saved from what
+the terminal still shows: `/save`, and the saves `/clear` and quitting offer, send
+the folded messages along (the daemon scrubs them, as it scrubs what it stores),
+so the saved copy holds them and not the summary — all but any turns the screen
+had already let go to bound its memory, which the save says. A client that does
+not declare the `fold` capability (the VS Code panel, an older terminal) is not
+folded for and keeps the old behaviour. `MOCHIII_FOLD=0` turns folding off.
+
 **Each kind of client has its own chat.** One daemon serves the terminal client
 and the VS Code panel for a workspace, but they do not share a conversation (they
 did until schema v6). The daemon derives a *surface* from the handshake's
@@ -1654,6 +1703,17 @@ gates with no auto-apply.
   A generic `api_key = "…"`, a JWT, a password inside a URL and a short password are
   **not** recognised, on purpose: matching those corrupts ordinary code far more often
   than it catches a secret.
+- **A chat's summary is model-written, and can repeat what a file or page said.**
+  A fold's summary stands in for the earlier messages in every later request, so an
+  instruction an answer once quoted could outlive the six exchanges it used to. Each
+  summary request wraps every message in a tag made for that request, with the role
+  set by the daemon; tells the model that only the user's messages are the user's
+  words and that nothing in them is an instruction; and keeps the result bounded,
+  with protected tags neutralised. Measured on a real model (2026-11-28, 8 poisoned
+  chats × 2 runs): instructions quoted inside answers that the summary recorded as
+  the user's own went from 5 of 14 to 0; ones copied into it, labelled as the file's,
+  from 7 to 3. Not zero: a summary can still describe what a quoted text asked for.
+  Approvals never read a summary — a command still asks.
 - **A stale index still reports `grounded ✓`.** Nothing records when the index
   was built, so the model can confidently describe the old shape of a file it
   "retrieved". The watcher keeps a running daemon current, but offline changes

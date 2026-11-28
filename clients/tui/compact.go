@@ -95,7 +95,8 @@ func (m chatModel) handleCompactDone(msg compactDoneMsg) (tea.Model, tea.Cmd) {
 		// The compacted chat IS the shared chat now, as of this revision.
 		m.chatRev, m.chatQuiet = msg.resp.ChatRevision, false
 		m.lastGrounding, m.lastRedactions, m.lastDegraded = nil, nil, nil
-		m.lastProvider, m.lastHistoryTruncated = "", false
+		m.lastProvider, m.lastHistoryTruncated, m.fold = "", false, nil
+		m.recordSummaryUsage(msg.resp.Usage) // the summary is a model call, and /usage counts it
 		note = fmt.Sprintf("compacted: %d earlier message%s summarised -- the full chat is saved in /history",
 			msg.resp.Compacted, plural(msg.resp.Compacted))
 	}
@@ -126,5 +127,6 @@ func (m *chatModel) compactLocally() string {
 	// A re-slice of turns that appendTurn already sanitized; nothing new enters
 	// the transcript here.
 	m.turns = append([]turn(nil), m.turns[cut:]...)
+	m.followFoldPoint(cut, 0)
 	return fmt.Sprintf("kept the last %d turns on this screen and summarised nothing: %s", compactKeepLocal, why)
 }

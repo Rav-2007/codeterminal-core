@@ -250,6 +250,7 @@ func streamWithRetry(
 			return nil, err
 		}
 		if !modelErr.Retryable() {
+			noteWindow(apiBase, model, modelErr) // a too-large refusal that names the window (fold.go)
 			return nil, err
 		}
 		limit, budget, delay := maxStreamAttempts, totalRetryBudget, backoffFor(attempt, modelErr.RetryAfter)

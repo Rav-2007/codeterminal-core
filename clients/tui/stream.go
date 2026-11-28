@@ -410,7 +410,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		defer st.finish(ctx)
 	}
 	st.dialStart()
-	sess, err := connectWithPolicy(clientName, promptCapabilities()) // localmodels.go
+	sess, err := connectWithPolicy(clientName, withFoldCap(promptCapabilities())) // localmodels.go, fold.go
 	st.dialDone(err)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -497,6 +497,9 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			return
 		}
 		if tok.History != nil && !deliver(ctx, ch, historyMsg{tok.History}) {
+			return
+		}
+		if tok.Fold != nil && !deliver(ctx, ch, foldMsg{tok.Fold}) { // fold.go
 			return
 		}
 		if len(tok.Redactions) > 0 && !deliver(ctx, ch, redactionsMsg{tok.Redactions}) {

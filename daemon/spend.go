@@ -603,6 +603,9 @@ func (s *Server) features() []string {
 	if s.spend != nil {
 		out = append(out, protocol.FeatureSpendLimits)
 	}
+	if s.memory != nil && foldEnabled() { // a fold rewrites the stored chat (fold.go)
+		out = append(out, protocol.FeatureFold)
+	}
 	if _, base := s.credentials(); isLoopbackBase(base) {
 		out = append(out, protocol.FeatureLocalInForce) // localfit.go: a model on this machine
 	}

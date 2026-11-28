@@ -604,7 +604,7 @@ func (m chatModel) update(msg tea.Msg) (tea.Model, tea.Cmd) { // Update (inline.
 	case setupTiersMsg:
 		return m.handleSetupTiers(msg)
 
-	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg, localCheckMsg, rateWaitTickMsg, approvalLostMsg, copyViewMsg:
+	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg, githubResultMsg, localServersMsg, localFitMsg, localCheckMsg, rateWaitTickMsg, approvalLostMsg, copyViewMsg, foldMsg:
 		return m.handleSideAnswer(msg)
 
 	case mcpResultMsg:
@@ -1571,7 +1571,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 
 	// Built from the transcript BEFORE the current prompt is appended below,
 	// so the not-yet-answered prompt can never end up in its own History.
-	history := buildHistory(m.turns)
+	history := m.historyToSend() // the whole transcript, or a fold's summary and what follows it (fold.go)
 
 	m.appendTurn(turn{role: roleUser, text: prompt})
 	m.input.SetValue("")
@@ -1657,7 +1657,7 @@ func (m chatModel) beginTaskTurn(shown, prompt, mode string, task taskFields) (t
 
 func (m chatModel) beginTurnWith(shown, prompt, promptKind, mode string, pipeline []string, task taskFields) (tea.Model, tea.Cmd) {
 	m.catchUpNow() // see startTurn
-	history := buildHistory(m.turns)
+	history := m.historyToSend()
 	m.appendTurn(turn{role: roleUser, text: sanitizeText(shown)})
 	m.input.Blur()
 	m.state = stateSending
@@ -1751,7 +1751,7 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		}
 		reply = fmt.Sprintf("workspace: %s\nmodel tier: %s\ngrounding: %s", m.workspace, tier, g)
 		if mem := m.historyLabel(); mem != "" {
-			reply += "\nmemory: " + strings.TrimPrefix(ansi.Strip(mem), "mem: ")
+			reply += "\nmemory: " + strings.TrimPrefix(ansi.Strip(mem), "mem: ") + m.foldSummaryText() // fold.go
 		}
 		// The last turn's notices -- provider, redactions, degradations --
 		// which the header no longer shows (see renderHeader).
@@ -2180,7 +2180,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.lastGrounding = nil
 	m.lastRedactions = nil
 	m.lastDegraded = nil
-	m.lastProvider = ""
+	m.lastProvider, m.fold = "", nil // so did the fold point (fold.go)
 	m.lastHistoryTruncated = false
 	m.statusErr = ""
 	m.state = stateIdle
@@ -3345,11 +3345,11 @@ func (m *chatModel) resizeViewport() {
 // right after startup or a ctrl+n clear, so nothing is shown until there's
 // actually something to carry.
 func (m chatModel) historyLabel() string {
-	n := len(buildHistory(m.turns))
+	n := len(m.historyPreview()) // what the next question carries, a fold's summary included (fold.go)
 	if n == 0 {
 		return ""
 	}
-	return helpStyle.Render(fmt.Sprintf("mem: %d turn(s)", n))
+	return helpStyle.Render(fmt.Sprintf("mem: %d turn(s)", n) + m.foldLabel())
 }
 
 // groundingLabel renders the most recently reported GroundingInfo, or ""

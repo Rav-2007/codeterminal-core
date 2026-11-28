@@ -170,6 +170,7 @@ func currentChatState(e protocol.HistoryEntry, number map[string]int) string {
 func (m *chatModel) saveChat(name string) string {
 	resp, err := sendHistory(m.clientName, protocol.HistoryRequest{
 		Action: protocol.HistorySave, Workspace: m.workspaceRoot, Spec: m.activeSpec, Name: name,
+		HistoryRequestExtras: m.foldedForSave(), // what a fold summarised, as this screen has it (fold.go)
 	})
 	if err != nil {
 		return "history: " + err.Error()
@@ -185,6 +186,9 @@ func (m *chatModel) saveChat(name string) string {
 	}
 	if resp.Pruned > 0 {
 		msg += fmt.Sprintf("\n(the oldest %d saved chat(s) were removed to keep history within its size limit)", resp.Pruned)
+	}
+	if note := m.savedFromScreenNote(resp); note != "" {
+		msg += "\n(" + note + ")"
 	}
 	return msg
 }
@@ -474,7 +478,7 @@ func (m chatModel) resumeChat(arg string) (tea.Model, tea.Cmd) {
 			m.promptHistory = promptsFrom(resp.Turns)
 			m.historyIdx, m.historyDraft = -1, ""
 			m.lastGrounding, m.lastRedactions, m.lastDegraded = nil, nil, nil
-			m.lastProvider, m.lastHistoryTruncated = "", false
+			m.lastProvider, m.lastHistoryTruncated, m.fold = "", false, nil
 			m.appendTurn(turn{role: roleSystem, text: m.resumedNote(resp.Entry, resp.Turns)})
 			m.resizeViewport()
 			m.refreshViewport()

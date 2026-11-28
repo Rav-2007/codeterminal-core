@@ -261,7 +261,7 @@ func TestCompactTranscript_TrimsTheLongestMessagesBeforeDroppingAny(t *testing.T
 			storedTurn{Role: "user", Content: fmt.Sprintf("question %d", i)},
 			storedTurn{Role: "assistant", Content: strings.Repeat("é", 2000)}) // 2 bytes a rune
 	}
-	out := compactTranscript(turns, 6_000)
+	out := compactTranscript(turns, 6_000, "msg-test")
 	if len(out) > 6_000 {
 		t.Fatalf("%d bytes, over the 6000 budget", len(out))
 	}
@@ -269,7 +269,7 @@ func TestCompactTranscript_TrimsTheLongestMessagesBeforeDroppingAny(t *testing.T
 		t.Error("a trim split a multi-byte character")
 	}
 	for i := 1; i <= 10; i++ {
-		if !strings.Contains(out, fmt.Sprintf("User: question %d\n", i)) {
+		if !strings.Contains(out, fmt.Sprintf("<msg-test role=\"user\">\nquestion %d\n</msg-test>", i)) {
 			t.Errorf("question %d was dropped", i)
 		}
 	}
@@ -278,13 +278,13 @@ func TestCompactTranscript_TrimsTheLongestMessagesBeforeDroppingAny(t *testing.T
 	}
 
 	// Too small for even a short excerpt of each: the earliest go, the newest stay.
-	tiny := compactTranscript(turns, 1_200)
+	tiny := compactTranscript(turns, 1_200, "msg-test")
 	if len(tiny) > 1_200 || !strings.HasPrefix(tiny, "(earliest part omitted)") || !strings.Contains(tiny, "question 10\n") || strings.Contains(tiny, "question 1\n") {
 		t.Errorf("tiny budget:\n%s", tiny)
 	}
 
 	// Under budget, the transcript is whole.
-	if whole := compactTranscript(turns[:2], 60_000); strings.Contains(whole, "[…]") {
+	if whole := compactTranscript(turns[:2], 60_000, "msg-test"); strings.Contains(whole, "[…]") {
 		t.Error("a transcript under budget was trimmed")
 	}
 }

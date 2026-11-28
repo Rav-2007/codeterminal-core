@@ -144,6 +144,13 @@ pick it up later.
 `/remember tests here run with make check` saves a rule for the project, and
 every later chat follows it.
 
+### Long chats keep what you said
+
+When a chat outgrows what is sent to the model, its older messages are
+summarised instead of dropped, and the newest stay word for word. You still see
+every message; the model still knows what you asked for first. A chat you `/save`
+keeps every message — before or after it was summarised — never the summary.
+
 ### GitHub
 
 Read issues and pull requests, and see why CI failed, without leaving the chat:

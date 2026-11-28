@@ -67,6 +67,9 @@ func (m chatModel) rateWaitShown() bool { return m.rateWaitLeft() > 0 }
 // indicatorLine is what is drawn under the chat while a turn is working: the
 // wait, counting down, or the "thinking" it stands in for.
 func (m chatModel) indicatorLine() string {
+	if line, ok := m.foldIndicator(); ok { // a summary the question waits for (fold.go)
+		return line
+	}
 	if left := m.rateWaitLeft(); left > 0 {
 		secs := int((left + time.Second - 1) / time.Second)
 		why := "rate-limited"
